@@ -28,6 +28,13 @@ export default function Activity() {
   const inFilter = (vault: `0x${string}`) => filter === "all" || kindOf(vaults, vault) === filter;
   const fills = (logs.data?.fills ?? []).filter((f) => mine.has(`${f.vault.toLowerCase()}:${f.planId}`) && inFilter(f.vault));
   const epochs = (logs.data?.epochs ?? []).filter((e) => inFilter(e.vault));
+  // Pages the vault could not buy for (no route within limits, swap failed): nobody was charged. Shown inline
+  // with the fills so "why didn't my buy happen?" has an answer. Every row of `all` sorts newest first.
+  const skips = (logs.data?.skips ?? []).filter((e) => inFilter(e.vault));
+  const all = [
+    ...epochs.filter((e) => e.plansFilled > 0).map((e) => ({ kind: "fill" as const, key: `${e.txHash}-${e.logIndex}`, block: e.blockNumber, idx: e.logIndex, e })),
+    ...skips.map((e) => ({ kind: "skip" as const, key: `${e.txHash}-${e.logIndex}`, block: e.blockNumber, idx: e.logIndex, e })),
+  ].sort((a, b) => (a.block === b.block ? b.idx - a.idx : a.block < b.block ? 1 : -1));
   const txLink = (hash: string) => (
     <a className="num text-[12px] text-ink-3 hover:text-ink hover:underline" href={explorer ? `${explorer}/tx/${hash}` : "#"} target="_blank" rel="noreferrer">
       {short(hash)}
@@ -116,7 +123,7 @@ export default function Activity() {
               </tbody>
             </table>
           )
-        ) : epochs.length === 0 ? (
+        ) : all.length === 0 ? (
           <Empty>No buys have run yet.</Empty>
         ) : (
           <table className="tbl">
@@ -132,11 +139,31 @@ export default function Activity() {
               </tr>
             </thead>
             <tbody>
-              {epochs.slice(0, 100).map((e) => {
+              {all.slice(0, 100).map((row) => {
+                const e = row.e;
                 const stock = byAddress[e.stock.toLowerCase()];
                 const kind = kindOf(vaults, e.vault);
+                if (row.kind === "skip") {
+                  return (
+                    <tr key={row.key}>
+                      <td className="text-[12px] text-ink-2">{e.timestamp ? tsToShort(e.timestamp) : `block ${e.blockNumber}`}</td>
+                      <td>
+                        <span className="flex items-center gap-2 font-semibold text-ink">
+                          <StockAvatar symbol={stock?.symbol ?? "?"} size={24} />
+                          {stock?.symbol ?? short(e.stock)}
+                        </span>
+                      </td>
+                      <td className="text-ink-2">{kind ? VAULT_META[kind].label : short(e.vault)}</td>
+                      <td colSpan={3} className="text-[12px] text-warn">
+                        Skipped — {row.e.reason}. Nobody was charged; the plans try again next {kind ? VAULT_META[kind].per : "period"}.
+                      </td>
+                      <td className="text-right">{txLink(e.txHash)}</td>
+                    </tr>
+                  );
+                }
+                const f = row.e;
                 return (
-                  <tr key={`${e.txHash}-${e.logIndex}`}>
+                  <tr key={row.key}>
                     <td className="text-[12px] text-ink-2">{e.timestamp ? tsToShort(e.timestamp) : `block ${e.blockNumber}`}</td>
                     <td>
                       <span className="flex items-center gap-2 font-semibold text-ink">
@@ -145,11 +172,11 @@ export default function Activity() {
                       </span>
                     </td>
                     <td className="text-ink-2">{kind ? VAULT_META[kind].label : short(e.vault)}</td>
-                    <td className="num text-right">{fmtUsd(e.netUsdg)}</td>
+                    <td className="num text-right">{fmtUsd(f.netUsdg)}</td>
                     <td className="num text-right">
-                      {fmtUnits(e.stockOut, stock?.decimals ?? 18, 6)} <span className="text-[11px] text-ink-3">{stock?.symbol}</span>
+                      {fmtUnits(f.stockOut, stock?.decimals ?? 18, 6)} <span className="text-[11px] text-ink-3">{stock?.symbol}</span>
                     </td>
-                    <td className="num text-right">{e.plansFilled}</td>
+                    <td className="num text-right">{f.plansFilled}</td>
                     <td className="text-right">{txLink(e.txHash)}</td>
                   </tr>
                 );

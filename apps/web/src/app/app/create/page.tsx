@@ -9,15 +9,17 @@ import { useTxSequence, type TxStep } from "@/hooks/useTx";
 import { PlanVaultAbi, ERC20Abi } from "@/abi";
 import { PageHeader, Card, Notice, Spinner, StockAvatar, Slider, AmountInput, Segmented, KV, Countdown, Icon } from "@/components/ui";
 import { ConnectButton } from "@/components/ConnectButton";
-import { fmtUsd, fmtUnits, fmtBps, tsToShort, valueOf } from "@/lib/format";
+import { fmtUsd, fmtUnits, fmtBps, tsToShort, valueOf, feeOf } from "@/lib/format";
 import { tickerName } from "@/lib/tickers";
 import { VAULT_KINDS, VAULT_META, ZERO, DOCS_PATH, USDG_DECIMALS, cadenceOf, buysPerMonthOf, type VaultKind } from "@/lib/config";
 
 type Pay = "USDG" | "ETH";
 
-const PER_MIN = 10;
+const PER_MIN_FALLBACK = 10n * 10n ** BigInt(USDG_DECIMALS); // vault default until the chain answers
 const PER_MAX = 1000;
 const ETH_GAS_RESERVE = parseEther("0.01");
+/** Slippage applied to the ETH → USDG conversion quote when starting a plan with ETH. */
+const ZAP_SLIPPAGE_BPS = 50n;
 
 export default function CreatePlan() {
   const { address } = useAccount();
@@ -52,6 +54,10 @@ export default function CreatePlan() {
 
   const perBuyWei = safeParse(perBuy, USDG_DECIMALS);
   const upfrontWei = pay === "USDG" ? safeParse(upfront, USDG_DECIMALS) : safeParseEth(upfront);
+  // On-chain minimums (10 USDG by default): per-buy amount, and the USDG a plan must be funded with to start.
+  const minPerBuy = info?.minAmountPerEpoch ?? PER_MIN_FALLBACK;
+  const minDeposit = info?.minDeposit ?? PER_MIN_FALLBACK;
+  const perMinWhole = Number(formatUnits(minPerBuy, USDG_DECIMALS));
 
   // Balances → slider ranges
   const usdgBal = user.usdg ?? 0n;
@@ -61,9 +67,12 @@ export default function CreatePlan() {
   const sliderStep = pay === "USDG" ? 1 : 0.001;
   const sliderVal = Number(upfront) || 0;
 
-  // ETH → USDG preview (also used for minOut)
-  const zapQuote = useQuote(dir?.router, dir?.weth, dir?.usdg, pay === "ETH" ? upfrontWei : undefined);
-  const upfrontUsdg = pay === "USDG" ? upfrontWei : zapQuote.data?.amountOut;
+  // ETH → USDG preview (also used for minOut). The vault converts the amount NET of any deposit fee, so quote that:
+  // a minOut derived from the gross amount would revert whenever a deposit fee is switched on.
+  const depositFeeBps = info?.fees?.depositFeeBps ?? 0;
+  const ethNet = pay === "ETH" && upfrontWei ? upfrontWei - feeOf(upfrontWei, depositFeeBps) : undefined;
+  const zapQuote = useQuote(dir?.router, dir?.weth, dir?.usdg, ethNet && ethNet > 0n ? ethNet : undefined);
+  const upfrontUsdg = pay === "USDG" ? (upfrontWei !== undefined ? upfrontWei - feeOf(upfrontWei, depositFeeBps) : undefined) : zapQuote.data?.amountOut;
   const buysCovered = upfrontUsdg !== undefined && perBuyWei && perBuyWei > 0n ? Number(upfrontUsdg / perBuyWei) : undefined;
 
   const allowance = useReadContract({
@@ -88,20 +97,28 @@ export default function CreatePlan() {
 
   const walletBal = pay === "USDG" ? usdgBal : ethBal;
   const insufficient = upfrontWei !== undefined && upfrontWei > walletBal;
-  const perBuyOk = !!perBuyWei && perBuyWei > 0n;
+  const perBuyOk = !!perBuyWei && perBuyWei >= minPerBuy;
+  const perBuyTooSmall = !!perBuyWei && perBuyWei > 0n && perBuyWei < minPerBuy;
   const quoteMissing = pay === "ETH" && !!upfrontWei && upfrontWei > 0n && zapQuote.data === undefined;
-  const canSubmit = !!address && !!vault && !!stockAddr && perBuyOk && !insufficient && !quoteMissing && !seq.running;
+  // A plan must start with at least `minDeposit` USDG (after conversion for ETH): unfunded plans are rejected on chain.
+  // For ETH, judge by the worst case the swap may deliver (quote minus the slippage tolerance), not the quote itself.
+  const upfrontUsdgFloor =
+    pay === "ETH" && upfrontUsdg !== undefined ? (upfrontUsdg * (10_000n - ZAP_SLIPPAGE_BPS)) / 10_000n : upfrontUsdg;
+  const fundedEnough = upfrontUsdgFloor !== undefined && upfrontUsdgFloor >= minDeposit;
+  const fundingTooSmall = !!upfrontWei && upfrontWei > 0n && upfrontUsdg !== undefined && !fundedEnough;
+  const canSubmit = !!address && !!vault && !!stockAddr && perBuyOk && fundedEnough && !insufficient && !quoteMissing && !seq.running;
 
   const submit = async () => {
     if (!vault || !stockAddr || !perBuyWei || !dir) return;
     const usdgAmount = pay === "USDG" ? (upfrontWei ?? 0n) : 0n;
     const value = pay === "ETH" ? (upfrontWei ?? 0n) : 0n;
-    const minOut = pay === "ETH" && zapQuote.data ? (zapQuote.data.amountOut * 9_950n) / 10_000n : 0n;
+    // ETH is converted to USDG inside createPlan; protect the conversion with the quoted amount minus 0.5%.
+    const minOut = pay === "ETH" && zapQuote.data ? (zapQuote.data.amountOut * (10_000n - ZAP_SLIPPAGE_BPS)) / 10_000n : 0n;
     const steps: TxStep[] = [];
     if (needsApproval) steps.push({ label: "Approve USDG", params: { address: dir.usdg, abi: ERC20Abi, functionName: "approve", args: [vault, usdgAmount] } });
     steps.push({
       label: "Start plan",
-      params: { address: vault, abi: PlanVaultAbi, functionName: "createPlan", args: [stockAddr, perBuyWei, false, ZERO, usdgAmount, 0n, minOut], value },
+      params: { address: vault, abi: PlanVaultAbi, functionName: "createPlan", args: [stockAddr, perBuyWei, ZERO, usdgAmount, 0n, minOut], value },
     });
     await seq.run(steps);
   };
@@ -176,19 +193,21 @@ export default function CreatePlan() {
           <Step n={3} title={`Amount per ${VAULT_META[kind].per}`}>
             <AmountInput value={perBuy} onChange={setPerBuy} unit="USDG" large placeholder="100" />
             <div className="mt-3">
-              <Slider value={Number(perBuy) || PER_MIN} min={PER_MIN} max={PER_MAX} step={10} onChange={(v) => setPerBuy(String(v))} ariaLabel="Amount per buy" />
+              <Slider value={Number(perBuy) || perMinWhole} min={perMinWhole} max={PER_MAX} step={10} onChange={(v) => setPerBuy(String(v))} ariaLabel="Amount per buy" />
               <div className="flex justify-between text-[11px] text-ink-3">
-                <span>${PER_MIN}</span>
+                <span>{fmtUsd(minPerBuy)} min</span>
                 <span>${PER_MAX.toLocaleString()}+</span>
               </div>
             </div>
             <p className="mt-3 text-[12px] text-ink-3">
-              {perBuyOk ? (
+              {perBuyTooSmall ? (
+                <span className="text-bad">The smallest buy is {fmtUsd(minPerBuy)}.</span>
+              ) : perBuyOk ? (
                 <>
                   About <span className="num text-ink-2">{fmtUsd(monthly)}</span> a month, spent while the plan has funds. Change it any time.
                 </>
               ) : (
-                "Enter how much USDG to spend on each buy."
+                `Enter how much USDG to spend on each buy (at least ${fmtUsd(minPerBuy)}).`
               )}
             </p>
           </Step>
@@ -231,15 +250,25 @@ export default function CreatePlan() {
             <p className="mt-3 text-[12px] text-ink-3">
               {pay === "ETH" && upfrontWei && upfrontWei > 0n ? (
                 <>
-                  Converted to <span className="num text-ink-2">{zapQuote.data ? `≈ ${fmtUsd(zapQuote.data.amountOut)}` : "…"}</span> USDG when you start the plan.{" "}
+                  Converted to <span className="num text-ink-2">{zapQuote.data ? `≈ ${fmtUsd(zapQuote.data.amountOut)}` : "…"}</span> USDG the moment you
+                  start the plan (the plan holds USDG, never ETH).{" "}
                 </>
               ) : null}
-              {buysCovered !== undefined && buysCovered > 0 ? (
+              {fundingTooSmall ? (
+                <span className="text-bad">
+                  A plan needs at least {fmtUsd(minDeposit)}{pay === "ETH" ? " worth of ETH" : ""} to start.
+                </span>
+              ) : buysCovered !== undefined && buysCovered > 0 ? (
                 <>
-                  Covers <span className="text-ink-2">{buysCovered.toLocaleString()}</span> {buysCovered === 1 ? "buy" : "buys"}.
+                  Covers <span className="text-ink-2">{buysCovered.toLocaleString()}</span> {buysCovered === 1 ? "buy" : "buys"}. Top up any time from My plans.
+                </>
+              ) : fundedEnough && upfrontUsdg !== undefined ? (
+                <>
+                  Less than one full buy: the first buy spends what is there (≈ <span className="num text-ink-2">{fmtUsd(upfrontUsdg)}</span>). Top up any time from
+                  My plans.
                 </>
               ) : (
-                "Optional now — you can top up later from My plans."
+                `Fund the plan with at least ${fmtUsd(minDeposit)} to start. You can top up later from My plans.`
               )}
             </p>
           </Step>
@@ -280,7 +309,7 @@ export default function CreatePlan() {
                 <div className="pt-2">
                   <KV k="Frequency" v={VAULT_META[kind].label} mono={false} />
                   <KV k="Per buy" v={fmtUsd(perBuyWei ?? 0n)} />
-                  <KV k="Upfront" v={upfrontWei && upfrontWei > 0n ? `${upfront} ${pay}` : "None"} />
+                  <KV k="Upfront" v={upfrontWei && upfrontWei > 0n ? `${upfront} ${pay}` : "—"} />
                   {pay === "ETH" && upfrontWei && upfrontWei > 0n && <KV k="As USDG" v={zapQuote.data ? `≈ ${fmtUsd(zapQuote.data.amountOut)}` : "…"} />}
                   <KV k="First buy" v={<Countdown target={info?.nextEpochStart} />} />
                   {info?.nextEpochStart && <div className="-mt-1 text-right text-[11px] text-ink-3">{tsToShort(info.nextEpochStart)}</div>}
@@ -315,6 +344,12 @@ export default function CreatePlan() {
                   )}
                   {insufficient && <Notice kind="error">Not enough {pay} in your wallet.</Notice>}
                   {seq.error && <Notice kind="error">{seq.error}</Notice>}
+                  {pay === "ETH" && upfrontWei && upfrontWei > 0n && !seq.error && (
+                    <p className="text-[11px] leading-relaxed text-ink-3">
+                      Your ETH is swapped to USDG on chain with a {fmtBps(Number(ZAP_SLIPPAGE_BPS))} tolerance; if the price moves more than that the
+                      transaction fails and nothing is taken. Any sliver of ETH the pool cannot fill is returned to your wallet in the same transaction.
+                    </p>
+                  )}
                 </div>
 
                 <p className="mt-4 text-[11px] leading-relaxed text-ink-3">

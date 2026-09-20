@@ -52,7 +52,7 @@ export default function Plans() {
   const positions = useMemo(
     () =>
       all.filter((p) => {
-        const empty = p.usdgIdle === 0n && p.wethIdle === 0n && p.stockAccrued === 0n;
+        const empty = p.usdgIdle === 0n && p.stockAccrued === 0n;
         const unindexed = index.data?.[keyOf(p)] === false;
         return !(empty && (unindexed || hidden.has(keyOf(p))));
       }),
@@ -75,7 +75,7 @@ export default function Plans() {
           name: tickerName(symbol),
           decimals,
           stockUsd: p.stockAccrued === 0n ? 0n : valueOf(p.stockAccrued, prices[p.stock.toLowerCase()], decimals),
-          active: !p.paused && (p.usdgIdle > 0n || p.wethIdle > 0n),
+          active: !p.paused && p.usdgIdle > 0n,
         };
       }),
     [positions, vaults, byAddress, byKind, prices],
@@ -295,7 +295,7 @@ function PlanRow({
   onChange: () => void;
 }) {
   const tx = useTx(onChange);
-  const funded = p.usdgIdle > 0n || p.wethIdle > 0n;
+  const funded = p.usdgIdle > 0n;
   const status = p.paused ? (["Paused", "warn"] as const) : funded ? (["Active", "good"] as const) : (["Needs funds", "muted"] as const);
   const call = (functionName: "setPlanPaused" | "claim", args: readonly unknown[]) => tx.write({ address: p.vault, abi: PlanVaultAbi, functionName, args } as never);
 
@@ -318,10 +318,7 @@ function PlanRow({
         {fmtUsd(p.amountPerEpoch)}
         {kind && <span className="block text-[11.5px] text-ink-2">per {VAULT_META[kind].per}</span>}
       </td>
-      <td className="num text-right">
-        {fmtUsd(p.usdgIdle)}
-        {p.wethIdle > 0n && <span className="block text-[11.5px] text-ink-2">+ {fmtUnits(p.wethIdle, 18)} ETH</span>}
-      </td>
+      <td className="num text-right">{fmtUsd(p.usdgIdle)}</td>
       <td className="num text-right">
         {fmtUnits(p.stockAccrued, stockDecimals, 4)} <span className="text-[11.5px] text-ink-2">{symbol}</span>
         {p.stockAccrued > 0n && <span className="block text-[11.5px] text-ink-2">{fmtUsd(stockUsd)}</span>}
@@ -388,8 +385,11 @@ function PlanDialog(props: {
 }
 
 const ETH_GAS_RESERVE = parseEther("0.01");
+/** Slippage applied to the ETH → USDG conversion quote on deposit. */
+const ZAP_SLIPPAGE_BPS = 50n;
+const MIN_DEPOSIT_FALLBACK = 10n * 10n ** BigInt(USDG_DECIMALS);
 
-function DepositForm({ dialog, usdg, weth, router, balances, onClose, onChange }: Parameters<typeof PlanDialog>[0]) {
+function DepositForm({ dialog, info, usdg, weth, router, balances, onClose, onChange }: Parameters<typeof PlanDialog>[0]) {
   const p = dialog.plan;
   const { address } = useAccount();
   const [pay, setPay] = useState<"USDG" | "ETH">("USDG");
@@ -399,7 +399,21 @@ function DepositForm({ dialog, usdg, weth, router, balances, onClose, onChange }
   const max = pay === "USDG" ? balances.usdg : ethMax;
   const sliderMax = pay === "USDG" ? Math.floor(Number(formatUnits(balances.usdg, USDG_DECIMALS))) : Number(formatEther(ethMax));
 
-  const quote = useQuote(router, weth, usdg, pay === "ETH" ? wei : undefined);
+  // The vault converts ETH net of any deposit fee; quote exactly that amount so minOut cannot over-demand.
+  const depositFeeBps = info?.fees?.depositFeeBps ?? 0;
+  const ethNet = pay === "ETH" && wei ? wei - feeOf(wei, depositFeeBps) : undefined;
+  const quote = useQuote(router, weth, usdg, ethNet && ethNet > 0n ? ethNet : undefined);
+  const minDeposit = info?.minDeposit ?? MIN_DEPOSIT_FALLBACK;
+  // What the vault will credit, in the worst case: USDG net of fee, or the ETH quote minus the slippage tolerance.
+  const creditedFloor =
+    pay === "USDG"
+      ? wei !== undefined
+        ? wei - feeOf(wei, depositFeeBps)
+        : undefined
+      : quote.data
+        ? (quote.data.amountOut * (10_000n - ZAP_SLIPPAGE_BPS)) / 10_000n
+        : undefined;
+  const tooSmall = !!wei && wei > 0n && creditedFloor !== undefined && creditedFloor < minDeposit;
   const allowance = useReadContract({
     address: usdg,
     abi: ERC20Abi,
@@ -414,7 +428,7 @@ function DepositForm({ dialog, usdg, weth, router, balances, onClose, onChange }
   });
   const insufficient = !!wei && wei > (pay === "USDG" ? balances.usdg : balances.eth);
   const quoteMissing = pay === "ETH" && !!wei && wei > 0n && quote.data === undefined;
-  const ok = !!wei && wei > 0n && !insufficient && !quoteMissing && !seq.running;
+  const ok = !!wei && wei > 0n && !insufficient && !quoteMissing && !tooSmall && !seq.running;
 
   const submit = () => {
     if (!wei) return;
@@ -422,7 +436,8 @@ function DepositForm({ dialog, usdg, weth, router, balances, onClose, onChange }
     if (needsApproval) steps.push({ label: "Approve USDG", params: { address: usdg, abi: ERC20Abi, functionName: "approve", args: [p.vault, wei] } });
     if (pay === "USDG") steps.push({ label: "Deposit", params: { address: p.vault, abi: PlanVaultAbi, functionName: "depositUSDG", args: [p.planId, wei] } });
     else {
-      const minOut = quote.data ? (quote.data.amountOut * 9_950n) / 10_000n : 0n;
+      // ETH is swapped to USDG inside depositETH; the quote minus 0.5% is the least the vault may credit.
+      const minOut = quote.data ? (quote.data.amountOut * (10_000n - ZAP_SLIPPAGE_BPS)) / 10_000n : 0n;
       steps.push({ label: "Deposit", params: { address: p.vault, abi: PlanVaultAbi, functionName: "depositETH", args: [p.planId, minOut], value: wei } });
     }
     seq.run(steps);
@@ -454,9 +469,11 @@ function DepositForm({ dialog, usdg, weth, router, balances, onClose, onChange }
       </div>
       {pay === "ETH" && wei && wei > 0n && (
         <p className="text-[12px] text-ink-3">
-          Converted to <span className="num text-ink-2">{quote.data ? `≈ ${fmtUsd(quote.data.amountOut)}` : "…"}</span> USDG on deposit.
+          Converted to <span className="num text-ink-2">{quote.data ? `≈ ${fmtUsd(quote.data.amountOut)}` : "…"}</span> USDG on deposit — the plan holds USDG,
+          never ETH. The swap has a {fmtBps(Number(ZAP_SLIPPAGE_BPS))} tolerance; any sliver of ETH the pool cannot fill comes straight back to your wallet.
         </p>
       )}
+      {tooSmall && <Notice kind="error">The smallest deposit is {fmtUsd(minDeposit)}{pay === "ETH" ? " worth of ETH" : ""}.</Notice>}
       {insufficient && <Notice kind="error">Not enough {pay} in your wallet.</Notice>}
       {seq.error && <Notice kind="error">{seq.error}</Notice>}
       <button type="button" className="btn-primary h-10 w-full" disabled={!ok} onClick={submit}>
@@ -477,16 +494,14 @@ function DepositForm({ dialog, usdg, weth, router, balances, onClose, onChange }
 function WithdrawForm({ dialog, info, onClose, onChange }: Parameters<typeof PlanDialog>[0]) {
   const p = dialog.plan;
   const [amount, setAmount] = useState("");
-  const [withEth, setWithEth] = useState(p.wethIdle > 0n);
   const wei = safeParse(amount, USDG_DECIMALS) ?? 0n;
   const usdgOut = wei > p.usdgIdle ? p.usdgIdle : wei;
-  const wethOut = withEth ? p.wethIdle : 0n;
   const tx = useTx(() => {
     onChange();
     onClose();
   });
   const feeBps = info?.fees?.withdrawFeeBps ?? 0;
-  const ok = (usdgOut > 0n || wethOut > 0n) && !tx.pending;
+  const ok = usdgOut > 0n && !tx.pending;
 
   return (
     <div className="space-y-4">
@@ -498,12 +513,6 @@ function WithdrawForm({ dialog, info, onClose, onChange }: Parameters<typeof Pla
           <span>In plan: {fmtUsd(p.usdgIdle)}</span>
         </div>
       </div>
-      {p.wethIdle > 0n && (
-        <label className="flex cursor-pointer items-center gap-2 text-[13px] text-ink-2">
-          <input type="checkbox" className="accent-lime" checked={withEth} onChange={(e) => setWithEth(e.target.checked)} />
-          Also withdraw {fmtUnits(p.wethIdle, 18)} ETH
-        </label>
-      )}
       <div className="rounded-lg bg-surface-2 px-3">
         <KV k="You receive" v={usdgOut > 0n ? fmtUsd(usdgOut - feeOf(usdgOut, feeBps)) : "—"} />
       </div>
@@ -512,11 +521,14 @@ function WithdrawForm({ dialog, info, onClose, onChange }: Parameters<typeof Pla
         type="button"
         className="btn-primary h-10 w-full"
         disabled={!ok}
-        onClick={() => tx.write({ address: p.vault, abi: PlanVaultAbi, functionName: "withdrawIdle", args: [p.planId, usdgOut, wethOut, true] })}
+        onClick={() => tx.write({ address: p.vault, abi: PlanVaultAbi, functionName: "withdrawIdle", args: [p.planId, usdgOut] })}
       >
         {tx.pending ? <Spinner /> : "Withdraw"}
       </button>
-      <p className="text-[11px] text-ink-3">A {fmtBps(feeBps)} fee applies to withdrawn funds. Stock you have already bought stays claimable.</p>
+      <p className="text-[11px] text-ink-3">
+        A {fmtBps(feeBps)} fee applies to withdrawn funds. Withdrawals are paid in USDG (ETH deposits were converted when they came in). Stock you have already
+        bought stays claimable.
+      </p>
     </div>
   );
 }
@@ -529,8 +541,8 @@ function RemoveForm({ dialog, symbol, stockDecimals, info, onClose, onRemoved }:
   });
   const steps = useMemo(() => {
     const out: TxStep[] = [];
-    if (p.usdgIdle > 0n || p.wethIdle > 0n)
-      out.push({ label: "Withdraw funds", params: { address: p.vault, abi: PlanVaultAbi, functionName: "withdrawIdle", args: [p.planId, p.usdgIdle, p.wethIdle, true] } });
+    if (p.usdgIdle > 0n)
+      out.push({ label: "Withdraw funds", params: { address: p.vault, abi: PlanVaultAbi, functionName: "withdrawIdle", args: [p.planId, p.usdgIdle] } });
     if (p.stockAccrued > 0n) out.push({ label: `Claim ${symbol}`, params: { address: p.vault, abi: PlanVaultAbi, functionName: "claim", args: [p.planId, MAX_UINT256] } });
     out.push({ label: "Delete plan", params: { address: p.vault, abi: PlanVaultAbi, functionName: "prunePlan", args: [p.planId] } });
     return out;
@@ -552,12 +564,7 @@ function RemoveForm({ dialog, symbol, stockDecimals, info, onClose, onRemoved }:
               </span>
               <span className="text-ink">{s.label}</span>
               <span className="ml-auto num text-[12px] text-ink-3">
-                {s.label === "Withdraw funds" && (
-                  <>
-                    {fmtUsd(p.usdgIdle - feeOf(p.usdgIdle, wdFee))}
-                    {p.wethIdle > 0n ? ` + ${fmtUnits(p.wethIdle - feeOf(p.wethIdle, wdFee), 18)} ETH` : ""}
-                  </>
-                )}
+                {s.label === "Withdraw funds" && fmtUsd(p.usdgIdle - feeOf(p.usdgIdle, wdFee))}
                 {s.label.startsWith("Claim") && `${fmtUnits(p.stockAccrued - feeOf(p.stockAccrued, claimFee), stockDecimals, 4)} ${symbol}`}
               </span>
             </li>

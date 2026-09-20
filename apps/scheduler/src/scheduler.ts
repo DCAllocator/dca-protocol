@@ -90,15 +90,27 @@ export class Scheduler {
     this.usdgDecimals = await this.pub.readContract({ address: usdg, abi: ExtraAbi, functionName: "decimals" }).catch(() => 6);
 
     const balance = this.account ? await this.pub.getBalance({ address: this.account.address }) : undefined;
+    // Every execution entry point on the EpochKeeper is operator-only (owner or isOperator); the vaults run
+    // keeperOnly. A wallet that is neither will have every run() revert with NotOperator, so say so up front.
+    const isOperator = this.account
+      ? await Promise.all([
+          this.pub.readContract({ address: this.keeper, abi: EpochKeeperAbi, functionName: "isOperator", args: [this.account.address] }),
+          this.pub.readContract({ address: this.keeper, abi: EpochKeeperAbi, functionName: "owner" }),
+        ]).then(([op, owner]) => op || owner.toLowerCase() === this.account!.address.toLowerCase())
+      : undefined;
     log.info("scheduler starting", {
       chain: `${this.chain.name}(${chainId})`,
       keeper: this.keeper,
       account: this.account?.address ?? "(none, dry-run)",
+      operator: isOperator,
       balance: balance !== undefined ? `${formatEther(balance)} ETH` : undefined,
       poll: `${this.cfg.pollIntervalMs / 1000}s`,
       dryRun: this.cfg.dryRun || undefined,
     });
     if (balance !== undefined && balance === 0n) log.warn("account has no ETH for gas");
+    if (isOperator === false) {
+      log.error(`account is not an EpochKeeper operator: every run will revert with NotOperator. Ask the owner for keeper.setOperator(${this.account!.address}, true)`);
+    }
 
     const block = await this.pub.getBlock();
     this.observeBlock(Number(block.timestamp));
@@ -226,12 +238,13 @@ export class Scheduler {
         range: s.range,
         spent: `${formatUnits(s.netUsdg, this.usdgDecimals)} USDG`,
         bought: `${formatUnits(s.stockOut, stock?.decimals ?? 18)} ${stock?.symbol ?? ""}`.trim(),
-        skipped: s.skipped || undefined,
+        skipped: s.skipped.length > 0 ? s.skipped.join("; ") : undefined,
         tips: s.tips > 0n ? `${formatUnits(s.tips, this.usdgDecimals)} USDG` : undefined,
         gas: receipt.gasUsed,
         block: receipt.blockNumber,
         tx: hash,
       });
+      if (s.skipped.length > 0) log.warn(`${label}: page skipped — nobody charged`, { job: index, epoch: s.epochId, reason: s.skipped.join("; ") });
       if (s.completed) return;
     }
     log.warn(`${label}: reached MAX_PAGES_PER_JOB=${this.cfg.maxPagesPerJob}; continuing next tick`, { job: index });
@@ -248,7 +261,7 @@ export class Scheduler {
     let epochId: number | undefined;
     let from: bigint | undefined;
     let to: bigint | undefined;
-    let skipped = 0;
+    const skipped: string[] = [];
     let completed = false;
     for (const e of vaultLogs) {
       if (e.eventName === "EpochPageExecuted") {
@@ -259,7 +272,10 @@ export class Scheduler {
         from = from === undefined ? e.args.fromIndex : from < e.args.fromIndex ? from : e.args.fromIndex;
         to = to === undefined || e.args.toIndex > to ? e.args.toIndex : to;
       } else if (e.eventName === "EpochExecuted") completed = true;
-      else if (e.eventName === "PlanSkippedSlippage" || e.eventName === "PlanSkippedNoRoute") skipped++;
+      else if (e.eventName === "EpochPageSkipped") {
+        // The purchase for this page could not be quoted / executed: nobody was charged, the cursor advanced.
+        skipped.push(`${e.args.fromIndex}-${e.args.toIndex}: ${describeSkipReason(e.args.reason)}`);
+      }
     }
     const keeperLogs = parseEventLogs({ abi: EpochKeeperAbi, logs: receipt.logs, eventName: ["JobRun", "TipsForwarded"] });
     let tips = 0n;
@@ -435,3 +451,28 @@ export function describeError(err: unknown): string {
 }
 
 const sig = (name: string, args?: readonly unknown[]) => `${name}(${(args ?? []).map(String).join(", ")})`;
+
+/**
+ * Reason bytes of an EpochPageSkipped event: the router's revert data verbatim (custom error), an
+ * `Error(string)`, or a short ASCII tag from the vault (`"quote too small"`).
+ */
+export function describeSkipReason(raw: `0x${string}` | undefined): string {
+  if (!raw || raw === "0x") return "no route";
+  for (const abi of [AggregatorRouterAbi, PlanVaultAbi]) {
+    try {
+      const d = decodeErrorResult({ abi, data: raw });
+      return sig(d.errorName, d.args);
+    } catch {
+      /* not this contract's error */
+    }
+  }
+  try {
+    const d = decodeErrorResult({ abi: [{ type: "error", name: "Error", inputs: [{ name: "m", type: "string" }] }], data: raw });
+    return String(d.args?.[0] ?? "error");
+  } catch {
+    /* not Error(string) */
+  }
+  const bytes = raw.slice(2).match(/.{2}/g)?.map((b) => parseInt(b, 16)) ?? [];
+  if (bytes.length > 0 && bytes.every((b) => b >= 0x20 && b < 0x7f)) return String.fromCharCode(...bytes);
+  return `revert ${raw}`;
+}

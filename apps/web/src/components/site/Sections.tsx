@@ -46,7 +46,7 @@ export function HowItWorks() {
     {
       n: "02",
       t: "Deposit once",
-      d: "Fund the plan with USDG, or with ETH and we convert it. Top up or withdraw idle funds whenever you like — it never leaves your control.",
+      d: "Fund the plan with USDG, or with ETH and it is converted to USDG on the spot (at least $10 to start). Top up or withdraw idle funds whenever you like — it never leaves your control.",
     },
     {
       n: "03",
@@ -168,8 +168,9 @@ export function Faq() {
     ["What am I actually buying?", "Robinhood Stock Tokens: on-chain tokens that track the price of a listed stock. They give you economic exposure to the stock, not shares or shareholder rights."],
     ["When do purchases happen?", "Daily plans buy at 00:00 UTC every day, weekly plans on Monday 00:00 UTC, monthly plans every 30 days. If a buy is ever missed it is skipped — you are never charged twice."],
     ["What does it cost?", "One fee per buy: 0.75% daily, 0.50% weekly, 0.25% monthly. Withdrawing idle funds or claiming stock costs 0.25%. Depositing is free. Every fee is capped at 0.90% in the contract."],
-    ["Can I stop or get my money back?", "Yes. Pause a plan, change the amount, or withdraw idle USDG and ETH at any time. Stock you have already bought is yours to claim."],
-    ["Can I pay with ETH?", "Yes. ETH is converted to USDG when you deposit (default), or held and converted at each buy if you prefer."],
+    ["Can I stop or get my money back?", "Yes. Pause a plan, change the amount, or withdraw idle USDG at any time. Stock you have already bought is yours to claim."],
+    ["Can I pay with ETH?", "Yes. ETH is converted to USDG the moment you deposit it, with a 0.5% price tolerance, so the plan always holds USDG. Withdrawals are paid in USDG."],
+    ["Is there a minimum?", "Each buy is at least $10, and a plan needs at least $10 to start (or to top up). That keeps tiny plans from clogging the shared buy for everyone."],
     ["Who can use DCA?", "DCA is not available to US persons or in the United Kingdom, Canada, Australia and sanctioned regions. The contracts are public; this interface is not offered there."],
     ["Is it audited?", "Not yet. The code is open, fully tested and documented, but you should treat it as early software and only use funds you can afford to lose."],
   ];

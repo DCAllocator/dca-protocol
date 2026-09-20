@@ -80,11 +80,6 @@ export const ClaimHelperAbi = [
             "internalType": "uint128"
           },
           {
-            "name": "wethIdle",
-            "type": "uint128",
-            "internalType": "uint128"
-          },
-          {
             "name": "stockAccrued",
             "type": "uint128",
             "internalType": "uint128"
@@ -98,16 +93,6 @@ export const ClaimHelperAbi = [
             "name": "paused",
             "type": "bool",
             "internalType": "bool"
-          },
-          {
-            "name": "zapWethEachEpoch",
-            "type": "bool",
-            "internalType": "bool"
-          },
-          {
-            "name": "maxWethSlippageBps",
-            "type": "uint16",
-            "internalType": "uint16"
           }
         ]
       }
