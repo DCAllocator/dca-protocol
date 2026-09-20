@@ -1,0 +1,30 @@
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/*/31337/
+contracts/broadcast/**/dry-run/
+contracts/coverage/
+contracts/lcov.info
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+apps/web/.next/
+apps/web/.next-*/
+apps/web/out/
+apps/web/.env*.local
+apps/web/src/abi/*.json
+apps/web/tsconfig.tsbuildinfo
+
+# OS
+.DS_Store
+
+# Local-chain artifacts
+contracts/deployments/31337.json
+contracts/cache/*/31337/
+.claude/launch.json
+apps/scheduler/dist/

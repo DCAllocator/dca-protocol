@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+/// @notice One hop of a swap path. `extra` is adapter-specific (V3: abi.encode(pool); V4: abi.encode(PoolKey)).
+struct Route {
+    uint8 protocol; // 1 = UniV3, 2 = UniV4, 3 = RamsesV3
+    address tokenIn;
+    address tokenOut;
+    uint24 fee; // v3 fee tier (informational for v4 — the PoolKey in `extra` is authoritative)
+    bytes extra;
+}
+
+/// @title IAggregatorRouter
+/// @notice The only swap entry point the vaults call. Probes every enabled adapter (direct + one hop via WETH),
+///         picks the highest output subject to a price-impact cap, and executes.
+interface IAggregatorRouter {
+    error NoRoute(address tokenIn, address tokenOut);
+    error InsufficientOutput(uint256 amountOut, uint256 minOut);
+    error InvalidPath();
+    error AdapterNotSet(uint8 protocol);
+    error ZeroAmount();
+
+    event AdapterSet(uint8 indexed protocol, address adapter);
+    event MaxPriceImpactSet(uint16 bps);
+    event Swapped(
+        address indexed caller, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut
+    );
+
+    /// @notice Best quote for `amountIn` of `tokenIn` -> `tokenOut`. Not a view: adapters simulate swaps.
+    /// @return amountOut Expected output.
+    /// @return path      Route(s) to execute (1 or 2 hops).
+    function quote(address tokenIn, address tokenOut, uint256 amountIn)
+        external
+        returns (uint256 amountOut, Route[] memory path);
+
+    /// @notice Same as `quote` plus the price impact (bps vs pool mid-price) of the chosen path.
+    function quoteWithImpact(address tokenIn, address tokenOut, uint256 amountIn)
+        external
+        returns (uint256 amountOut, Route[] memory path, uint256 impactBps);
+
+    /// @notice Quote then swap along the best path. Pulls `amountIn` from msg.sender (approval required).
+    function swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minOut, address recipient)
+        external
+        returns (uint256 amountOut);
+
+    /// @notice Swap along an explicit path (from `quote`, or a trusted override). Pulls `amountIn` from msg.sender.
+    function swapWithRoute(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minOut,
+        address recipient,
+        Route[] calldata path
+    ) external returns (uint256 amountOut);
+
+    function weth() external view returns (address);
+    function maxPriceImpactBps() external view returns (uint16);
+}

@@ -1,0 +1,16 @@
+{
+  "depositFeeBps": 0,
+  "withdrawFeeBps": 25,
+  "claimFeeBps": 25,
+  "dailyPurchaseFeeBps": 75,
+  "weeklyPurchaseFeeBps": 50,
+  "monthlyPurchaseFeeBps": 25,
+  "maxFeeBps": 90,
+  "autoDistributeThreshold": "10000",
+  "feeHalveThreshold": "50000",
+  "maxPriceImpactBps": 150,
+  "maxWethSlippageBps": 100,
+  "swapSlippageBps": 50,
+  "maxPlansPerTx": 150,
+  "keeperTipBps": 0
+}

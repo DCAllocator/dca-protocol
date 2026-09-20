@@ -1,0 +1,31 @@
+{
+  "name": "@dca/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "dev:test-vault": "NEXT_PUBLIC_SHOW_TEST_VAULT=1 next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "abi": "node scripts/export-abi.mjs",
+    "env:local": "node scripts/env-from-deployment.mjs 31337"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.103.1",
+    "next": "^15.5.25",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "viem": "^2.56.8",
+    "wagmi": "^2.19.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,331 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------
+   Design tokens — the $PIE visual system, dark register. One ladder of
+   warm greys, one step of contrast between every layer:
+
+   surface-0  #0c0c0b  frame      sidebar, key stat tile, modal chrome
+   surface-1  #121211  canvas     page background
+   surface-2  #1a1a18  surface    cards, panels, tables
+   surface-3  #232220  surface-2  inputs, hover rows, tiles, segmented
+   surface-4  #2f2e2a  fill       bars, thumbs, elevated controls
+   ------------------------------------------------------------------ */
+@theme {
+  --color-surface-0: #0c0c0b;
+  --color-surface-1: #121211;
+  --color-surface-2: #1a1a18;
+  --color-surface-3: #232220;
+  --color-surface-4: #2f2e2a;
+  --color-line: rgb(255 255 255 / 0.11);
+  --color-line-strong: rgb(255 255 255 / 0.24);
+  --color-ink: #ededea;
+  --color-ink-2: #a7a5a0;
+  --color-ink-3: #7b7975;
+  --color-lime: #ccff00;
+  --color-lime-2: #a7d100;
+  --color-lime-ink: #14120d;
+  --color-good: #30d158;
+  --color-warn: #ffd166;
+  --color-bad: #ff6b3d;
+  --color-amber-bg: #2b2100;
+  --color-amber-line: #6b5200;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+
+  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+html {
+  color-scheme: dark;
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-surface-1);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-lime);
+  color: var(--color-lime-ink);
+}
+
+*:focus-visible {
+  outline: 2px solid var(--color-lime);
+  outline-offset: 1px;
+}
+
+/* Tailwind v4 preflight sets buttons to cursor: default; every enabled button should read as clickable. */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+/* ---------- shared primitives ---------- */
+
+@utility btn {
+  @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3.5 text-[13.5px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+}
+@utility btn-primary {
+  @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3.5 text-[13.5px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 bg-lime text-lime-ink hover:bg-lime-2;
+}
+@utility btn-secondary {
+  @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3.5 text-[13.5px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 border border-line-strong bg-transparent text-ink hover:border-ink hover:bg-white/5;
+}
+@utility btn-ghost {
+  @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3.5 text-[13.5px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 text-ink-2 hover:bg-white/5 hover:text-ink;
+}
+@utility btn-lg {
+  @apply h-12 px-6 text-[15px];
+}
+@utility btn-xs {
+  @apply h-8 px-3 text-[13px];
+}
+
+@utility input {
+  @apply h-10 w-full rounded-md border border-line-strong bg-surface-3 px-3 text-[14px] text-ink outline-none placeholder:text-ink-3 focus:border-ink focus:ring-[3px] focus:ring-lime/45;
+}
+@utility label {
+  @apply mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-3;
+}
+
+@utility chip {
+  @apply inline-flex h-[22px] items-center rounded-sm bg-surface-4 px-2 text-[11.5px] font-medium text-ink whitespace-nowrap;
+}
+@utility chip-lime {
+  @apply inline-flex h-[22px] items-center rounded-sm bg-lime px-2 text-[11.5px] font-medium text-lime-ink whitespace-nowrap;
+}
+@utility chip-warn {
+  @apply inline-flex h-[22px] items-center rounded-sm bg-amber-bg px-2 text-[11.5px] font-medium text-warn whitespace-nowrap;
+}
+/* dev / environment tag (the amber "DEV · env" register) */
+@utility chip-dev {
+  @apply inline-flex h-[22px] items-center rounded-sm border border-amber-line bg-amber-bg px-2 font-mono text-[10.5px] font-medium tracking-[0.08em] text-warn uppercase whitespace-nowrap;
+}
+
+/* panel = titled surface. header on surface-1, body on surface-2 */
+@utility panel {
+  @apply overflow-hidden rounded-xl border border-line bg-surface-2;
+}
+@utility panel-head {
+  @apply flex h-10 items-center justify-between gap-2 border-b border-line px-3.5 text-[11.5px] font-medium uppercase tracking-[0.08em] text-ink-2;
+}
+@utility panel-body {
+  @apply p-3;
+}
+
+/* data table */
+@utility tbl {
+  @apply w-full border-collapse text-[13px];
+}
+.tbl th {
+  @apply h-10 border-b border-line px-3 text-left text-[11.5px] font-medium uppercase tracking-[0.06em] text-ink-3 whitespace-nowrap;
+}
+.tbl td {
+  @apply border-b border-line px-3 py-2.5 align-middle whitespace-nowrap;
+}
+/* sortable header: the whole label is the button; the arrow only lights up on the sorted column */
+.tbl th .sort-btn {
+  @apply inline-flex cursor-pointer items-center gap-1.5 bg-transparent p-0 font-[inherit] tracking-[inherit] text-[inherit] uppercase hover:text-ink;
+}
+.tbl th .sort-btn .arrow {
+  @apply text-[9px] opacity-35;
+}
+.tbl th.is-sorted {
+  @apply text-ink;
+}
+.tbl th.is-sorted .sort-btn .arrow {
+  @apply opacity-100;
+}
+.tbl tbody tr:last-child td {
+  @apply border-b-0;
+}
+.tbl tbody tr:hover td {
+  @apply bg-surface-3;
+}
+.tbl tr.is-selected td {
+  @apply bg-surface-3;
+}
+.tbl tr.is-selected td:first-child {
+  box-shadow: inset 2px 0 0 var(--color-lime);
+}
+/* pinned action column: stays visible while a wide table scrolls */
+.tbl .stick-r {
+  position: sticky;
+  right: 0;
+  background: var(--color-surface-2);
+  box-shadow: -1px 0 0 var(--color-line);
+}
+.tbl tbody tr:hover .stick-r {
+  background: var(--color-surface-3);
+}
+@utility num {
+  @apply font-mono tabular-nums;
+}
+
+/* sidebar + tabs */
+@utility side-item {
+  @apply flex h-10 items-center gap-2.5 rounded-lg px-3 text-[14px] font-medium text-ink-2 transition-colors hover:bg-white/[0.06] hover:text-ink;
+}
+@utility side-item-active {
+  @apply bg-white/[0.08] text-ink;
+}
+@utility side-label {
+  @apply px-3 pt-5 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3;
+}
+@utility topbar-tab {
+  @apply relative flex h-11 items-center px-3 text-[13px] font-medium text-ink-2 hover:text-ink;
+}
+@utility topbar-tab-active {
+  @apply text-ink after:absolute after:inset-x-3 after:bottom-0 after:h-[2px] after:bg-lime;
+}
+
+/* app cards: surface on canvas, one step lighter */
+@utility card {
+  @apply rounded-xl border border-line bg-surface-2;
+}
+@utility card-pad {
+  @apply p-5;
+}
+@utility card-title {
+  @apply text-[13px] text-ink-2;
+}
+@utility page-title {
+  @apply text-[24px] font-medium tracking-[-0.005em] text-ink;
+}
+@utility page-sub {
+  @apply mt-1 text-[13.5px] text-ink-2;
+}
+@utility stat-value {
+  @apply mt-1.5 text-[32px] font-medium leading-none tracking-[-0.01em] text-ink;
+}
+
+/* stat strip: one bordered surface, cells divided by hairlines, first cell on the black frame */
+@utility stat-strip {
+  @apply grid grid-cols-2 overflow-hidden rounded-xl border border-line bg-surface-2 md:grid-cols-4;
+}
+@utility stat-cell {
+  @apply -mb-px grid content-start gap-1 border-r border-b border-line px-4 py-3.5;
+}
+@utility stat-cell-key {
+  @apply bg-surface-0;
+}
+@utility stat-label {
+  @apply text-[12px] text-ink-2;
+}
+@utility stat-num {
+  @apply text-[24px] leading-[1.15] tracking-[-0.01em] text-ink tabular-nums;
+}
+
+/* option tiles (stock / frequency pickers) sit on a card, so they take the next step up */
+@utility tile {
+  @apply rounded-xl border border-line bg-surface-3 text-left transition-colors hover:border-line-strong;
+}
+@utility tile-active {
+  @apply border-lime bg-lime/5;
+}
+
+/* toolbar: search + segmented + count, in a panel head */
+@utility toolbar {
+  @apply flex flex-wrap items-center gap-2 border-b border-line px-3 py-2;
+}
+@utility search {
+  @apply relative min-w-[200px] max-w-[360px] flex-1;
+}
+
+/* range slider */
+.range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+.range:focus-visible {
+  outline: none;
+}
+.range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--color-lime) 0 var(--fill, 0%), var(--color-surface-4) var(--fill, 0%) 100%);
+}
+.range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-surface-4);
+}
+.range::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-lime);
+}
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -7px;
+  border-radius: 999px;
+  background: var(--color-ink);
+  border: 3px solid var(--color-lime);
+}
+.range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--color-ink);
+  border: 3px solid var(--color-lime);
+}
+.range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgb(204 255 0 / 0.45);
+}
+
+/* modal + menus */
+@utility overlay {
+  @apply fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 backdrop-blur-[2px] sm:items-center sm:p-4;
+}
+@utility menu {
+  @apply z-[60] min-w-40 overflow-hidden rounded-lg border border-line-strong bg-surface-3 py-1 shadow-[0_12px_32px_rgba(0,0,0,0.5)];
+}
+@utility menu-item {
+  @apply flex w-full items-center px-3 py-2 text-left text-[13px] text-ink-2 hover:bg-surface-4 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40;
+}
+
+/* landing helpers */
+@utility container-x {
+  @apply mx-auto w-full max-w-6xl px-6;
+}
+@utility eyebrow {
+  @apply text-[12px] font-semibold uppercase tracking-[0.12em] text-lime;
+}
+@utility h-section {
+  @apply text-3xl font-bold tracking-tight text-ink md:text-4xl;
+}
+@utility lede {
+  @apply text-[17px] leading-relaxed text-ink-2;
+}
+@utility grid-fade {
+  background-image: linear-gradient(to right, var(--color-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-line) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at top right, black 20%, transparent 70%);
+}
+
+details > summary {
+  list-style: none;
+  cursor: pointer;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}

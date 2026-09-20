@@ -1,0 +1,13 @@
+{
+  "name": "dca-protocol",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "pnpm --filter @dca/web dev",
+    "dev:test-vault": "pnpm --filter @dca/web dev:test-vault",
+    "scheduler": "pnpm --filter @dca/scheduler dev",
+    "fork": "bash scripts/fork.sh",
+    "protocol:deploy": "bash scripts/deploy.sh"
+  },
+  "packageManager": "pnpm@10.33.0"
+}
