@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Target** | `contracts/src/**` in the working tree after remediation of the v0.1 findings (diff vs tag `v0.1`: 15 files, +604/−635 in `src` + `script`); solc 0.8.28, via-ir, OZ 5.1.0 |
+| **Target** | `contracts/src/**` at tag `v0.2` (commit `8abc39f`; diff vs `v0.1`: 15 files, +604/−635 in `src` + `script`); solc 0.8.28, via-ir, OZ 5.1.0. Apps migrated in `babe8f3`. |
 | **Date** | 2026-09-20 |
 | **Previous report** | [`audit/AUDIT-v0.1.md`](audit/AUDIT-v0.1.md) — 2 High, 3 Medium, 6 Low, 15 Info |
 | **Method** | Line-by-line re-review of every changed file; every v0.1 finding re-tested against the remediated code with a permanent regression test (`contracts/test/audit/`, 30 tests); existing suites rewritten for the new API; invariants tightened and re-run at CI depth (fuzz 2048, invariants 256×64); Slither 0.11.6; coverage; contract sizes. |
@@ -77,16 +77,17 @@ Nothing else surfaced: reentrancy (all entries `nonReentrant`, incl. `prunePlan`
 | I-12 | Confirm Robinhood Chain's ArbOS supports `PUSH0` / `MCOPY` (`evm_version = cancun`); bump OZ to latest 5.x. |
 | I-13 | Owner powers apply instantly (`setRouter`, `approveHop`, `setFees`, `setOperator`, `setMinimums`); put the owner behind a timelock and monitor `HopApproved` / `HopRevoked` / `RouterSet` / `OperatorSet`. |
 
-## 5. Required follow-ups outside `contracts/` (not changed here)
+## 5. App migration (done — commit `babe8f3`, after tag `v0.2`)
 
-The ABI changed; these files consume the old one and will need updating (two of them had uncommitted edits in your tree, so they were left alone):
+Both apps now consume the v0.2 ABI (`pnpm --filter @dca/web abi`, `pnpm --filter @dca/scheduler abi`). Points specific to the changed zap behaviour:
 
-- `apps/web/src/app/app/create/page.tsx` — `createPlan(stock, amountPerEpoch, recipient, usdgAmount, wethAmount, minUsdgOut)` (no `zapWethEachEpoch`); enforce `amountPerEpoch ≥ minAmountPerEpoch()` and funding ≥ `minDeposit()` client-side.
-- `apps/web/src/app/app/plans/page.tsx` — `withdrawIdle(planId, usdgAmount)`; drop `wethIdle` / "also withdraw ETH"; `Plan` has no `wethIdle`, `zapWethEachEpoch`, `maxWethSlippageBps`; `setPlanSlippage` is gone; deposits below `minDeposit()` revert.
-- `apps/web/src/hooks/useProtocol.ts`, `components/site/Live.tsx` — remove `wethIdle` / `totalWethIdle` / `maxWethSlippageBps`; add `usdgDust`, `minAmountPerEpoch`, `minDeposit` if displayed.
-- `apps/web/src/hooks/useLogs.ts`, `apps/scheduler/src/scheduler.ts` — events: `PlanSkippedSlippage` / `PlanSkippedNoRoute` are gone; add `EpochPageSkipped(stock, epochId, from, to, reason)` and `DustSwept`.
-- `apps/scheduler` — the bot wallet must be an `EpochKeeper` operator (`pnpm fork` does this; production via `KEEPERS`). Consider computing a reference-price `minOut` and calling `run(job, 0, abi.encode(path, minOut))` (see §3).
-- `pnpm --filter @dca/web abi` to re-export ABIs; `ClaimHelper.Position` lost three fields.
+- **Create / deposit with ETH.** `createPlan` has no zap-mode flag; ETH is converted inside the call. The UI quotes the amount **net of any deposit fee** (what the vault actually swaps) and sends `minOut = quote × (1 − 0.5%)`; the 10 USDG `minDeposit` is enforced client-side on the *worst case* the swap may credit (quote − tolerance), so a deposit that would revert on chain is blocked before signing. Copy states that the plan holds USDG, never ETH, and that any unfilled sliver of ETH is returned in the same transaction.
+- **Funding is required.** A plan cannot be started unfunded; the create page reads `minAmountPerEpoch` / `minDeposit` from the vault (fallback 10 USDG) for the slider floor, validation and messaging.
+- **Withdraw / remove** are USDG-only (`withdrawIdle(planId, amount)`); the ETH checkbox and `wethIdle` displays are gone; TVL and "waiting to buy" no longer have an ETH component.
+- **Skipped pages** (`EpochPageSkipped`) are decoded (router custom errors / `Error(string)` / ASCII tag) and shown inline in the Activity feed ("Skipped — no approved route within the impact cap. Nobody was charged…"); the scheduler logs the same as a warning.
+- **Scheduler pre-flight** checks `isOperator` / `owner` for its wallet and logs an explicit error otherwise (every run would revert `NotOperator`).
+
+Verified end to end on an isolated anvil + `DeployLocal` stack: ETH-funded create (blocked below the minimum, accepted above; vault WETH balance 0, `usdg.balanceOf == totalUsdgIdle`), operator fill through the scheduler, ETH top-up (min check), partial USDG withdrawal, remove, and a skipped page after revoking the stock's hop.
 
 ## 6. Code maturity (Trail of Bits categories) — v0.1 → v0.2
 
