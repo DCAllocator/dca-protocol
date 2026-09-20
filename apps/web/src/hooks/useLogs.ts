@@ -2,7 +2,8 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { usePublicClient } from "wagmi";
-import { parseAbiItem, type Address } from "viem";
+import { decodeErrorResult, parseAbiItem, type Address } from "viem";
+import { AggregatorRouterAbi } from "@/abi";
 import { LOG_LOOKBACK } from "@/lib/config";
 
 export const planFilledEvent = parseAbiItem(
@@ -11,13 +12,12 @@ export const planFilledEvent = parseAbiItem(
 export const epochPageEvent = parseAbiItem(
   "event EpochPageExecuted(address indexed stock, uint32 indexed epochId, uint256 fromIndex, uint256 toIndex, uint256 netUsdg, uint256 stockOut, uint32 plansFilled)",
 );
-export const skippedSlippageEvent = parseAbiItem(
-  "event PlanSkippedSlippage(uint256 indexed planId, uint32 indexed epochId, uint256 impactBps, uint256 capBps)",
+/** A page whose purchase could not be quoted / executed: nobody was charged, the cursor still advanced. */
+export const epochPageSkippedEvent = parseAbiItem(
+  "event EpochPageSkipped(address indexed stock, uint32 indexed epochId, uint256 fromIndex, uint256 toIndex, bytes reason)",
 );
 export const planIndexedEvent = parseAbiItem("event PlanIndexed(uint256 indexed planId, address indexed stock, bool indexed active)");
-export const idleWithdrawnEvent = parseAbiItem(
-  "event IdleWithdrawn(uint256 indexed planId, uint256 usdgAmount, uint256 usdgFee, uint256 wethAmount, uint256 wethFee, bool unwrapped)",
-);
+export const idleWithdrawnEvent = parseAbiItem("event IdleWithdrawn(uint256 indexed planId, uint256 usdgAmount, uint256 usdgFee)");
 
 export type FillLog = {
   vault: Address;
@@ -48,9 +48,54 @@ export type EpochLog = {
   timestamp?: number;
 };
 
-export type WithdrawLog = { vault: Address; planId: bigint; usdgFee: bigint; wethFee: bigint; blockNumber: bigint; timestamp?: number };
+export type WithdrawLog = { vault: Address; planId: bigint; usdgFee: bigint; blockNumber: bigint; timestamp?: number };
 
-/** PlanFilled + EpochPageExecuted + IdleWithdrawn over the last LOG_LOOKBACK blocks for the given vaults. */
+export type SkipLog = {
+  vault: Address;
+  stock: Address;
+  epochId: number;
+  fromIndex: bigint;
+  toIndex: bigint;
+  reason: string;
+  blockNumber: bigint;
+  logIndex: number;
+  txHash: `0x${string}`;
+  timestamp?: number;
+};
+
+/**
+ * Human-readable skip reason. The vault forwards the router's revert data verbatim (a custom error such as
+ * `NoRoute` / `InsufficientOutput`, or `Error(string)`), or a short ASCII tag of its own (`"quote too small"`).
+ */
+export function describeSkipReason(raw: `0x${string}` | undefined): string {
+  if (!raw || raw === "0x") return "no route";
+  try {
+    const d = decodeErrorResult({ abi: AggregatorRouterAbi, data: raw });
+    switch (d.errorName) {
+      case "NoRoute":
+        return "no approved route within the impact cap";
+      case "InsufficientOutput":
+        return "price moved past the slippage tolerance";
+      case "RouteNotApproved":
+        return "route not approved";
+      default:
+        return d.errorName;
+    }
+  } catch {
+    /* not a router error */
+  }
+  try {
+    const d = decodeErrorResult({ abi: [{ type: "error", name: "Error", inputs: [{ name: "m", type: "string" }] }], data: raw });
+    return String(d.args?.[0] ?? "error");
+  } catch {
+    /* not Error(string) */
+  }
+  const bytes = raw.slice(2).match(/.{2}/g)?.map((b) => parseInt(b, 16)) ?? [];
+  if (bytes.length > 0 && bytes.every((b) => b >= 0x20 && b < 0x7f)) return String.fromCharCode(...bytes);
+  return "router error";
+}
+
+/** PlanFilled + EpochPageExecuted + EpochPageSkipped + IdleWithdrawn over the last LOG_LOOKBACK blocks for the given vaults. */
 export function useEpochLogs(vaults?: Address[]) {
   const client = usePublicClient();
   return useQuery({
@@ -60,12 +105,13 @@ export function useEpochLogs(vaults?: Address[]) {
     queryFn: async () => {
       const head = await client!.getBlockNumber();
       const fromBlock = head > LOG_LOOKBACK ? head - LOG_LOOKBACK : 0n;
-      const [fills, epochs, withdrawals] = await Promise.all([
+      const [fills, epochs, skips, withdrawals] = await Promise.all([
         client!.getLogs({ address: vaults, event: planFilledEvent, fromBlock, toBlock: head }),
         client!.getLogs({ address: vaults, event: epochPageEvent, fromBlock, toBlock: head }),
+        client!.getLogs({ address: vaults, event: epochPageSkippedEvent, fromBlock, toBlock: head }),
         client!.getLogs({ address: vaults, event: idleWithdrawnEvent, fromBlock, toBlock: head }),
       ]);
-      const blocks = Array.from(new Set([...fills, ...epochs, ...withdrawals].map((l) => l.blockNumber)));
+      const blocks = Array.from(new Set([...fills, ...epochs, ...skips, ...withdrawals].map((l) => l.blockNumber)));
       const ts = new Map<bigint, number>();
       await Promise.all(
         blocks.slice(-200).map(async (b) => {
@@ -100,15 +146,26 @@ export function useEpochLogs(vaults?: Address[]) {
         txHash: l.transactionHash,
         timestamp: ts.get(l.blockNumber),
       }));
+      const skipLogs: SkipLog[] = skips.map((l) => ({
+        vault: l.address,
+        stock: l.args.stock!,
+        epochId: Number(l.args.epochId!),
+        fromIndex: l.args.fromIndex!,
+        toIndex: l.args.toIndex!,
+        reason: describeSkipReason(l.args.reason),
+        blockNumber: l.blockNumber,
+        logIndex: l.logIndex,
+        txHash: l.transactionHash,
+        timestamp: ts.get(l.blockNumber),
+      }));
       const withdrawLogs: WithdrawLog[] = withdrawals.map((l) => ({
         vault: l.address,
         planId: l.args.planId!,
         usdgFee: l.args.usdgFee!,
-        wethFee: l.args.wethFee!,
         blockNumber: l.blockNumber,
         timestamp: ts.get(l.blockNumber),
       }));
-      return { fills: fillLogs.reverse(), epochs: epochLogs.reverse(), withdrawals: withdrawLogs.reverse(), fromBlock, head };
+      return { fills: fillLogs.reverse(), epochs: epochLogs.reverse(), skips: skipLogs.reverse(), withdrawals: withdrawLogs.reverse(), fromBlock, head };
     },
   });
 }

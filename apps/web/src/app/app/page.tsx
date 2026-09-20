@@ -22,7 +22,6 @@ export default function Overview() {
   const inWindow = (logs.data?.epochs ?? []).reduce((a, e) => a + e.netUsdg, 0n);
   const series = cumulativeSeries(logs.data?.epochs, bought > inWindow ? bought - inWindow : 0n);
   const last30 = sumLastDays(logs.data?.epochs, 30);
-  const wethPrice = tvl.prices[dir.weth.toLowerCase()];
 
   return (
     <>
@@ -39,11 +38,10 @@ export default function Overview() {
       />
 
       <div className="grid gap-4 md:grid-cols-2">
-        <StatCard label="Total value locked" value={tvl.ready ? fmtUsd(tvl.total) : "—"} hint="USDG and ETH waiting to buy, plus stock held for you on the vaults.">
+        <StatCard label="Total value locked" value={tvl.ready ? fmtUsd(tvl.total) : "—"} hint="USDG waiting to buy, plus stock held for you on the vaults.">
           <Composition
             parts={[
               { label: `USDG ${fmtUsd(tvl.usdg)}`, value: n(tvl.usdg), tone: "bg-lime" },
-              { label: `ETH ${fmtUsd(tvl.ethUsd)}`, value: n(tvl.ethUsd), tone: "bg-ink-2" },
               { label: `Stocks ${fmtUsd(tvl.stockUsd)}`, value: n(tvl.stockUsd), tone: "bg-ink-3" },
             ]}
           />
@@ -79,8 +77,7 @@ export default function Overview() {
           </thead>
           <tbody>
             {infos.map((v) => {
-              const ethUsd = (v.totalWethIdle ?? 0n) === 0n ? 0n : valueOf(v.totalWethIdle, wethPrice, 18);
-              const waiting = ethUsd === undefined ? undefined : (v.totalUsdgIdle ?? 0n) + ethUsd;
+              const waiting = v.totalUsdgIdle;
               const held = stocks.reduce<bigint | undefined>((acc, s) => {
                 if (acc === undefined) return undefined;
                 const amt = tvl.perVault[v.kind][s.address.toLowerCase()] ?? 0n;

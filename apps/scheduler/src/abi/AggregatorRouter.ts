@@ -43,6 +43,162 @@ export const AggregatorRouterAbi = [
   },
   {
     "type": "function",
+    "name": "approveHop",
+    "inputs": [
+      {
+        "name": "route",
+        "type": "tuple",
+        "internalType": "struct Route",
+        "components": [
+          {
+            "name": "protocol",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "tokenIn",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "tokenOut",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "extra",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "approvedHops",
+    "inputs": [
+      {
+        "name": "tokenIn",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "tokenOut",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple[]",
+        "internalType": "struct Route[]",
+        "components": [
+          {
+            "name": "protocol",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "tokenIn",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "tokenOut",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "extra",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "hopKey",
+    "inputs": [
+      {
+        "name": "r",
+        "type": "tuple",
+        "internalType": "struct Route",
+        "components": [
+          {
+            "name": "protocol",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "tokenIn",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "tokenOut",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "extra",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "isApprovedHop",
+    "inputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "maxPriceImpactBps",
     "inputs": [],
     "outputs": [
@@ -76,19 +232,6 @@ export const AggregatorRouterAbi = [
         "name": "",
         "type": "address",
         "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "protocols",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint8[]",
-        "internalType": "uint8[]"
       }
     ],
     "stateMutability": "view"
@@ -150,6 +293,57 @@ export const AggregatorRouterAbi = [
             "internalType": "bytes"
           }
         ]
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "quotePath",
+    "inputs": [
+      {
+        "name": "path",
+        "type": "tuple[]",
+        "internalType": "struct Route[]",
+        "components": [
+          {
+            "name": "protocol",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "tokenIn",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "tokenOut",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "extra",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      },
+      {
+        "name": "amountIn",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "amountOut",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "nonpayable"
@@ -224,6 +418,46 @@ export const AggregatorRouterAbi = [
     "type": "function",
     "name": "renounceOwnership",
     "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "revokeHop",
+    "inputs": [
+      {
+        "name": "route",
+        "type": "tuple",
+        "internalType": "struct Route",
+        "components": [
+          {
+            "name": "protocol",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "tokenIn",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "tokenOut",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "extra",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -415,6 +649,98 @@ export const AggregatorRouterAbi = [
   },
   {
     "type": "event",
+    "name": "HopApproved",
+    "inputs": [
+      {
+        "name": "hopKey",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "route",
+        "type": "tuple",
+        "indexed": false,
+        "internalType": "struct Route",
+        "components": [
+          {
+            "name": "protocol",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "tokenIn",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "tokenOut",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "extra",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "HopRevoked",
+    "inputs": [
+      {
+        "name": "hopKey",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "route",
+        "type": "tuple",
+        "indexed": false,
+        "internalType": "struct Route",
+        "components": [
+          {
+            "name": "protocol",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "tokenIn",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "tokenOut",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "extra",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "MaxPriceImpactSet",
     "inputs": [
       {
@@ -514,6 +840,44 @@ export const AggregatorRouterAbi = [
   },
   {
     "type": "error",
+    "name": "AdapterProtocolMismatch",
+    "inputs": [
+      {
+        "name": "expected",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "actual",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "HopAlreadyApproved",
+    "inputs": [
+      {
+        "name": "hopKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "HopNotApproved",
+    "inputs": [
+      {
+        "name": "hopKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ImpactCapOutOfRange",
     "inputs": [
       {
@@ -542,6 +906,11 @@ export const AggregatorRouterAbi = [
   {
     "type": "error",
     "name": "InvalidPath",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidRoute",
     "inputs": []
   },
   {
@@ -595,6 +964,17 @@ export const AggregatorRouterAbi = [
   },
   {
     "type": "error",
+    "name": "RouteNotApproved",
+    "inputs": [
+      {
+        "name": "hopKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "SafeERC20FailedOperation",
     "inputs": [
       {
@@ -603,6 +983,22 @@ export const AggregatorRouterAbi = [
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "TooManyHops",
+    "inputs": [
+      {
+        "name": "pairKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ZeroAddress",
+    "inputs": []
   },
   {
     "type": "error",

@@ -1,9 +1,5 @@
 export const PlanVaultAbi = [
   {
-    "type": "receive",
-    "stateMutability": "payable"
-  },
-  {
     "type": "function",
     "name": "acceptOwnership",
     "inputs": [],
@@ -96,11 +92,6 @@ export const PlanVaultAbi = [
         "name": "amountPerEpoch",
         "type": "uint96",
         "internalType": "uint96"
-      },
-      {
-        "name": "zapWethEachEpoch",
-        "type": "bool",
-        "internalType": "bool"
       },
       {
         "name": "recipient",
@@ -238,6 +229,19 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
+    "name": "dustSweepMinUsdg",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "effectivePurchaseFeeBps",
     "inputs": [
       {
@@ -359,11 +363,6 @@ export const PlanVaultAbi = [
             "name": "swapSlippageBps",
             "type": "uint16",
             "internalType": "uint16"
-          },
-          {
-            "name": "maxWethSlippageBps",
-            "type": "uint16",
-            "internalType": "uint16"
           }
         ]
       }
@@ -407,17 +406,7 @@ export const PlanVaultAbi = [
             "internalType": "uint32"
           },
           {
-            "name": "maxWethSlippageBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
             "name": "paused",
-            "type": "bool",
-            "internalType": "bool"
-          },
-          {
-            "name": "zapWethEachEpoch",
             "type": "bool",
             "internalType": "bool"
           },
@@ -428,11 +417,6 @@ export const PlanVaultAbi = [
           },
           {
             "name": "usdgIdle",
-            "type": "uint128",
-            "internalType": "uint128"
-          },
-          {
-            "name": "wethIdle",
             "type": "uint128",
             "internalType": "uint128"
           },
@@ -563,6 +547,32 @@ export const PlanVaultAbi = [
         "name": "",
         "type": "uint16",
         "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "minAmountPerEpoch",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "minDeposit",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -747,6 +757,19 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
+    "name": "setDustSweepMin",
+    "inputs": [
+      {
+        "name": "minUsdg",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setFeeManager",
     "inputs": [
       {
@@ -809,11 +832,6 @@ export const PlanVaultAbi = [
             "name": "swapSlippageBps",
             "type": "uint16",
             "internalType": "uint16"
-          },
-          {
-            "name": "maxWethSlippageBps",
-            "type": "uint16",
-            "internalType": "uint16"
           }
         ]
       }
@@ -860,6 +878,24 @@ export const PlanVaultAbi = [
         "name": "n",
         "type": "uint16",
         "internalType": "uint16"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setMinimums",
+    "inputs": [
+      {
+        "name": "minAmountPerEpoch_",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "minDeposit_",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [],
@@ -921,24 +957,6 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
-    "name": "setPlanSlippage",
-    "inputs": [
-      {
-        "name": "planId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "maxWethSlippageBps",
-        "type": "uint16",
-        "internalType": "uint16"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "setRouter",
     "inputs": [
       {
@@ -989,6 +1007,13 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
+    "name": "sweepDust",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "totalNotionalUsdg",
     "inputs": [],
     "outputs": [
@@ -1022,19 +1047,6 @@ export const PlanVaultAbi = [
   {
     "type": "function",
     "name": "totalUsdgIdle",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "totalWethIdle",
     "inputs": [],
     "outputs": [
       {
@@ -1087,6 +1099,19 @@ export const PlanVaultAbi = [
         "name": "",
         "type": "uint8",
         "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "usdgDust",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -1149,6 +1174,19 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
+    "name": "wethDust",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "withdrawIdle",
     "inputs": [
       {
@@ -1160,16 +1198,6 @@ export const PlanVaultAbi = [
         "name": "usdgAmount",
         "type": "uint256",
         "internalType": "uint256"
-      },
-      {
-        "name": "wethAmount",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "unwrap",
-        "type": "bool",
-        "internalType": "bool"
       }
     ],
     "outputs": [],
@@ -1251,6 +1279,44 @@ export const PlanVaultAbi = [
   },
   {
     "type": "event",
+    "name": "DustSweepMinSet",
+    "inputs": [
+      {
+        "name": "minUsdg",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "DustSwept",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "EpochExecuted",
     "inputs": [
       {
@@ -1319,6 +1385,43 @@ export const PlanVaultAbi = [
   },
   {
     "type": "event",
+    "name": "EpochPageSkipped",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "epochId",
+        "type": "uint32",
+        "indexed": true,
+        "internalType": "uint32"
+      },
+      {
+        "name": "fromIndex",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "toIndex",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "reason",
+        "type": "bytes",
+        "indexed": false,
+        "internalType": "bytes"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "FeeConfigSet",
     "inputs": [
       {
@@ -1354,11 +1457,6 @@ export const PlanVaultAbi = [
           },
           {
             "name": "swapSlippageBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "maxWethSlippageBps",
             "type": "uint16",
             "internalType": "uint16"
           }
@@ -1414,24 +1512,6 @@ export const PlanVaultAbi = [
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
-      },
-      {
-        "name": "wethAmount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "wethFee",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "unwrapped",
-        "type": "bool",
-        "indexed": false,
-        "internalType": "bool"
       }
     ],
     "anonymous": false
@@ -1477,6 +1557,25 @@ export const PlanVaultAbi = [
         "type": "uint16",
         "indexed": false,
         "internalType": "uint16"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MinimumsSet",
+    "inputs": [
+      {
+        "name": "minAmountPerEpoch",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "minDeposit",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -1578,12 +1677,6 @@ export const PlanVaultAbi = [
         "type": "uint96",
         "indexed": false,
         "internalType": "uint96"
-      },
-      {
-        "name": "zapWethEachEpoch",
-        "type": "bool",
-        "indexed": false,
-        "internalType": "bool"
       },
       {
         "name": "recipient",
@@ -1702,75 +1795,6 @@ export const PlanVaultAbi = [
   },
   {
     "type": "event",
-    "name": "PlanSkippedNoRoute",
-    "inputs": [
-      {
-        "name": "planId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      },
-      {
-        "name": "epochId",
-        "type": "uint32",
-        "indexed": true,
-        "internalType": "uint32"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "PlanSkippedSlippage",
-    "inputs": [
-      {
-        "name": "planId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      },
-      {
-        "name": "epochId",
-        "type": "uint32",
-        "indexed": true,
-        "internalType": "uint32"
-      },
-      {
-        "name": "impactBps",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "capBps",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "PlanSlippageSet",
-    "inputs": [
-      {
-        "name": "planId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      },
-      {
-        "name": "maxWethSlippageBps",
-        "type": "uint16",
-        "indexed": false,
-        "internalType": "uint16"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
     "name": "Rescued",
     "inputs": [
       {
@@ -1850,12 +1874,6 @@ export const PlanVaultAbi = [
         "internalType": "uint256"
       },
       {
-        "name": "epochId",
-        "type": "uint32",
-        "indexed": true,
-        "internalType": "uint32"
-      },
-      {
         "name": "wethIn",
         "type": "uint256",
         "indexed": false,
@@ -1863,6 +1881,12 @@ export const PlanVaultAbi = [
       },
       {
         "name": "usdgOut",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "wethRefunded",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -1874,6 +1898,22 @@ export const PlanVaultAbi = [
     "type": "error",
     "name": "BadOrigin",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BelowMinimum",
+    "inputs": [
+      {
+        "name": "value",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "min",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
@@ -1906,11 +1946,6 @@ export const PlanVaultAbi = [
         "internalType": "uint32"
       }
     ]
-  },
-  {
-    "type": "error",
-    "name": "EthTransferFailed",
-    "inputs": []
   },
   {
     "type": "error",
@@ -1983,8 +2018,19 @@ export const PlanVaultAbi = [
   },
   {
     "type": "error",
-    "name": "OnlyWeth",
-    "inputs": []
+    "name": "OverrideMinOutTooLow",
+    "inputs": [
+      {
+        "name": "minOut",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "required",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",

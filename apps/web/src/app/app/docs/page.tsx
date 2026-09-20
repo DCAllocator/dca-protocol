@@ -40,7 +40,11 @@ export default function Docs() {
                 <b>Daily</b> plans buy every day at 00:00 UTC. <b>Weekly</b> plans buy every Monday at 00:00 UTC. <b>Monthly</b> plans buy every 30 days.
               </li>
               <li>Each buy spends the amount you set, as long as the plan has funds. If a plan runs dry it simply waits.</li>
-              <li>ETH is converted to USDG the moment you deposit it, so the plan always holds USDG.</li>
+              <li>
+                ETH is converted to USDG the moment you deposit it (0.5% price tolerance; any sliver the pool cannot fill is returned to you), so the plan
+                always holds USDG and withdrawals are paid in USDG.
+              </li>
+              <li>Each buy is at least $10, and a plan needs at least $10 to start or to top up.</li>
               <li>Stock you buy is held for you on the vault until you claim it — or is sent straight to your wallet if you hold $DCA.</li>
               <li>If a scheduled buy is ever missed it is skipped, never doubled up. You are charged at most once per period.</li>
             </ul>
@@ -118,9 +122,9 @@ export default function Docs() {
           <Section id="risks" title="Risks">
             <ul className="list-disc space-y-1 pl-5">
               <li>Stock Tokens are economic exposure to a stock, not shares or shareholder rights. They can trade away from the underlying price.</li>
-              <li>Buys execute against on-chain liquidity. Thin liquidity can mean a buy is skipped for that period.</li>
-              <li>No keeper, no buys. Missed buys are skipped, never caught up.</li>
-              <li>The contracts are unaudited software. Only use funds you can afford to lose.</li>
+              <li>Buys execute against on-chain liquidity. If a buy cannot be filled within the price limits it is skipped for that period and nobody is charged.</li>
+              <li>Only the protocol's operators can trigger buys. No operator, no buys. Missed buys are skipped, never caught up.</li>
+              <li>Early software: one round of review and remediation so far (see the repository's AUDIT.md). Only use funds you can afford to lose.</li>
               <li>Not offered to US persons or in the United Kingdom, Canada, Australia or sanctioned regions.</li>
             </ul>
           </Section>

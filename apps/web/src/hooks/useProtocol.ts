@@ -95,7 +95,6 @@ export type FeeConfig = {
   claimFeeBps: number;
   keeperTipBps: number;
   swapSlippageBps: number;
-  maxWethSlippageBps: number;
 };
 
 export type VaultInfo = {
@@ -106,11 +105,14 @@ export type VaultInfo = {
   epochLength?: number;
   currentEpochId?: number;
   totalUsdgIdle?: bigint;
-  totalWethIdle?: bigint;
   totalNotionalUsdg?: bigint;
   epochsCompleted?: bigint;
   autoDistributeThreshold?: bigint;
   feeHalveThreshold?: bigint;
+  /** Smallest `amountPerEpoch` a plan may have (USDG units). */
+  minAmountPerEpoch?: bigint;
+  /** Smallest USDG credit a deposit (or plan creation) must produce — ETH deposits after conversion. */
+  minDeposit?: bigint;
   paused?: boolean;
 };
 
@@ -122,11 +124,12 @@ export function useVaults(vaults?: VaultMap) {
     "epochLength",
     "currentEpochId",
     "totalUsdgIdle",
-    "totalWethIdle",
     "totalNotionalUsdg",
     "epochsCompleted",
     "autoDistributeThreshold",
     "feeHalveThreshold",
+    "minAmountPerEpoch",
+    "minDeposit",
     "paused",
   ] as const;
   const contracts = vaults
@@ -146,12 +149,13 @@ export function useVaults(vaults?: VaultMap) {
         epochLength: get(2) as number | undefined,
         currentEpochId: get(3) as number | undefined,
         totalUsdgIdle: get(4) as bigint | undefined,
-        totalWethIdle: get(5) as bigint | undefined,
-        totalNotionalUsdg: get(6) as bigint | undefined,
-        epochsCompleted: get(7) as bigint | undefined,
-        autoDistributeThreshold: get(8) as bigint | undefined,
-        feeHalveThreshold: get(9) as bigint | undefined,
-        paused: get(10) as boolean | undefined,
+        totalNotionalUsdg: get(5) as bigint | undefined,
+        epochsCompleted: get(6) as bigint | undefined,
+        autoDistributeThreshold: get(7) as bigint | undefined,
+        feeHalveThreshold: get(8) as bigint | undefined,
+        minAmountPerEpoch: get(9) as bigint | undefined,
+        minDeposit: get(10) as bigint | undefined,
+        paused: get(11) as boolean | undefined,
       };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -204,12 +208,9 @@ export type Position = {
   recipient: Address;
   amountPerEpoch: bigint;
   usdgIdle: bigint;
-  wethIdle: bigint;
   stockAccrued: bigint;
   lastEpochId: number;
   paused: boolean;
-  zapWethEachEpoch: boolean;
-  maxWethSlippageBps: number;
 };
 
 /** All of the user's plans across every shown vault via ClaimHelper. */
@@ -317,22 +318,17 @@ export function useStockHoldings(vaults?: VaultMap, stocks?: Stock[]) {
 }
 
 /**
- * Total value locked = USDG waiting + WETH waiting (at router price) + stock on hand (at router price).
+ * Total value locked = USDG waiting to buy + stock on hand (at router price). Vaults hold USDG only —
+ * ETH is converted the moment it is deposited — so there is no ETH component.
  * `ready` flips once every vault aggregate and every needed price has answered.
  */
 export function useTvl(dir?: Directory, vaults?: VaultMap, infos?: VaultInfo[], stocks?: Stock[]) {
   const holdings = useStockHoldings(vaults, stocks);
-  const tokens = useMemo(
-    () => (dir && stocks ? [{ address: dir.weth, decimals: 18 }, ...stocks.map((s) => ({ address: s.address, decimals: s.decimals }))] : undefined),
-    [dir, stocks],
-  );
+  const tokens = useMemo(() => (stocks ? stocks.map((s) => ({ address: s.address, decimals: s.decimals })) : undefined), [stocks]);
   const { prices, isLoading: pricesLoading } = usePrices(dir?.router, dir?.usdg, tokens);
 
   return useMemo(() => {
     const usdg = (infos ?? []).reduce((a, v) => a + (v.totalUsdgIdle ?? 0n), 0n);
-    const weth = (infos ?? []).reduce((a, v) => a + (v.totalWethIdle ?? 0n), 0n);
-    const wethPrice = dir ? prices[dir.weth.toLowerCase()] : undefined;
-    const ethUsd = weth === 0n ? 0n : valueOf(weth, wethPrice, 18);
     let stockUsd: bigint | undefined = 0n;
     const perStockUsd: Record<string, bigint | undefined> = {};
     for (const s of stocks ?? []) {
@@ -345,9 +341,9 @@ export function useTvl(dir?: Directory, vaults?: VaultMap, infos?: VaultInfo[], 
     }
     const infosReady = !!infos && infos.length > 0 && infos.every((v) => v.totalUsdgIdle !== undefined);
     const ready = infosReady && !holdings.isLoading && !pricesLoading;
-    const total = ethUsd === undefined || stockUsd === undefined ? undefined : usdg + ethUsd + stockUsd;
-    return { usdg, weth, ethUsd, stockUsd, perStockUsd, total, ready, prices, holdings: holdings.perStock, perVault: holdings.perVault };
-  }, [dir, infos, stocks, prices, pricesLoading, holdings]);
+    const total = stockUsd === undefined ? undefined : usdg + stockUsd;
+    return { usdg, stockUsd, perStockUsd, total, ready, prices, holdings: holdings.perStock, perVault: holdings.perVault };
+  }, [infos, stocks, prices, pricesLoading, holdings]);
 }
 
 /** $DCA supply, router price and market cap (price is undefined when no DCA/USDG route exists). */

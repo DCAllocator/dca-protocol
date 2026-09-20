@@ -381,6 +381,17 @@ export const StockRegistryAbi = [
   },
   {
     "type": "error",
+    "name": "NotAContract",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "NotListed",
     "inputs": [
       {

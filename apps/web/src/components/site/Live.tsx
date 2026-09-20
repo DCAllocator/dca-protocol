@@ -1,6 +1,6 @@
 "use client";
 
-import { useDirectory, useVaults, useStocks, useQuote } from "@/hooks/useProtocol";
+import { useDirectory, useVaults, useStocks } from "@/hooks/useProtocol";
 import { Countdown, StockAvatar } from "@/components/ui";
 import { fmtUsd, fmtBps } from "@/lib/format";
 import { PRODUCTION_VAULT_KINDS, VAULT_META, type ProductionVaultKind } from "@/lib/config";
@@ -10,16 +10,13 @@ export function LiveStats() {
   const { dir, vaults, configured } = useDirectory();
   const { infos } = useVaults(vaults);
   const { stocks } = useStocks(dir?.registry);
+  // Vaults hold USDG only (ETH is converted on deposit), so "waiting to buy" is exactly the idle USDG.
   const usdgIdle = infos.reduce((a, v) => a + (v.totalUsdgIdle ?? 0n), 0n);
-  const wethIdle = infos.reduce((a, v) => a + (v.totalWethIdle ?? 0n), 0n);
   const notional = infos.reduce((a, v) => a + (v.totalNotionalUsdg ?? 0n), 0n);
   const epochs = infos.reduce((a, v) => a + (v.epochsCompleted ?? 0n), 0n);
-  const wethQuote = useQuote(dir?.router, dir?.weth, dir?.usdg, wethIdle);
-  const wethUsd = wethIdle > 0n ? wethQuote.data?.amountOut : 0n;
-  const tvl = wethUsd === undefined ? undefined : usdgIdle + wethUsd;
   const ready = configured && infos.length > 0;
   const items: [string, string][] = [
-    ["Capital waiting to buy", ready ? fmtUsd(tvl) : "—"],
+    ["Capital waiting to buy", ready ? fmtUsd(usdgIdle) : "—"],
     ["Stock bought to date", ready ? fmtUsd(notional) : "—"],
     ["Epochs executed", ready ? epochs.toString() : "—"],
     ["Stocks listed", ready ? String(stocks.length) : "—"],
