@@ -6,6 +6,8 @@
     "dev": "pnpm --filter @dca/web dev",
     "dev:test-vault": "pnpm --filter @dca/web dev:test-vault",
     "scheduler": "pnpm --filter @dca/scheduler dev",
+    "balance": "pnpm --filter @dca/scheduler balance",
+    "transfer": "pnpm --filter @dca/scheduler transfer",
     "fork": "bash scripts/fork.sh",
     "protocol:deploy": "bash scripts/deploy.sh"
   },

@@ -6,6 +6,8 @@
   "description": "Epoch scheduler bot: advances DCA vault epochs through EpochKeeper as they come due.",
   "scripts": {
     "dev": "tsx src/index.ts",
+    "balance": "tsx src/balance.ts",
+    "transfer": "tsx src/transfer.ts",
     "once": "tsx src/index.ts --once",
     "dry-run": "tsx src/index.ts --dry-run",
     "build": "tsc -p tsconfig.json",
