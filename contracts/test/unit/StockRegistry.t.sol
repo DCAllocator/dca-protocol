@@ -70,6 +70,8 @@ contract StockRegistryTest is Test {
         vm.startPrank(owner);
         vm.expectRevert(StockRegistry.ZeroAddress.selector);
         reg.listStock(address(0), "X", false, true);
+        vm.expectRevert(abi.encodeWithSelector(StockRegistry.NotAContract.selector, address(0xbeef)));
+        reg.listStock(address(0xbeef), "EOA", false, true);
         vm.expectRevert(StockRegistry.EmptySymbol.selector);
         reg.listStock(address(nvda), "", false, true);
         reg.listStock(address(nvda), "NVDA", false, true);

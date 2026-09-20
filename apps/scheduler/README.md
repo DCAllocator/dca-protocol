@@ -20,6 +20,8 @@ with three plans, so you see a fill every two minutes without waiting for a dail
 
 Environment variables (`.env.local` / `.env` in this directory are loaded; the process environment wins). See
 [`.env.example`](.env.example) for the full list. Required: `RPC_URL`, `PRIVATE_KEY` (not needed with `--dry-run`).
+
+The wallet behind `PRIVATE_KEY` **must be an `EpochKeeper` operator** (`keeper.setOperator(addr, true)`, owner-only): every execution entry point on the keeper is operator-only and the vaults run `keeperOnly`. `pnpm fork` registers the local `bot` wallet automatically; on Robinhood Chain list it in `KEEPERS` at deploy or add it afterwards. Submit through a private relay and consider passing a reference-price `minOut` override (see `SECURITY.md` §2).
 `KEEPER_ADDRESS` falls back to `contracts/deployments/<chainId>.json`.
 
 ## Production

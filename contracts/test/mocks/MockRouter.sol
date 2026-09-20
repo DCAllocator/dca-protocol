@@ -81,10 +81,16 @@ contract MockRouter is IAggregatorRouter {
         if (amountIn == 0) revert ZeroAmount();
         Pair storage p = pairs[tokenIn][tokenOut];
         if (!p.exists) revert NoRoute(tokenIn, tokenOut);
-        amountOut = (amountIn * p.num) / p.den;
+        amountOut = (((amountIn * p.fillBps) / 10_000) * p.num) / p.den; // a real quote simulates the fill
         path = new Route[](1);
         path[0] = Route({protocol: 1, tokenIn: tokenIn, tokenOut: tokenOut, fee: 3000, extra: ""});
         impactBps = p.impactBps;
+    }
+
+    function quotePath(Route[] calldata path, uint256 amountIn) external view returns (uint256 amountOut) {
+        if (amountIn == 0) revert ZeroAmount();
+        if (path.length == 0) revert InvalidPath();
+        (amountOut,,) = quoteWithImpact(path[0].tokenIn, path[path.length - 1].tokenOut, amountIn);
     }
 
     function swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minOut, address recipient)

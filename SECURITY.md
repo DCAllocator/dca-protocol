@@ -1,98 +1,114 @@
-# SECURITY.md — DCA threat model (V1)
+# SECURITY.md — DCA threat model (V1, post-audit)
 
-Scope: `contracts/src/` contracts as deployed by `contracts/script/Deploy.s.sol` on Robinhood Chain (4663). Unaudited. This document lists what can go wrong, what the code does about it, and what it deliberately does not.
+Scope: `contracts/src/` contracts as deployed by `contracts/script/Deploy.s.sol` on Robinhood Chain (4663). This document lists what can go wrong, what the code does about it, and what it deliberately does not. The v0.1 audit and the v0.2 re-audit are in [`AUDIT.md`](AUDIT.md); the regression suite for every finding is `contracts/test/audit/`.
 
 ## Trust assumptions
 
 | Party | Trusted to | Can NOT |
 |---|---|---|
-| **Owner** (multisig, `Ownable2Step`) | pause; set fees ≤ 90 bps; set `$DCA` thresholds; set router / fee recipient / keepers / `keeperOnly`; list stocks; rescue foreign tokens | take user idle USDG/WETH or accrued stock; set any fee above 0.90%; rescue USDG, WETH or any ever-listed stock; upgrade code (no proxies) |
-| **feeManager** | set fees within caps | anything else |
-| **Keepers / operators** | trigger epochs; pass `routeOverride` (path + `minOut > 0`) | move funds anywhere but into the vault's own stock purchase; skip fees; change accounting |
-| **Router + adapters** (owner-set) | execute swaps honestly | hold funds between txs (they don't); receive approvals from vaults beyond the router itself |
+| **Owner** (multisig, `Ownable2Step`) | pause; set fees ≤ 90 bps; set `$DCA` thresholds and minimums; set router / fee recipient / keepers / operators / `keeperOnly`; **approve and revoke router hops**; list stocks; rescue foreign tokens | take user idle USDG or accrued stock; set any fee above 0.90%; rescue USDG, WETH or any ever-listed stock; upgrade code (no proxies) |
+| **feeManager** | set fees within caps; force a dust sweep | anything else |
+| **Keepers / operators** | trigger epochs (they are the only ones who can); pick page size and timing; pass a route override that selects among **approved** hops with a `minOut` **no lower than the auto-route's floor** | move funds anywhere but into the vault's own stock purchase; fill worse than the auto-router would; route through an unapproved pool; skip fees; change accounting |
+| **Router + adapters** (owner-set) | execute swaps honestly over the approved hop list | hold funds between txs (they don't); receive approvals from vaults beyond the router itself; trade a pool the owner did not approve |
 | **Stock Tokens, USDG, WETH** | standard ERC-20 semantics (no fee-on-transfer, no reentrant hooks) | — the registry flags fee-on-transfer and vaults refuse them; `_tryTransfer` tolerates blocklists |
-| **DEX pools** | factory-verified or owner-registered | forge callbacks (callback authenticates `msg.sender == verified pool`) |
+| **DEX pools** | owner-approved (and, for V3, factory-verified or explicitly registered) | forge callbacks (callback authenticates `msg.sender == verified pool`) |
 
 Anyone else is untrusted.
 
-## Invariants (enforced by tests in `test/invariant/`)
+## Invariants (enforced by tests in `test/invariant/` and `test/audit/`)
 
 1. `stock.balanceOf(vault) == totalStockAccrued[stock] + dustPot[stock]` for every stock.
-2. `usdg.balanceOf(vault) == totalUsdgIdle` and `weth.balanceOf(vault) == totalWethIdle` (fees leave immediately; no fee pot on the vault).
+2. `usdg.balanceOf(vault) == totalUsdgIdle + usdgDust` and `weth.balanceOf(vault) == wethDust` (fees leave immediately; every unit is accounted; the vault never holds user WETH).
 3. Aggregates equal the sum over plans; `userStockAccrued` equals the per-user sum.
 4. No plan is filled twice in one epoch; `lastExecutedEpoch ≤ currentEpochId`.
 5. Every fee ≤ 90 bps (constructor + `setFees` validate).
+6. `usdgDust < dustSweepMinUsdg` and `wethDust == 0` outside `advanceEpoch` (dust is swept at the threshold).
+7. A plan in the stock index has, or has had, ≥ `minDeposit` USDG; `amountPerEpoch ≥ minAmountPerEpoch`.
 
 ## Threats
 
 ### 1. Router failure / bad quotes
 
-**Risk.** The auto-router returns a bad path (thin pool, stale tier, adapter bug) or reverts, blocking every epoch for a stock.
+**Risk.** The auto-router returns a bad path (thin pool, adapter bug) or reverts.
 
 **Mitigations.**
-- Impact cap vs pool mid-price (`maxPriceImpactBps`, 150) on every path; direct and one-hop candidates; adapters that revert on quote are skipped (`try/catch`).
-- `minOut = quote × (1 − swapSlippageBps)`; the vault measures real balance deltas, reverts on zero output (`SwapReturnedZero`) or over-spend (`Overspent`), and returns unspent USDG pro-rata.
-- **Trusted route override**: owner / vault keeper / keeper operator can pass `abi.encode(Route[] path, uint256 minOut)` to force the USDG→stock route so a broken auto-router cannot brick an epoch. `minOut` must be non-zero.
+- **Allowlist.** The router quotes and executes only owner-approved hops. Unknown factory pools, unregistered V4 keys and hand-built paths are refused (`RouteNotApproved`), for every caller including keepers.
+- Impact cap vs pool mid-price (`maxPriceImpactBps`, 150) on every candidate; direct and two-hop (via WETH) candidates; adapters that revert on quote are skipped (`try/catch`).
+- `minOut = quote × (1 − swapSlippageBps)`; the vault measures real balance deltas, reverts on zero output (`SwapReturnedZero`) or over-spend (`Overspent`), and returns unspent USDG pro-rata (remainder → `usdgDust`).
+- **Skip, never revert.** If the page's quote fails, is dust, or the swap reverts, the page is skipped (`EpochPageSkipped`): nobody is charged, the cursor advances, the epoch completes. No plan state, pool state or token amount can revert an epoch for other users.
+- **Route override** (operators): may pick a different approved path or a tighter `minOut`; may not go below the auto floor. Override failures revert so the page is retried, not lost.
 - `setRouter` swaps the router atomically and revokes approvals to the old one.
 - A failing stock never blocks other stocks (`EpochKeeper` isolates jobs with `try/catch`).
 
-**Residual.** Nobody can be forced to provide liquidity. If no route within the cap exists, the epoch simply does not fill and users keep their idle balance.
+**Residual.** Nobody can be forced to provide liquidity. If no approved route within the cap exists, the epoch simply does not fill and users keep their idle balance.
 
-### 2. Sandwiching / MEV on epoch swaps
+### 2. Sandwiching / MEV on epoch swaps — OPEN (accepted for now)
 
-**Risk.** Epoch swaps are large, predictable (00:00 UTC) and public. A searcher can move the price before the tx, and the in-tx quote + mid-price check will both see the moved price.
+**Risk.** Epoch swaps are large, predictable (00:00 UTC) and their price references (quote, `minOut`, impact-vs-`slot0`) are all read inside the executing transaction. Whoever can place transactions around the operator's call can push the pool before it and unwind after it.
 
-**Mitigations.**
-- The impact cap bounds how far from the *current* mid the fill may land; the slippage tolerance is tight (0.50%).
-- Keepers should (a) submit through a private mempool / builder, (b) sanity-check the quote against `TwapOracle.consultTick` or an off-chain reference and (c) use the route override with a tight `minOut` when the auto quote looks off.
-- Per-page swaps spread a large stock across several txs.
+**What is closed.** The *unprivileged, atomic* variant found in the v0.1 audit (anyone calling `advanceEpoch` / `runDue` inside their own sandwich) is closed: `keeperOnly` is on by default and every `EpochKeeper` execution entry point is operator-only.
 
-**Residual.** V1 has no on-chain TWAP guard on the vault (it is a keeper-side tool). V2 candidate: reference-pool TWAP deviation check in `_buyStock`.
+**What remains.** A block builder, or anyone who can land a transaction before and after the operator's in the same block, can still sandwich it. `test/audit/Audit.H02.Sandwich.t.sol::test_KNOWN_RESIDUAL_*` keeps the loss visible: with a $1M pool and a $600k push, a $10k epoch loses ~55%.
+
+**Operational mitigations (do these).**
+1. Submit operator transactions through a private relay / builder with no public mempool exposure.
+2. Pass a **reference-price `minOut` override** on every run: compute the expected stock amount from an off-chain reference (Robinhood quote, or `TwapOracle.consultTick` over ≥ 30 min on the reference pool), apply a tolerance (e.g. 1–3%), and call `EpochKeeper.run(job, 0, abi.encode(path, minOut))`. Under manipulation the fill reverts and the operator retries (`test_mitigation_referenceMinOutOverrideRevertsUnderManipulation`).
+3. Randomise the execution time within the epoch instead of firing exactly at the boundary.
+
+**Contract-level options for V2 (recommended, in order of effort).**
+1. *On-chain TWAP guard* in `_buyStock`: owner-designated reference pool per stock; require `bought ≥ expectedFromTwap(totalNet) × (1 − maxDeviationBps)`; skip the page otherwise. ~40 lines using the existing `TwapOracle`; removes the dependency on operator discipline.
+2. *Commit / execute*: record `minOut` from a quote in one transaction and execute in a later block, so no single block can set both the reference and the fill.
+3. *Oracle floor*: if a Chainlink / Pyth stock feed exists on Robinhood Chain, use it as the reference instead of a pool TWAP.
+4. *Order splitting*: several smaller randomised sub-buys per epoch raise the attacker's cost per unit extracted.
 
 ### 3. Epoch griefing
 
 | Vector | Handling |
 |---|---|
 | Unbounded loop over plans | `maxPlansPerTx` (≤ 1000, default 150) + cursor pagination. |
-| Reordering the plan index mid-epoch (swap-remove) | `prunePlan` reverts while the stock's epoch is pending. Plans appended mid-epoch are simply processed. |
-| Filling the index with empty plans to burn keeper gas | Empty plans cost one cold SLOAD each and are prunable by anyone; index is per stock. Creating plans costs the attacker gas + nothing is free. |
+| Reordering the plan index mid-epoch (swap-remove) | `prunePlan` (now `nonReentrant`) reverts while the stock's epoch is pending. Plans appended mid-epoch are simply processed. |
+| Filling the index with empty plans to burn keeper gas | Only plans that credited ≥ `minDeposit` (10 USDG) are ever indexed; re-indexing a pruned plan needs another ≥ 10 USDG deposit; each empty-and-refill cycle pays the 25 bps withdraw fee. Emptied plans cost the keeper ~9k gas each until anyone prunes them between epochs. |
+| A plan that makes the page's purchase unquotable / dust | The page is skipped, never reverted; `minAmountPerEpoch` keeps sub-dollar plans out entirely. |
 | A recipient that reverts on stock transfer (blocklisted) | `_tryTransfer` never reverts the page; the share accrues instead. |
-| A stock token that reverts on transfer to the vault (delisted at the token level) | The epoch reverts; keeper isolates the job; owner delists in the registry so it is no longer `isEpochDue`. Users withdraw idle. |
+| A stock token that reverts on transfer to the vault (delisted at the token level) | The swap reverts → the page is skipped; owner delists in the registry so it is no longer `isEpochDue`. Users withdraw idle. |
 | Keeper never finishes a multi-page epoch | Remaining plans miss that epoch; the next epoch starts from index 0. No double charging (`plan.lastEpochId` guard). |
-| Re-entrancy via tokens or router | `nonReentrant` on every state-changing entry; checks-effects-interactions; `SafeERC20`; adapters are `onlyRouter`. |
+| Re-entrancy via tokens or router | `nonReentrant` on every state-changing entry (incl. `prunePlan`); checks-effects-interactions; `SafeERC20`; adapters are `onlyRouter`. |
 | Unbounded `keeperTipBps` | ≤ 50% of purchase fees, never from user principal. |
 
 ### 4. `$DCA` flash-buy
 
-**Risk.** Perks read `dca.balanceOf(owner)` at execution and at claim. A user can buy ≥ 50k `$DCA` right before the epoch (halved fee, auto-send) and sell right after; with a flash-loanable `$DCA` market, within one tx around the keeper call.
+**Risk.** Perks read `dca.balanceOf(owner)` at execution and at claim. A user can buy ≥ 50k `$DCA` right before the epoch (halved fee, auto-send) and sell right after.
 
-**Handling.** Accepted for V1 and documented in the app ("perks read your spot balance at execution time"). The economic damage is bounded to the fee discount / claim fee waiver on one epoch's spend. V2 option: checkpointed balances (`ERC20Votes`-style `getPastVotes`) with a lookback, or a staking snapshot.
+**Handling.** Accepted for V1 and documented in the app. Since epochs are operator-only the flash-buy can no longer be made atomic with the epoch by the user. The economic damage is bounded to the fee discount / claim fee waiver on one epoch's spend. V2 option: checkpointed balances (`ERC20Votes`-style `getPastVotes`) with a lookback, or a staking snapshot. With `dca == address(0)` there are no perks regardless of thresholds; thresholds cannot be zeroed.
 
 ### 5. Rounding
 
 - Fees round **down** (user-favourable). Halving floors (75 → 37 bps).
-- Pro-rata distribution floors; the remainder (< number of plans, in wei) goes to `dustPot[stock]` and is folded into the next distribution — never to the treasury, never lost. Tested (`test_proRata_weightsAndDust`, fuzz conservation).
-- WETH zap credits are pro-rata by WETH contributed; residue < 1 unit per plan.
+- Pro-rata stock distribution floors; the remainder (< number of plans, in wei) goes to `dustPot[stock]` and is folded into the next distribution — never to the treasury, never lost.
+- Unspent USDG (partial fill) is returned pro-rata; the remainder that cannot be split exactly is booked in `usdgDust` and forwarded to `feeRecipient` once it reaches `dustSweepMinUsdg` (1 USDG). WETH forwarded back by a partially filled second hop is booked in `wethDust` and forwarded immediately. Nothing is ever unaccounted (invariant 2 is strict).
+- ETH/WETH deposits credit exactly what the swap produced; unfilled WETH goes back to the depositor.
+- **Known / pinned:** the purchase fee and keeper tip are computed on `spend`, not on the USDG actually consumed; on a partial fill the returned USDG is charged again next epoch (`Audit.L02`). Not a safety issue; revisit with revenue in mind.
 - `mulDiv` (512-bit) everywhere prices/amounts are multiplied; `SafeCast` on every narrowing.
 
 ### 6. Stock Token depeg vs the underlying
 
-The vault buys the **on-chain** Stock Token at the **on-chain** price. If the token trades above/below the NYSE/Nasdaq price (thin liquidity, issuer halts, market closed while crypto trades), users buy at that price. Nothing in the protocol references the off-chain price. Mitigations are operational: only list tokens with real depth; keepers can hold a stock (`setJobActive(false)`) or the owner can delist during a dislocation. Users can pause their plans at any time.
+The vault buys the **on-chain** Stock Token at the **on-chain** price. If the token trades above/below the NYSE/Nasdaq price (thin liquidity, issuer halts, market closed while crypto trades), users buy at that price. Nothing in the protocol references the off-chain price. Mitigations are operational: only approve pools with real depth; operators can hold a stock (`setJobActive(false)`), pass a reference-price `minOut`, or the owner can revoke its hops / delist during a dislocation. Users can pause their plans at any time.
 
 ### 7. Permissioned Stock Tokens
 
 Robinhood Stock Tokens may enforce allowlists / blocklists at the token level. Consequences:
-- Transfer *to* the vault blocked → the swap reverts → no fill (job isolated).
+- Transfer *to* the vault blocked → the swap reverts → the page is skipped (nobody charged).
 - Transfer *from* the vault to a user blocked → auto-distribute falls back to accrual; `claim` reverts for that user until they are allowed (funds stay accounted on the vault).
-- Vault address itself blocked → epochs for that token stop; users withdraw idle USDG/WETH.
+- Vault address itself blocked → epochs for that token skip; users withdraw idle USDG.
+- **Accepted (`Audit.L06`):** `claim` pushes the claim fee to `feeRecipient` first; if the treasury is blocked by a stock token, claims of that stock revert until the owner zeroes `claimFeeBps` or moves `feeRecipient`. Make sure the treasury is allowlisted on every listed token.
 
 ### 8. Admin key compromise
 
-Owner cannot steal user funds directly (no sweep of USDG/WETH/stocks, fees ≤ 0.90%). An attacker with the owner key could: point `router` at a malicious contract (steals up to one epoch's `totalNet` per stock per epoch — the vault only approves the router and only spends per-page `totalNet`; balance-delta checks make a zero-output router revert, but a router that returns 1 wei of stock would pass), set `feeRecipient`, pause. Use a multisig + timelock; monitor `RouterSet`, `FeeConfigSet`, `KeeperSet`, `FeeRecipientSet`.
+Owner cannot steal user funds directly (no sweep of USDG/WETH/stocks, fees ≤ 0.90%). An attacker with the owner key could: approve a malicious pool and point `router` / hops at it (steals up to one epoch's `totalNet` per stock per epoch — balance-delta checks make a zero-output router revert, but a pool returning 1 wei of stock would pass), set `feeRecipient`, pause, raise minimums. Use a multisig + timelock; monitor `RouterSet`, `HopApproved`, `HopRevoked`, `FeeConfigSet`, `KeeperSet`, `OperatorSet`, `FeeRecipientSet`, `MinimumsSet`.
 
-### 9. Denial via `pause`
+### 9. Denial via `pause` / operator outage
 
-Pause blocks new plans, deposits and epochs; **claims and idle withdrawals are never pausable**, so users can always exit.
+Pause blocks new plans, deposits and epochs; **claims and idle withdrawals are never pausable**, so users can always exit. There is deliberately no permissionless fallback for epochs: if every operator is down, epochs are missed (never caught up) until an operator returns. Run at least two independent operators (a bot plus Chainlink Automation).
 
 ### 10. Out of scope / not protected
 

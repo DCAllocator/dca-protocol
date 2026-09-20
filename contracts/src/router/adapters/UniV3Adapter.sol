@@ -16,10 +16,11 @@ import {IUniswapV3Factory, IUniswapV3Pool, IUniswapV3SwapCallback} from "../../i
 ///         factory / pool / callback ABI). Quotes by simulating the swap and reverting inside the callback
 ///         (same technique as Uniswap's Quoter), so no external quoter deployment is required.
 ///
-/// @dev Pool discovery: `factory.getPool(tokenIn, tokenOut, tier)` for each configured fee tier, plus any
-///      pools the owner registered explicitly (for forks whose factory ABI differs). Every pool that may call
-///      back into this contract must be verified first (`verifiedPool`), which guards the callback against
-///      arbitrary contracts asking to be paid.
+/// @dev The adapter does not discover pools. The router holds the approved hop list; each hop names its pool
+///      in `Route.extra` (abi.encode(pool)). A pool is acceptable if the owner registered it explicitly or, when
+///      a factory is configured, if `factory.getPool(token0, token1, fee)` returns it. Every pool that may call
+///      back into this contract is marked `verifiedPool` first, which guards the callback against arbitrary
+///      contracts asking to be paid.
 ///
 ///      Token flow: the router transfers `amountIn` here, `swap` calls `pool.swap`, the pool pushes output to
 ///      `recipient` and pulls input via `uniswapV3SwapCallback`. The adapter never holds tokens between txs.
@@ -28,12 +29,10 @@ contract UniV3Adapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
 
     uint8 public immutable protocolId;
     address public immutable router;
-    IUniswapV3Factory public immutable factory; // address(0) => factory discovery disabled
+    IUniswapV3Factory public immutable factory; // address(0) => only explicitly registered pools
 
-    uint24[] private _feeTiers;
-    mapping(bytes32 => address[]) private _extraPools;
+    /// @notice Pools allowed to call back: owner-registered, or factory-verified (cached on first use).
     mapping(address => bool) public verifiedPool;
-    uint256 public extraPoolCount;
 
     uint160 internal constant MIN_SQRT_RATIO = 4295128739;
     uint160 internal constant MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342;
@@ -50,24 +49,21 @@ contract UniV3Adapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
         address tokenOut;
     }
 
+    error ZeroAddress();
     error OnlyRouter();
     error UnknownPool(address pool);
     error UnauthorizedCallback();
     error PoolTokenMismatch(address pool);
     error InvalidPool(address pool);
 
-    event FeeTiersSet(uint24[] tiers);
     event PoolRegistered(address indexed pool, address token0, address token1);
     event PoolUnregistered(address indexed pool);
 
-    constructor(uint8 protocolId_, address router_, address factory_, uint24[] memory feeTiers_, address owner_)
-        Ownable(owner_)
-    {
+    constructor(uint8 protocolId_, address router_, address factory_, address owner_) Ownable(owner_) {
+        if (router_ == address(0)) revert ZeroAddress();
         protocolId = protocolId_;
         router = router_;
         factory = IUniswapV3Factory(factory_);
-        _feeTiers = feeTiers_;
-        emit FeeTiersSet(feeTiers_);
     }
 
     modifier onlyRouter() {
@@ -79,59 +75,21 @@ contract UniV3Adapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
     // Admin
     // ------------------------------------------------------------------
 
-    /// @notice Replace the fee tiers probed through the factory.
-    function setFeeTiers(uint24[] calldata tiers) external onlyOwner {
-        _feeTiers = tiers;
-        emit FeeTiersSet(tiers);
-    }
-
-    /// @notice Register a pool explicitly (for forks whose factory lookup differs, or non-standard tiers).
+    /// @notice Register a pool explicitly (for forks whose factory lookup differs, or factory-less deployments).
     function registerPool(address pool) external onlyOwner {
         if (pool.code.length == 0) revert InvalidPool(pool);
         address t0 = IUniswapV3Pool(pool).token0();
         address t1 = IUniswapV3Pool(pool).token1();
         if (t0 == address(0) || t1 == address(0) || t0 >= t1) revert InvalidPool(pool);
-        if (!verifiedPool[pool]) {
-            _extraPools[_pairKey(t0, t1)].push(pool);
-            verifiedPool[pool] = true;
-            extraPoolCount += 1;
-        }
+        verifiedPool[pool] = true;
         emit PoolRegistered(pool, t0, t1);
     }
 
-    /// @notice Drop an explicitly registered pool.
+    /// @notice Drop a pool's registration. A factory-derived pool stays acceptable; revoke its hop on the router
+    ///         to stop trading it.
     function unregisterPool(address pool) external onlyOwner {
-        address t0 = IUniswapV3Pool(pool).token0();
-        address t1 = IUniswapV3Pool(pool).token1();
-        address[] storage arr = _extraPools[_pairKey(t0, t1)];
-        for (uint256 i; i < arr.length; ++i) {
-            if (arr[i] == pool) {
-                arr[i] = arr[arr.length - 1];
-                arr.pop();
-                extraPoolCount -= 1;
-                break;
-            }
-        }
         verifiedPool[pool] = false;
         emit PoolUnregistered(pool);
-    }
-
-    // ------------------------------------------------------------------
-    // Views
-    // ------------------------------------------------------------------
-
-    function feeTiers() external view returns (uint24[] memory) {
-        return _feeTiers;
-    }
-
-    function extraPools(address tokenA, address tokenB) external view returns (address[] memory) {
-        (address t0, address t1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
-        return _extraPools[_pairKey(t0, t1)];
-    }
-
-    /// @inheritdoc ISwapAdapter
-    function enabled() public view returns (bool) {
-        return address(factory) != address(0) || extraPoolCount > 0;
     }
 
     // ------------------------------------------------------------------
@@ -139,29 +97,21 @@ contract UniV3Adapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
     // ------------------------------------------------------------------
 
     /// @inheritdoc ISwapAdapter
-    function quote(address tokenIn, address tokenOut, uint256 amountIn)
-        external
-        returns (uint256 amountOut, uint256 midOut, Route memory route)
-    {
-        if (!enabled() || amountIn == 0 || tokenIn == tokenOut) return (0, 0, route);
-        address[] memory pools = _candidatePools(tokenIn, tokenOut);
-        address best;
-        for (uint256 i; i < pools.length; ++i) {
-            uint256 out = _simulate(pools[i], tokenIn, tokenOut, amountIn);
-            if (out > amountOut) {
-                amountOut = out;
-                best = pools[i];
-            }
-        }
-        if (best == address(0)) return (0, 0, route);
-        midOut = _midOut(best, tokenIn < tokenOut, amountIn);
-        route = Route({
-            protocol: protocolId,
-            tokenIn: tokenIn,
-            tokenOut: tokenOut,
-            fee: IUniswapV3Pool(best).fee(),
-            extra: abi.encode(best)
-        });
+    function validateRoute(Route calldata route) external view returns (bool) {
+        if (route.protocol != protocolId || route.extra.length != 32) return false;
+        address pool = abi.decode(route.extra, (address));
+        return _poolOk(pool) && _tokensMatch(pool, route.tokenIn, route.tokenOut);
+    }
+
+    /// @inheritdoc ISwapAdapter
+    function quoteRoute(Route calldata route, uint256 amountIn) external returns (uint256 amountOut, uint256 midOut) {
+        if (amountIn == 0 || route.tokenIn == route.tokenOut || route.extra.length != 32) return (0, 0);
+        address pool = abi.decode(route.extra, (address));
+        if (!_poolOk(pool) || !_tokensMatch(pool, route.tokenIn, route.tokenOut)) return (0, 0);
+        verifiedPool[pool] = true; // the simulation callback authenticates against this
+        amountOut = _simulate(pool, route.tokenIn, route.tokenOut, amountIn);
+        if (amountOut == 0) return (0, 0);
+        midOut = _midOut(pool, route.tokenIn < route.tokenOut, amountIn);
     }
 
     /// @inheritdoc ISwapAdapter
@@ -171,8 +121,9 @@ contract UniV3Adapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
         returns (uint256 amountOut, uint256 amountInUsed)
     {
         address pool = abi.decode(route.extra, (address));
-        if (!verifiedPool[pool] && !_verifyFactoryPool(pool)) revert UnknownPool(pool);
-        _checkTokens(pool, route.tokenIn, route.tokenOut);
+        if (!_poolOk(pool)) revert UnknownPool(pool);
+        if (!_tokensMatch(pool, route.tokenIn, route.tokenOut)) revert PoolTokenMismatch(pool);
+        verifiedPool[pool] = true;
 
         bool zeroForOne = route.tokenIn < route.tokenOut;
         (int256 a0, int256 a1) = IUniswapV3Pool(pool)
@@ -225,24 +176,19 @@ contract UniV3Adapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
     // Internals
     // ------------------------------------------------------------------
 
-    function _candidatePools(address tokenIn, address tokenOut) internal returns (address[] memory pools) {
+    /// @dev Registered, or (with a factory) the factory's pool for its own (token0, token1, fee).
+    function _poolOk(address pool) internal view returns (bool) {
+        if (verifiedPool[pool]) return true;
+        if (address(factory) == address(0) || pool.code.length == 0) return false;
+        address t0 = IUniswapV3Pool(pool).token0();
+        address t1 = IUniswapV3Pool(pool).token1();
+        uint24 fee = IUniswapV3Pool(pool).fee();
+        return factory.getPool(t0, t1, fee) == pool;
+    }
+
+    function _tokensMatch(address pool, address tokenIn, address tokenOut) internal view returns (bool) {
         (address t0, address t1) = tokenIn < tokenOut ? (tokenIn, tokenOut) : (tokenOut, tokenIn);
-        address[] storage extras = _extraPools[_pairKey(t0, t1)];
-        uint256 tiers = address(factory) == address(0) ? 0 : _feeTiers.length;
-        pools = new address[](tiers + extras.length);
-        uint256 n;
-        for (uint256 i; i < tiers; ++i) {
-            address p = factory.getPool(t0, t1, _feeTiers[i]);
-            if (p == address(0)) continue;
-            if (!verifiedPool[p]) verifiedPool[p] = true; // factory-derived => trusted
-            pools[n++] = p;
-        }
-        for (uint256 i; i < extras.length; ++i) {
-            pools[n++] = extras[i];
-        }
-        assembly ("memory-safe") {
-            mstore(pools, n)
-        }
+        return IUniswapV3Pool(pool).token0() == t0 && IUniswapV3Pool(pool).token1() == t1;
     }
 
     /// @dev Exact-input simulation through the real pool; the callback reverts with the output.
@@ -275,26 +221,5 @@ contract UniV3Adapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
             return Math.mulDiv(Math.mulDiv(amountIn, sqrtP, Q96), sqrtP, Q96);
         }
         return Math.mulDiv(Math.mulDiv(amountIn, Q96, sqrtP), Q96, sqrtP);
-    }
-
-    function _verifyFactoryPool(address pool) internal returns (bool) {
-        if (address(factory) == address(0) || pool.code.length == 0) return false;
-        address t0 = IUniswapV3Pool(pool).token0();
-        address t1 = IUniswapV3Pool(pool).token1();
-        uint24 fee = IUniswapV3Pool(pool).fee();
-        if (factory.getPool(t0, t1, fee) != pool) return false;
-        verifiedPool[pool] = true;
-        return true;
-    }
-
-    function _checkTokens(address pool, address tokenIn, address tokenOut) internal view {
-        (address t0, address t1) = tokenIn < tokenOut ? (tokenIn, tokenOut) : (tokenOut, tokenIn);
-        if (IUniswapV3Pool(pool).token0() != t0 || IUniswapV3Pool(pool).token1() != t1) {
-            revert PoolTokenMismatch(pool);
-        }
-    }
-
-    function _pairKey(address t0, address t1) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(t0, t1));
     }
 }

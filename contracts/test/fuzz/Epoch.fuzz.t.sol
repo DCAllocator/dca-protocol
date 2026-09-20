@@ -37,8 +37,8 @@ contract EpochFuzzTest is BaseTest {
 
         for (uint256 i; i < n; ++i) {
             uint256 r = uint256(keccak256(abi.encode(seed, i)));
-            uint96 amount = uint96(bound(r, 1, 50_000e6));
-            uint128 deposit = uint128(bound(r >> 64, 0, 100_000e6));
+            uint96 amount = uint96(bound(r, 10e6, 50_000e6));
+            uint128 deposit = uint128(bound(r >> 64, 10e6, 100_000e6));
             uint32 dcaWhole = uint32(bound(r >> 128, 0, 60_000));
             users[i] = _user(i);
             if (dcaWhole > 0) _giveDca(users[i], dcaWhole);
@@ -80,8 +80,8 @@ contract EpochFuzzTest is BaseTest {
 
     /// forge-config: default.fuzz.runs = 256
     function testFuzz_claimConservation(uint128 deposit, uint96 amount, uint16 claimFeeBps, uint256 claimFrac) public {
-        amount = uint96(bound(amount, 1, 100_000e6));
-        deposit = uint128(bound(deposit, 1, 200_000e6));
+        amount = uint96(bound(amount, 10e6, 100_000e6));
+        deposit = uint128(bound(deposit, 10e6, 200_000e6));
         claimFeeBps = uint16(bound(claimFeeBps, 0, 90));
         FeeConfig memory f = daily.fees();
         f.claimFeeBps = claimFeeBps;
@@ -106,17 +106,17 @@ contract EpochFuzzTest is BaseTest {
 
     /// forge-config: default.fuzz.runs = 256
     function testFuzz_withdrawConservation(uint128 deposit, uint256 wdFrac, uint16 wdFeeBps) public {
-        deposit = uint128(bound(deposit, 1, 500_000e6));
+        deposit = uint128(bound(deposit, 10e6, 500_000e6));
         wdFeeBps = uint16(bound(wdFeeBps, 0, 90));
         FeeConfig memory f = daily.fees();
         f.withdrawFeeBps = wdFeeBps;
         vm.prank(owner);
         daily.setFees(f);
-        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 1e6, deposit);
+        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 10e6, deposit);
         uint256 wd = bound(wdFrac, 1, deposit);
         uint256 before = usdg.balanceOf(alice);
         vm.prank(alice);
-        daily.withdrawIdle(id, wd, 0, false);
+        daily.withdrawIdle(id, wd);
         uint256 fee = FeeMath.feeOf(wd, wdFeeBps);
         assertEq(usdg.balanceOf(alice), before + wd - fee);
         assertEq(usdg.balanceOf(treasury), fee);
@@ -125,29 +125,39 @@ contract EpochFuzzTest is BaseTest {
     }
 
     /// forge-config: default.fuzz.runs = 128
-    function testFuzz_wethZapSizing(uint96 amount, uint128 usdgDeposit, uint128 wethDeposit) public {
-        amount = uint96(bound(amount, 1e6, 100_000e6));
-        usdgDeposit = uint128(bound(usdgDeposit, 0, amount)); // deficit always > 0 unless equal
-        wethDeposit = uint128(bound(wethDeposit, 1e12, 100 ether));
+    function testFuzz_wethDepositConversion(uint128 wethDeposit, uint16 fillBps) public {
+        wethDeposit = uint128(bound(wethDeposit, 0.01 ether, 100 ether));
+        fillBps = uint16(bound(fillBps, 1_000, 10_000));
+        router.setFill(address(weth), address(usdg), fillBps);
+        uint256 used = (uint256(wethDeposit) * fillBps) / 10_000;
+        uint256 expectedUsdg = (used * 3000e6) / 1e18;
+        vm.assume(expectedUsdg >= daily.minDeposit());
+        uint256 wethBefore = weth.balanceOf(alice);
         vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), amount, true, address(0), usdgDeposit, wethDeposit, 0);
+        uint256 id = daily.createPlan(address(nvda), 100e6, address(0), 0, wethDeposit, 0);
+        Plan memory p = daily.getPlan(id);
+        assertEq(p.usdgIdle, expectedUsdg, "credited exactly what the swap produced");
+        assertEq(weth.balanceOf(alice), wethBefore - used, "unfilled WETH refunded to the depositor");
+        assertEq(weth.balanceOf(address(daily)), 0, "vault holds no WETH");
+        assertEq(daily.totalUsdgIdle(), p.usdgIdle);
+        assertEq(usdg.balanceOf(address(daily)), p.usdgIdle);
+    }
+
+    /// forge-config: default.fuzz.runs = 256
+    function testFuzz_residualDustInvariant(uint256 seed, uint16 fillBps) public {
+        fillBps = uint16(bound(fillBps, 1_000, 9_999));
+        router.setFill(address(usdg), address(nvda), fillBps);
+        uint256 n = bound(seed, 2, MAX_PLANS);
+        for (uint256 i; i < n; ++i) {
+            uint256 r = uint256(keccak256(abi.encode(seed, i)));
+            uint96 amount = uint96(bound(r, 10e6, 5_000e6));
+            address u = _user(i);
+            _createUsdgPlan(daily, u, address(nvda), amount, 10_000e6);
+        }
         _nextEpoch(daily);
         _advance(daily, address(nvda));
-        Plan memory p = daily.getPlan(id);
-        uint256 wethValue = (uint256(wethDeposit) * 3000e6) / 1e18;
-        uint256 deficit = amount - usdgDeposit;
-        if (deficit == 0) {
-            assertEq(p.wethIdle, wethDeposit, "no zap needed");
-        } else if (wethValue >= deficit) {
-            // zapped just enough (ceil) -> spend == amount, leftover USDG < 1 wei-of-WETH worth
-            assertEq(p.lastEpochId, 1);
-            assertLt(p.usdgIdle, 2, "at most rounding residue");
-            assertLt(p.wethIdle, wethDeposit);
-        } else {
-            assertEq(p.wethIdle, 0, "all WETH zapped when insufficient");
-        }
-        assertEq(daily.totalWethIdle(), p.wethIdle);
-        assertEq(weth.balanceOf(address(daily)), p.wethIdle);
-        assertEq(usdg.balanceOf(address(daily)), p.usdgIdle);
+        assertEq(usdg.balanceOf(address(daily)), daily.totalUsdgIdle() + daily.usdgDust(), "USDG tight");
+        assertLt(daily.usdgDust(), n, "dust < number of plans (in units)");
+        assertEq(weth.balanceOf(address(daily)), daily.wethDust());
     }
 }

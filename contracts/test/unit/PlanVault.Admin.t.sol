@@ -38,10 +38,13 @@ contract PlanVaultAdminTest is BaseTest {
         assertEq(f.claimFeeBps, 25);
         assertEq(f.keeperTipBps, 0);
         assertEq(f.swapSlippageBps, 50);
-        assertEq(f.maxWethSlippageBps, 100);
         assertEq(daily.autoDistributeThreshold(), 10_000e18);
         assertEq(daily.feeHalveThreshold(), 50_000e18);
         assertEq(daily.maxPlansPerTx(), 150);
+        assertEq(daily.minAmountPerEpoch(), 10e6, "10 USDG");
+        assertEq(daily.minDeposit(), 10e6, "10 USDG");
+        assertEq(daily.dustSweepMinUsdg(), 1e6, "1 USDG");
+        assertTrue(daily.keeperOnly(), "keeperOnly by default");
         assertEq(daily.usdgDecimals(), 6);
         assertEq(daily.usdg(), address(usdg));
         assertEq(daily.weth(), address(weth));
@@ -133,11 +136,6 @@ contract PlanVaultAdminTest is BaseTest {
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(IPlanVault.ValueOutOfRange.selector, 501, 500));
         daily.setFees(f);
-        f = daily.fees();
-        f.maxWethSlippageBps = 1_001;
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IPlanVault.ValueOutOfRange.selector, 1_001, 1_000));
-        daily.setFees(f);
     }
 
     function test_setFees_feeManagerRole() public {
@@ -165,6 +163,39 @@ contract PlanVaultAdminTest is BaseTest {
         daily.setThresholds(1e18, 2e18);
         assertEq(daily.autoDistributeThreshold(), 1e18);
         assertEq(daily.feeHalveThreshold(), 2e18);
+        vm.prank(owner);
+        vm.expectRevert(IPlanVault.ZeroAmount.selector);
+        daily.setThresholds(0, 2e18);
+    }
+
+    function test_setMinimums() public {
+        vm.prank(owner);
+        vm.expectEmit(false, false, false, true);
+        emit IPlanVault.MinimumsSet(25e6, 5e6);
+        daily.setMinimums(25e6, 5e6);
+        assertEq(daily.minAmountPerEpoch(), 25e6);
+        assertEq(daily.minDeposit(), 5e6);
+        vm.prank(owner);
+        vm.expectRevert(IPlanVault.ZeroAmount.selector);
+        daily.setMinimums(0, 5e6);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, bob));
+        daily.setMinimums(1e6, 1e6);
+        // applies to new plans and amount changes
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.BelowMinimum.selector, 20e6, 25e6));
+        daily.createPlan(address(nvda), 20e6, address(0), 100e6, 0, 0);
+    }
+
+    function test_setDustSweepMin() public {
+        vm.prank(owner);
+        vm.expectEmit(false, false, false, true);
+        emit IPlanVault.DustSweepMinSet(5e6);
+        daily.setDustSweepMin(5e6);
+        assertEq(daily.dustSweepMinUsdg(), 5e6);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, bob));
+        daily.setDustSweepMin(1);
     }
 
     function test_setMaxPlansPerTx() public {
@@ -211,10 +242,18 @@ contract PlanVaultAdminTest is BaseTest {
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, bob));
         daily.setKeeperOnly(true);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, bob));
+        daily.sweepDust();
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, bob));
         daily.pause();
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, bob));
         daily.rescueERC20(address(0x1), bob, 1);
         vm.stopPrank();
+    }
+
+    function test_setKeeper_rejectsZero() public {
+        vm.prank(owner);
+        vm.expectRevert(IPlanVault.ZeroAddress.selector);
+        daily.setKeeper(address(0), true);
     }
 
     function test_ownable2Step() public {

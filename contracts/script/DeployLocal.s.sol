@@ -8,7 +8,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MockERC20} from "../test/mocks/MockERC20.sol";
 import {MockWETH} from "../test/mocks/MockWETH.sol";
 import {MockV3Factory} from "../test/mocks/MockV3.sol";
-import {MockDCA} from "../src/token/MockDCA.sol";
+import {MockDCA} from "../test/mocks/MockDCA.sol";
 import {StockRegistry} from "../src/registries/StockRegistry.sol";
 import {AggregatorRouter} from "../src/router/AggregatorRouter.sol";
 import {UniV3Adapter} from "../src/router/adapters/UniV3Adapter.sol";
@@ -23,6 +23,7 @@ import {EpochKeeper} from "../src/keeper/EpochKeeper.sol";
 import {Zap} from "../src/periphery/Zap.sol";
 import {ClaimHelper} from "../src/periphery/ClaimHelper.sol";
 import {EpochLib} from "../src/libraries/EpochLib.sol";
+import {Route} from "../src/router/IAggregatorRouter.sol";
 
 /// @title DeployLocal
 /// @notice Full local stack on anvil: mock USDG/WETH/$DCA/stocks, a mock V3 factory with seeded pools, and the
@@ -233,17 +234,15 @@ contract DeployLocal is Script {
         MockV3Factory factory = new MockV3Factory();
         StockRegistry registry = new StockRegistry(deployer);
         AggregatorRouter router = new AggregatorRouter(address(weth), deployer);
-        uint24[] memory tiers = new uint24[](2);
-        tiers[0] = 500;
-        tiers[1] = 3000;
-        UniV3Adapter adapter = new UniV3Adapter(1, address(router), address(factory), tiers, deployer);
+        UniV3Adapter adapter = new UniV3Adapter(1, address(router), address(factory), deployer);
         router.setAdapter(1, address(adapter));
 
-        // WETH/USDG pool at 3000 USDG per ETH
+        // WETH/USDG pool at 3000 USDG per ETH, approved both ways (deposits zap WETH->USDG; Zap sells USDG->WETH)
         address pool =
             factory.createPool(address(weth), address(usdg), 500, _sqrt(address(weth), 1e18, address(usdg), 3000e6));
         usdg.mint(pool, 1_000_000_000e6);
         weth.mint(pool, 1_000_000e18);
+        _approveBoth(router, 1, pool, address(weth), address(usdg), 500);
 
         address[] memory stocks = new address[](SYMBOLS.length);
         for (uint256 i; i < SYMBOLS.length; ++i) {
@@ -254,13 +253,15 @@ contract DeployLocal is Script {
             );
             usdg.mint(p, 1_000_000_000e6);
             st.mint(p, 10_000_000e18);
+            _approveBoth(router, 1, p, address(usdg), address(st), 3000);
             stocks[i] = address(st);
         }
         // Long-tail tickers: registry-listed for the frontend, no seeded pool (no route, no price — same as
         // real life for a thin-liquidity Stock Token), so no keeper jobs either.
         for (uint256 i; i < OTHER_SYMBOLS.length; ++i) {
-            MockERC20 st =
-                new MockERC20(string.concat(OTHER_SYMBOLS[i], " Stock Token"), string.concat(OTHER_SYMBOLS[i], "st"), 18);
+            MockERC20 st = new MockERC20(
+                string.concat(OTHER_SYMBOLS[i], " Stock Token"), string.concat(OTHER_SYMBOLS[i], "st"), 18
+            );
             registry.listStock(address(st), OTHER_SYMBOLS[i], false, true);
         }
 
@@ -283,7 +284,10 @@ contract DeployLocal is Script {
         vp.origin = EpochLib.alignToDay(block.timestamp);
         MonthlyVault monthly = new MonthlyVault(vp);
 
+        // Vaults are keeperOnly by default: the EpochKeeper contract is their keeper, and the scheduler's `bot`
+        // wallet is an EpochKeeper operator (every execution entry point on the keeper is operator-only).
         EpochKeeper keeper = new EpochKeeper(address(usdg), deployer);
+        keeper.setOperator(bot, true);
         PlanVault[3] memory vaults = [PlanVault(daily), PlanVault(weekly), PlanVault(monthly)];
         for (uint256 v; v < 3; ++v) {
             vaults[v].setKeeper(address(keeper), true);
@@ -332,7 +336,7 @@ contract DeployLocal is Script {
         usdg.approve(address(testVault), 1_500_000e6);
         uint96[3] memory seedPerEpoch = [uint96(100e6), uint96(50e6), uint96(25e6)];
         for (uint256 i; i < 3 && i < stocks.length; ++i) {
-            testVault.createPlan(stocks[i], seedPerEpoch[i], false, address(0), 500_000e6, 0, 0);
+            testVault.createPlan(stocks[i], seedPerEpoch[i], address(0), 500_000e6, 0, 0);
         }
         vm.stopBroadcast();
 
@@ -372,6 +376,13 @@ contract DeployLocal is Script {
         console2.log("bot      ", bot);
         console2.log("testVault", address(testVault));
         console2.log("testEpoch (s)", uint256(testEpochLength));
+    }
+
+    function _approveBoth(AggregatorRouter router, uint8 protocol, address pool, address a, address b, uint24 fee)
+        internal
+    {
+        router.approveHop(Route({protocol: protocol, tokenIn: a, tokenOut: b, fee: fee, extra: abi.encode(pool)}));
+        router.approveHop(Route({protocol: protocol, tokenIn: b, tokenOut: a, fee: fee, extra: abi.encode(pool)}));
     }
 
     function _sqrt(address base, uint256 baseAmt, address quote, uint256 quoteAmt) internal pure returns (uint160) {

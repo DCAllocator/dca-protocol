@@ -17,12 +17,9 @@ contract ClaimHelper {
         address recipient;
         uint96 amountPerEpoch;
         uint128 usdgIdle;
-        uint128 wethIdle;
         uint128 stockAccrued;
         uint32 lastEpochId;
         bool paused;
-        bool zapWethEachEpoch;
-        uint16 maxWethSlippageBps;
     }
 
     /// @notice Every plan `user` owns across `vaults`.
@@ -44,12 +41,9 @@ contract ClaimHelper {
                     recipient: p.recipient,
                     amountPerEpoch: p.amountPerEpoch,
                     usdgIdle: p.usdgIdle,
-                    wethIdle: p.wethIdle,
                     stockAccrued: p.stockAccrued,
                     lastEpochId: p.lastEpochId,
-                    paused: p.paused,
-                    zapWethEachEpoch: p.zapWethEachEpoch,
-                    maxWethSlippageBps: p.maxWethSlippageBps
+                    paused: p.paused
                 });
             }
         }
@@ -66,7 +60,7 @@ contract ClaimHelper {
         }
     }
 
-    /// @notice What the next epoch would charge a plan if it ran now (USDG idle only; WETH zap not simulated).
+    /// @notice What the next epoch would charge a plan if it ran now.
     ///         Powers the "you pay 0.50% of $200 = $1.00 this epoch" line.
     function previewFill(IPlanVault vault, uint256 planId)
         external

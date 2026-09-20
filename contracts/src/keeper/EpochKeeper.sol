@@ -7,13 +7,17 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IPlanVault} from "../interfaces/IPlanVault.sol";
 
 /// @title EpochKeeper
-/// @notice Job list of (vault, stock) pairs with a permissionless `runDue()` and a Chainlink-Automation /
+/// @notice Job list of (vault, stock) pairs with an operator-only `runDue()` and a Chainlink-Automation /
 ///         Gelato compatible `checkUpkeep` / `performUpkeep` pair. One failing job never blocks the others.
 ///
-/// @dev Cron guidance (UTC): Daily vault fires at 00:00 every day, Weekly at Monday 00:00, Monthly every
+/// @dev Every execution entry point (`runDue`, `performUpkeep`, `run`) is restricted to the owner and
+///      `isOperator` addresses: this contract is registered as a keeper on the vaults (which run with
+///      `keeperOnly = true`), so an open entry point here would hand that privilege to anyone. Register your
+///      bot EOAs and the Chainlink Automation forwarder / Gelato dedicated sender as operators.
+///      Cron guidance (UTC): Daily vault fires at 00:00 every day, Weekly at Monday 00:00, Monthly every
 ///      30 days from its origin. Poll `checkUpkeep` a few minutes after each boundary; a large stock may
 ///      need several `performUpkeep` calls (pagination) — keep polling until `isEpochDue` is false.
-///      Vault keeper tips (if enabled) land here and are forwarded to whoever called `runDue`.
+///      Vault keeper tips (if enabled) land here and are forwarded to the operator who called.
 ///
 ///      V2 hook point: a Uniswap V4 afterSwap hook could call `vault.advanceEpoch(stock, ...)` directly
 ///      (see IEpochAdvanceable). Nothing here depends on it.
@@ -92,6 +96,7 @@ contract EpochKeeper is Ownable2Step {
     }
 
     function setOperator(address operator, bool allowed) external onlyOwner {
+        if (operator == address(0)) revert ZeroAddress();
         isOperator[operator] = allowed;
         emit OperatorSet(operator, allowed);
     }
@@ -146,8 +151,8 @@ contract EpochKeeper is Ownable2Step {
         return (true, abi.encode(batch));
     }
 
-    /// @notice Automation perform. Permissionless; re-checks due-ness on chain.
-    function performUpkeep(bytes calldata performData) external {
+    /// @notice Automation perform. Operators only (register the Automation forwarder); re-checks due-ness on chain.
+    function performUpkeep(bytes calldata performData) external onlyOperator {
         uint256[] memory idx = abi.decode(performData, (uint256[]));
         for (uint256 i; i < idx.length; ++i) {
             if (idx[i] >= _jobs.length) continue;
@@ -162,8 +167,8 @@ contract EpochKeeper is Ownable2Step {
     // EOA bots
     // ------------------------------------------------------------------
 
-    /// @notice Run every due job once (one page each). Call repeatedly until nothing is due.
-    function runDue() external returns (uint256 ran) {
+    /// @notice Run every due job once (one page each). Call repeatedly until nothing is due. Operators only.
+    function runDue() external onlyOperator returns (uint256 ran) {
         for (uint256 i; i < _jobs.length; ++i) {
             Job memory j = _jobs[i];
             if (!_isDue(j)) continue;
@@ -172,11 +177,14 @@ contract EpochKeeper is Ownable2Step {
         _forwardTips(msg.sender);
     }
 
-    /// @notice Run one job with an explicit page size and optional trusted route override.
-    /// @dev Route overrides require this contract to be registered as a keeper on the vault; only operators
-    ///      may pass one so a random caller cannot inject routes through the keeper's privilege.
-    function run(uint256 index, uint256 limit, bytes calldata routeOverride) external returns (bool completed) {
-        if (routeOverride.length != 0 && msg.sender != owner() && !isOperator[msg.sender]) revert NotOperator();
+    /// @notice Run one job with an explicit page size and optional route override. Operators only.
+    /// @dev The vault validates the override: every hop must be approved on the router and `minOut` may not be
+    ///      below the auto-route's own minOut. Override failures revert here (the page is not consumed).
+    function run(uint256 index, uint256 limit, bytes calldata routeOverride)
+        external
+        onlyOperator
+        returns (bool completed)
+    {
         if (index >= _jobs.length) revert JobMissing(index);
         Job memory j = _jobs[index];
         completed = IPlanVault(j.vault).advanceEpoch(j.stock, limit, routeOverride);
