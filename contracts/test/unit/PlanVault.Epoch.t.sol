@@ -60,13 +60,13 @@ contract PlanVaultEpochTest is BaseTest {
         assertFalse(daily.isEpochDue(address(nvda)));
     }
 
-    function test_noPlans_completesTrivially() public {
+    function test_noPlans_notDueAndReverts() public {
         _nextEpoch(daily);
         assertFalse(daily.isEpochDue(address(nvda)), "not due with zero plans");
         vm.prank(keeper);
-        assertTrue(daily.advanceEpoch(address(nvda), 0, ""));
-        assertEq(daily.lastExecutedEpoch(address(nvda)), 1);
-        assertEq(router.swapCount(), 0);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.EpochNotDue.selector, address(nvda), 1));
+        daily.advanceEpoch(address(nvda), 0, "");
+        assertEq(daily.epochsCompleted(), 0);
     }
 
     // ------------------------------------------------------------------
@@ -135,7 +135,9 @@ contract PlanVaultEpochTest is BaseTest {
     }
 
     function test_fill_emptyPlanSkipped() public {
-        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 0);
+        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 100e6);
+        vm.prank(alice);
+        daily.withdrawIdle(id, type(uint256).max);
         _nextEpoch(daily);
         _advance(daily, address(nvda));
         assertEq(daily.getPlan(id).lastEpochId, 0);
@@ -237,7 +239,7 @@ contract PlanVaultEpochTest is BaseTest {
     function test_tier_recipientReceivesAutoDist() public {
         _giveDca(alice, 10_000);
         vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, false, carol, 1_000e6, 0, 0);
+        uint256 id = daily.createPlan(address(nvda), 200e6, carol, 1_000e6, 0, 0);
         _nextEpoch(daily);
         _advance(daily, address(nvda));
         assertEq(nvda.balanceOf(carol), _nvdaFor(198.5e6));
@@ -277,7 +279,7 @@ contract PlanVaultEpochTest is BaseTest {
 
     function test_claim_feeAndRecipient() public {
         vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, false, carol, 1_000e6, 0, 0);
+        uint256 id = daily.createPlan(address(nvda), 200e6, carol, 1_000e6, 0, 0);
         _nextEpoch(daily);
         _advance(daily, address(nvda));
         uint256 accrued = daily.getPlan(id).stockAccrued;
@@ -375,14 +377,14 @@ contract PlanVaultEpochTest is BaseTest {
 
         uint256 a = _createUsdgPlan(daily, alice, address(nvda), 100e6, 1_000e6);
         uint256 b = _createUsdgPlan(daily, bob, address(nvda), 200e6, 1_000e6);
-        uint256 c = _createUsdgPlan(daily, carol, address(nvda), 1e6, 1_000e6);
+        uint256 c = _createUsdgPlan(daily, carol, address(nvda), 10e6, 1_000e6);
         _nextEpoch(daily);
         _advance(daily, address(nvda));
 
-        // total net 301 USDG -> 2107 wei. Shares floor: a=700, b=1400, c=7 -> exact here, dust 0
+        // total net 310 USDG -> 2170 wei. Shares floor: a=700, b=1400, c=70 -> exact here, dust 0
         assertEq(daily.getPlan(a).stockAccrued, 700);
         assertEq(daily.getPlan(b).stockAccrued, 1400);
-        assertEq(daily.getPlan(c).stockAccrued, 7);
+        assertEq(daily.getPlan(c).stockAccrued, 70);
         assertEq(daily.dustPot(address(nvda)), 0);
 
         // Now a rate producing dust: 1 USDG -> 1 wei, weights 1:2 on 3 wei? use 10 wei over 3 equal plans
@@ -398,7 +400,7 @@ contract PlanVaultEpochTest is BaseTest {
         // 10 wei / 3 -> 3 each, dust 1
         assertEq(daily.getPlan(a).stockAccrued, 703);
         assertEq(daily.getPlan(b).stockAccrued, 1403);
-        assertEq(daily.getPlan(c).stockAccrued, 10);
+        assertEq(daily.getPlan(c).stockAccrued, 73);
         assertEq(daily.dustPot(address(nvda)), 1);
         assertEq(nvda.balanceOf(address(daily)), daily.totalStockAccrued(address(nvda)) + daily.dustPot(address(nvda)));
 
@@ -415,34 +417,139 @@ contract PlanVaultEpochTest is BaseTest {
     }
 
     function test_residualUsdgReturnedProRata() public {
-        router.setFill(address(usdg), address(nvda), 5_000); // pool only takes half
+        router.setFill(address(usdg), address(nvda), 5_000); // pool only takes half (quote reflects it)
         FeeConfig memory f = daily.fees();
         f.purchaseFeeBps = 0;
-        f.swapSlippageBps = 500;
         vm.prank(owner);
         daily.setFees(f);
         uint256 a = _createUsdgPlan(daily, alice, address(nvda), 100e6, 1_000e6);
         uint256 b = _createUsdgPlan(daily, bob, address(nvda), 300e6, 1_000e6);
         _nextEpoch(daily);
-        // minOut from the quote (400 -> 0.8 NVDA * 0.95) will exceed the half fill; use a keeper override.
-        Route[] memory path = new Route[](1);
-        path[0] = Route({protocol: 1, tokenIn: address(usdg), tokenOut: address(nvda), fee: 3000, extra: ""});
-        vm.prank(keeper);
-        daily.advanceEpoch(address(nvda), 0, abi.encode(path, uint256(1)));
+        _advance(daily, address(nvda));
         // 200 USDG unspent, returned 1:3
         assertEq(daily.getPlan(a).usdgIdle, 900e6 + 50e6);
         assertEq(daily.getPlan(b).usdgIdle, 700e6 + 150e6);
         assertEq(daily.totalUsdgIdle(), 1_800e6);
+        assertEq(daily.usdgDust(), 0, "splits exactly");
         assertEq(usdg.balanceOf(address(daily)), 1_800e6);
+        assertEq(daily.totalNotionalUsdg(), 200e6, "notional counts what was actually spent");
     }
 
-    function test_swapZeroOutputReverts() public {
-        router.setRate(address(usdg), address(nvda), 0, 1);
+    function test_residualDust_accountedAndSweptAtThreshold() public {
+        router.setFill(address(usdg), address(nvda), 5_000);
+        FeeConfig memory f = daily.fees();
+        f.purchaseFeeBps = 0;
+        vm.prank(owner);
+        daily.setFees(f);
+        // odd nets (100.000001 / 100.000003 / 100.000007) with a 33.33% fill: residual cannot be split exactly
+        router.setFill(address(usdg), address(nvda), 3_333);
+        _createUsdgPlan(daily, alice, address(nvda), 100e6 + 1, 1_000e6);
+        _createUsdgPlan(daily, bob, address(nvda), 100e6 + 3, 1_000e6);
+        _createUsdgPlan(daily, carol, address(nvda), 100e6 + 7, 1_000e6);
+        _nextEpoch(daily);
+        _advance(daily, address(nvda));
+        uint256 dust = daily.usdgDust();
+        assertGt(dust, 0, "remainder booked as dust");
+        assertLt(dust, 3, "at most n-1 units");
+        assertEq(usdg.balanceOf(address(daily)), daily.totalUsdgIdle() + dust, "tight invariant");
+        assertEq(usdg.balanceOf(treasury), 0, "below the 1 USDG sweep threshold: kept");
+
+        // lower the threshold: the next advanceEpoch forwards it to the treasury
+        vm.prank(owner);
+        daily.setDustSweepMin(1);
+        _nextEpoch(daily);
+        vm.expectEmit(true, true, false, false);
+        emit IPlanVault.DustSwept(address(usdg), treasury, 0);
+        _advance(daily, address(nvda));
+        assertEq(daily.usdgDust(), 0);
+        assertEq(usdg.balanceOf(address(daily)), daily.totalUsdgIdle());
+    }
+
+    function test_sweepDust_forcedByFeeManager() public {
+        router.setFill(address(usdg), address(nvda), 5_000);
+        FeeConfig memory f = daily.fees();
+        f.purchaseFeeBps = 0;
+        vm.prank(owner);
+        daily.setFees(f);
+        router.setFill(address(usdg), address(nvda), 3_333);
+        _createUsdgPlan(daily, alice, address(nvda), 100e6 + 1, 1_000e6);
+        _createUsdgPlan(daily, bob, address(nvda), 100e6 + 3, 1_000e6);
+        _createUsdgPlan(daily, carol, address(nvda), 100e6 + 7, 1_000e6);
+        _nextEpoch(daily);
+        _advance(daily, address(nvda));
+        uint256 dust = daily.usdgDust();
+        assertGt(dust, 0);
+        vm.prank(alice);
+        vm.expectRevert();
+        daily.sweepDust();
+        vm.prank(owner);
+        daily.setFeeManager(bob);
+        vm.prank(bob);
+        daily.sweepDust();
+        assertEq(daily.usdgDust(), 0);
+        assertEq(usdg.balanceOf(treasury), dust);
+    }
+
+    // ------------------------------------------------------------------
+    // Skip, never revert: a page whose purchase cannot happen charges nobody and still advances
+    // ------------------------------------------------------------------
+
+    function test_pageSkipped_noRoute() public {
+        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        router.removePair(address(usdg), address(nvda));
+        _nextEpoch(daily);
+        vm.expectEmit(true, true, false, false);
+        emit IPlanVault.EpochPageSkipped(address(nvda), 1, 0, 1, "");
+        assertTrue(_advance(daily, address(nvda)), "epoch completes");
+        Plan memory p = daily.getPlan(id);
+        assertEq(p.usdgIdle, 1_000e6, "nothing charged");
+        assertEq(p.lastEpochId, 0, "not marked filled");
+        assertEq(usdg.balanceOf(treasury), 0, "no fee");
+        assertEq(daily.lastExecutedEpoch(address(nvda)), 1);
+        assertFalse(daily.isEpochDue(address(nvda)));
+        // route restored -> next epoch fills normally
+        router.setRate(address(usdg), address(nvda), NVDA_PER_USDG_NUM, NVDA_PER_USDG_DEN);
+        _nextEpoch(daily);
+        _advance(daily, address(nvda));
+        assertEq(daily.getPlan(id).lastEpochId, 2);
+        assertEq(daily.getPlan(id).usdgIdle, 800e6);
+    }
+
+    function test_pageSkipped_swapReverts() public {
+        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        router.setRevertOnSwap(true);
+        _nextEpoch(daily);
+        vm.expectEmit(true, true, false, false);
+        emit IPlanVault.EpochPageSkipped(address(nvda), 1, 0, 1, "");
+        assertTrue(_advance(daily, address(nvda)));
+        assertEq(daily.getPlan(id).usdgIdle, 1_000e6);
+        assertEq(daily.totalUsdgIdle(), 1_000e6);
+        assertEq(usdg.balanceOf(address(daily)), 1_000e6);
+    }
+
+    function test_pageSkipped_quoteTooSmall() public {
+        router.setRate(address(usdg), address(nvda), 0, 1); // pool returns 0 stock
+        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        _nextEpoch(daily);
+        vm.expectEmit(true, true, false, true);
+        emit IPlanVault.EpochPageSkipped(address(nvda), 1, 0, 1, bytes("quote too small"));
+        assertTrue(_advance(daily, address(nvda)));
+        assertEq(daily.getPlan(id).usdgIdle, 1_000e6);
+        assertEq(router.swapCount(), 0, "no swap attempted");
+    }
+
+    function test_pageSkipped_otherPagesStillFill() public {
         _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        _createUsdgPlan(daily, bob, address(nvda), 200e6, 1_000e6);
         _nextEpoch(daily);
         vm.prank(keeper);
-        vm.expectRevert(IPlanVault.SwapReturnedZero.selector);
-        daily.advanceEpoch(address(nvda), 0, "");
+        daily.advanceEpoch(address(nvda), 1, ""); // page 0 fills
+        router.setRevertOnSwap(true);
+        vm.prank(keeper);
+        assertTrue(daily.advanceEpoch(address(nvda), 1, "")); // page 1 skipped, epoch complete
+        assertEq(daily.getPlan(1).lastEpochId, 1);
+        assertEq(daily.getPlan(2).lastEpochId, 0);
+        assertEq(daily.getPlan(2).usdgIdle, 1_000e6);
     }
 
     // ------------------------------------------------------------------
@@ -528,129 +635,36 @@ contract PlanVaultEpochTest is BaseTest {
     }
 
     // ------------------------------------------------------------------
-    // WETH: zap-now vs zap-at-epoch, slippage skip, no route
+    // ETH / WETH deposits are converted to USDG at deposit time; epochs never touch WETH
     // ------------------------------------------------------------------
 
-    function test_weth_zapAtEpoch_onlyDeficitZapped() public {
+    function test_weth_depositIsConvertedAndSpentAsUsdg() public {
         vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, true, address(0), 50e6, 1 ether, 0);
-        _nextEpoch(daily);
-        vm.expectEmit(true, true, false, true);
-        emit IPlanVault.WethZapped(id, 1, 0.05 ether, 150e6); // 150 USDG deficit = 0.05 WETH
-        _advance(daily, address(nvda));
-        Plan memory p = daily.getPlan(id);
-        assertEq(p.usdgIdle, 0, "50 + 150 all spent");
-        assertEq(p.wethIdle, 0.95 ether);
-        assertEq(p.stockAccrued, _nvdaFor(198.5e6));
-        assertEq(daily.totalWethIdle(), 0.95 ether);
-        assertEq(router.swapCount(), 2, "zap + buy");
-    }
-
-    function test_weth_zapAtEpoch_notEnoughWethZapsAll() public {
-        vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, true, address(0), 0, 0.01 ether, 0);
+        uint256 id = daily.createPlan(address(nvda), 200e6, address(0), 50e6, 1 ether, 0);
+        assertEq(daily.getPlan(id).usdgIdle, 3_050e6);
+        assertEq(router.swapCount(), 1, "one conversion at deposit");
         _nextEpoch(daily);
         _advance(daily, address(nvda));
-        Plan memory p = daily.getPlan(id);
-        assertEq(p.wethIdle, 0);
-        assertEq(p.usdgIdle, 0);
-        // 30 USDG spent, 0.75% fee
-        assertEq(p.stockAccrued, _nvdaFor(30e6 - 0.225e6));
+        assertEq(router.swapCount(), 2, "one buy per page, no zap at epoch");
+        assertEq(daily.getPlan(id).usdgIdle, 2_850e6);
+        assertEq(weth.balanceOf(address(daily)), 0);
+        assertEq(daily.wethDust(), 0);
     }
 
-    function test_weth_zapAtEpoch_aggregatesAcrossPlans() public {
-        vm.prank(alice);
-        uint256 a = daily.createPlan(address(nvda), 300e6, true, address(0), 0, 1 ether, 0);
-        vm.prank(bob);
-        uint256 b = daily.createPlan(address(nvda), 600e6, true, address(0), 0, 1 ether, 0);
-        _nextEpoch(daily);
-        _advance(daily, address(nvda));
-        assertEq(router.swapCount(), 2, "single aggregate zap, single buy");
-        assertEq(daily.getPlan(a).wethIdle, 0.9 ether);
-        assertEq(daily.getPlan(b).wethIdle, 0.8 ether);
-        assertEq(daily.getPlan(a).stockAccrued, _nvdaFor(300e6 - 2.25e6));
-        assertEq(daily.getPlan(b).stockAccrued, _nvdaFor(600e6 - 4.5e6));
-    }
-
-    function test_weth_slippageSkip_globalCap() public {
-        router.setImpact(address(weth), address(usdg), 101); // > 100 bps default
-        vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, true, address(0), 50e6, 1 ether, 0);
-        _nextEpoch(daily);
-        vm.expectEmit(true, true, false, true);
-        emit IPlanVault.PlanSkippedSlippage(id, 1, 101, 100);
-        _advance(daily, address(nvda));
-        Plan memory p = daily.getPlan(id);
-        assertEq(p.usdgIdle, 50e6, "skipped entirely");
-        assertEq(p.wethIdle, 1 ether);
-        assertEq(p.lastEpochId, 0);
-        assertEq(router.swapCount(), 0);
-    }
-
-    function test_weth_slippageSkip_perPlanCapOverridesGlobal() public {
-        router.setImpact(address(weth), address(usdg), 150);
-        vm.prank(alice);
-        uint256 a = daily.createPlan(address(nvda), 200e6, true, address(0), 0, 1 ether, 0);
-        vm.prank(bob);
-        uint256 b = daily.createPlan(address(nvda), 200e6, true, address(0), 0, 1 ether, 0);
-        vm.prank(bob);
-        daily.setPlanSlippage(b, 200); // bob tolerates 2%
-        _nextEpoch(daily);
-        _advance(daily, address(nvda));
-        assertEq(daily.getPlan(a).lastEpochId, 0, "alice skipped");
-        assertEq(daily.getPlan(b).lastEpochId, 1, "bob filled");
-        assertGt(daily.getPlan(b).stockAccrued, 0);
-    }
-
-    function test_weth_noRouteSkips() public {
+    function test_weth_noRouteAtDepositReverts() public {
         router.removePair(address(weth), address(usdg));
         vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, true, address(0), 50e6, 1 ether, 0);
-        _nextEpoch(daily);
-        vm.expectEmit(true, true, false, true);
-        emit IPlanVault.PlanSkippedNoRoute(id, 1);
-        _advance(daily, address(nvda));
-        assertEq(daily.getPlan(id).usdgIdle, 50e6);
-        assertEq(daily.getPlan(id).wethIdle, 1 ether);
-    }
-
-    function test_weth_usdgSufficient_noZap() public {
-        vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, true, address(0), 500e6, 1 ether, 0);
-        _nextEpoch(daily);
-        _advance(daily, address(nvda));
-        assertEq(daily.getPlan(id).wethIdle, 1 ether, "WETH untouched when USDG covers the epoch");
-        assertEq(router.swapCount(), 1);
-    }
-
-    function test_weth_zapNowPlan_ignoresStrayWeth() public {
-        // Mode A plan that ended up with WETH idle via a partial fill: epochs must not touch it.
-        router.setFill(address(weth), address(usdg), 5_000);
-        vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, false, address(0), 0, 1 ether, 1_000e6);
-        router.setFill(address(weth), address(usdg), 10_000);
-        assertEq(daily.getPlan(id).wethIdle, 0.5 ether);
-        _nextEpoch(daily);
-        _advance(daily, address(nvda));
-        assertEq(daily.getPlan(id).wethIdle, 0.5 ether);
-        assertEq(daily.getPlan(id).usdgIdle, 1_300e6);
+        vm.expectRevert();
+        daily.createPlan{value: 1 ether}(address(nvda), 200e6, address(0), 0, 0, 0);
     }
 
     // ------------------------------------------------------------------
     // Access: keeperOnly, route override, tips
     // ------------------------------------------------------------------
 
-    function test_permissionlessByDefault() public {
+    function test_keeperOnlyByDefault() public {
+        assertTrue(daily.keeperOnly());
         _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
-        _nextEpoch(daily);
-        vm.prank(makeAddr("random"));
-        assertTrue(daily.advanceEpoch(address(nvda), 0, ""));
-    }
-
-    function test_keeperOnlyMode() public {
-        _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
-        vm.prank(owner);
-        daily.setKeeperOnly(true);
         _nextEpoch(daily);
         vm.prank(makeAddr("random"));
         vm.expectRevert(IPlanVault.NotKeeper.selector);
@@ -662,19 +676,74 @@ contract PlanVaultEpochTest is BaseTest {
         assertTrue(daily.advanceEpoch(address(nvda), 0, ""), "owner always allowed");
     }
 
+    function test_keeperOnlyCanBeDisabled() public {
+        _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        vm.prank(owner);
+        daily.setKeeperOnly(false);
+        _nextEpoch(daily);
+        vm.prank(makeAddr("random"));
+        assertTrue(daily.advanceEpoch(address(nvda), 0, ""));
+    }
+
+    function _autoMinOut(uint256 usdgIn) internal view returns (uint256) {
+        (uint256 q,) = router.quote(address(usdg), address(nvda), usdgIn);
+        return (q * (10_000 - daily.fees().swapSlippageBps)) / 10_000;
+    }
+
     function test_routeOverride_requiresPrivilege() public {
         _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         _nextEpoch(daily);
         Route[] memory path = new Route[](1);
         path[0] = Route({protocol: 1, tokenIn: address(usdg), tokenOut: address(nvda), fee: 3000, extra: ""});
-        bytes memory ovr = abi.encode(path, uint256(1));
+        uint256 minOut = _autoMinOut(198.5e6);
+        bytes memory ovr = abi.encode(path, minOut);
         vm.prank(makeAddr("random"));
         vm.expectRevert(IPlanVault.NotKeeper.selector);
         daily.advanceEpoch(address(nvda), 0, ovr);
         vm.prank(keeper);
         daily.advanceEpoch(address(nvda), 0, ovr);
-        assertEq(router.lastMinOut(), 1);
+        assertEq(router.lastMinOut(), minOut);
         assertEq(router.lastPathLength(), 1);
+    }
+
+    function test_routeOverride_minOutMayNotBeBelowAuto() public {
+        _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        _nextEpoch(daily);
+        Route[] memory path = new Route[](1);
+        path[0] = Route({protocol: 1, tokenIn: address(usdg), tokenOut: address(nvda), fee: 3000, extra: ""});
+        uint256 floor = _autoMinOut(198.5e6);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.OverrideMinOutTooLow.selector, floor - 1, floor));
+        daily.advanceEpoch(address(nvda), 0, abi.encode(path, floor - 1));
+        // tighter than auto is the whole point of an override
+        vm.prank(keeper);
+        daily.advanceEpoch(address(nvda), 0, abi.encode(path, floor + 1));
+        assertEq(router.lastMinOut(), floor + 1);
+    }
+
+    function test_routeOverride_failureRevertsInsteadOfSkipping() public {
+        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        _nextEpoch(daily);
+        Route[] memory path = new Route[](1);
+        path[0] = Route({protocol: 1, tokenIn: address(usdg), tokenOut: address(nvda), fee: 3000, extra: ""});
+        uint256 tooTight = _autoMinOut(198.5e6) * 2;
+        vm.prank(keeper);
+        vm.expectRevert(); // MockRouter InsufficientOutput bubbles: the page is not consumed
+        daily.advanceEpoch(address(nvda), 0, abi.encode(path, tooTight));
+        assertEq(daily.nextPlanIndex(address(nvda), 1), 0, "cursor untouched");
+        assertEq(daily.getPlan(id).usdgIdle, 1_000e6);
+    }
+
+    function test_routeOverride_allowedWhenNoAutoQuote() public {
+        _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        _nextEpoch(daily);
+        router.removePair(address(usdg), address(nvda));
+        // an override can only name router-approved hops; the mock accepts any, so model "approved but unquoted"
+        Route[] memory path = new Route[](1);
+        path[0] = Route({protocol: 1, tokenIn: address(usdg), tokenOut: address(nvda), fee: 3000, extra: ""});
+        vm.prank(keeper);
+        vm.expectRevert(); // mock has no pair -> NoRoute bubbles from the swap
+        daily.advanceEpoch(address(nvda), 0, abi.encode(path, uint256(1)));
     }
 
     function test_routeOverride_zeroMinOutRejected() public {
@@ -724,16 +793,7 @@ contract PlanVaultEpochTest is BaseTest {
         daily.advanceEpoch(address(nvda), 0, "");
         // user can still exit
         vm.prank(alice);
-        daily.withdrawIdle(id, type(uint256).max, 0, false);
-    }
-
-    function test_routerRevertBubbles() public {
-        _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
-        _nextEpoch(daily);
-        router.setRevertOnSwap(true);
-        vm.prank(keeper);
-        vm.expectRevert("MockRouter: forced revert");
-        daily.advanceEpoch(address(nvda), 0, "");
+        daily.withdrawIdle(id, type(uint256).max);
     }
 
     function test_noDcaToken_noPerks() public {
@@ -744,6 +804,14 @@ contract PlanVaultEpochTest is BaseTest {
         _giveDca(alice, 100_000);
         assertEq(v.effectivePurchaseFeeBps(alice), 75);
         assertFalse(v.isAutoDistribute(alice));
+        // thresholds cannot be zeroed, and with no token there are no perks whatever they are
+        vm.prank(owner);
+        vm.expectRevert(IPlanVault.ZeroAmount.selector);
+        v.setThresholds(0, 0);
+        vm.prank(owner);
+        v.setThresholds(1, 1);
+        assertFalse(v.isAutoDistribute(alice));
+        assertEq(v.effectivePurchaseFeeBps(alice), 75);
     }
 }
 

@@ -37,6 +37,7 @@ contract TestVaultTest is BaseTest {
         vm.startPrank(owner);
         tv.setKeeper(address(k), true);
         k.addJob(address(tv), address(nvda));
+        k.setOperator(bot, true);
         vm.stopPrank();
         vm.prank(alice);
         usdg.approve(address(tv), type(uint256).max);
@@ -80,8 +81,9 @@ contract TestVaultTest is BaseTest {
         vm.prank(bot);
         k.run(0, 0, "");
         assertEq(tv.getPlan(1).usdgIdle, 10_000e6 - 100e6, "charged once, not eleven times");
+        uint32 cur = tv.currentEpochId();
         vm.prank(bot);
-        vm.expectRevert(abi.encodeWithSelector(IPlanVault.EpochNotDue.selector, address(nvda), tv.currentEpochId()));
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.EpochNotDue.selector, address(nvda), cur));
         k.run(0, 0, "");
     }
 

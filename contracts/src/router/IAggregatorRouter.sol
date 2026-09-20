@@ -11,22 +11,27 @@ struct Route {
 }
 
 /// @title IAggregatorRouter
-/// @notice The only swap entry point the vaults call. Probes every enabled adapter (direct + one hop via WETH),
-///         picks the highest output subject to a price-impact cap, and executes.
+/// @notice The only swap entry point the vaults call. Considers ONLY owner-approved hops (direct, or one hop via
+///         WETH), picks the highest output subject to a price-impact cap, and executes. Every hop of every
+///         executed path must be approved — including keeper overrides.
 interface IAggregatorRouter {
     error NoRoute(address tokenIn, address tokenOut);
     error InsufficientOutput(uint256 amountOut, uint256 minOut);
     error InvalidPath();
     error AdapterNotSet(uint8 protocol);
     error ZeroAmount();
+    error RouteNotApproved(bytes32 hopKey);
 
     event AdapterSet(uint8 indexed protocol, address adapter);
     event MaxPriceImpactSet(uint16 bps);
+    event HopApproved(bytes32 indexed hopKey, Route route);
+    event HopRevoked(bytes32 indexed hopKey, Route route);
     event Swapped(
         address indexed caller, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut
     );
 
-    /// @notice Best quote for `amountIn` of `tokenIn` -> `tokenOut`. Not a view: adapters simulate swaps.
+    /// @notice Best quote for `amountIn` of `tokenIn` -> `tokenOut` over approved hops. Not a view: adapters
+    ///         simulate swaps.
     /// @return amountOut Expected output.
     /// @return path      Route(s) to execute (1 or 2 hops).
     function quote(address tokenIn, address tokenOut, uint256 amountIn)
@@ -43,7 +48,9 @@ interface IAggregatorRouter {
         external
         returns (uint256 amountOut);
 
-    /// @notice Swap along an explicit path (from `quote`, or a trusted override). Pulls `amountIn` from msg.sender.
+    /// @notice Swap along an explicit path (from `quote`, or a trusted override). Every hop must be approved.
+    ///         Pulls `amountIn` from msg.sender. Unspent input of hop 0 is refunded to msg.sender; unspent
+    ///         intermediate tokens of later hops are forwarded to `recipient`.
     function swapWithRoute(
         address tokenIn,
         address tokenOut,
@@ -52,6 +59,9 @@ interface IAggregatorRouter {
         address recipient,
         Route[] calldata path
     ) external returns (uint256 amountOut);
+
+    /// @notice Simulated output of an explicit path of approved hops (reverts if unapproved / no fill).
+    function quotePath(Route[] calldata path, uint256 amountIn) external returns (uint256 amountOut);
 
     function weth() external view returns (address);
     function maxPriceImpactBps() external view returns (uint16);

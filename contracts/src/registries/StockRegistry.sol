@@ -17,6 +17,7 @@ contract StockRegistry is IStockRegistry, Ownable2Step {
     error AlreadyListed(address token);
     error NotListed(address token);
     error EmptySymbol();
+    error NotAContract(address token);
 
     constructor(address initialOwner) Ownable(initialOwner) {}
 
@@ -31,6 +32,7 @@ contract StockRegistry is IStockRegistry, Ownable2Step {
     /// @param approved       Whether plans may be opened immediately.
     function listStock(address token, string calldata symbol, bool feeOnTransfer, bool approved) external onlyOwner {
         if (token == address(0)) revert ZeroAddress();
+        if (token.code.length == 0) revert NotAContract(token);
         if (_info[token].known) revert AlreadyListed(token);
         if (bytes(symbol).length == 0) revert EmptySymbol();
         uint8 dec = IERC20Metadata(token).decimals();

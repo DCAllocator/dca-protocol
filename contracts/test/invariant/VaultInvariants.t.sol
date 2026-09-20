@@ -14,7 +14,7 @@ contract VaultInvariantsTest is BaseTest {
         address[] memory stocks = new address[](2);
         stocks[0] = address(nvda);
         stocks[1] = address(aapl);
-        handler = new VaultHandler(daily, usdg, weth, dca, router, owner, stocks);
+        handler = new VaultHandler(daily, usdg, weth, dca, router, owner, keeper, stocks);
         targetContract(address(handler));
     }
 
@@ -27,29 +27,32 @@ contract VaultInvariantsTest is BaseTest {
         assertEq(aapl.balanceOf(address(daily)), daily.totalStockAccrued(address(aapl)) + daily.dustPot(address(aapl)));
     }
 
-    /// vault.usdg + vault.weth == idle sums (fees leave immediately; no fee pot on the vault)
+    /// vault.usdg == idle + usdgDust, vault.weth == wethDust (fees leave immediately; every unit is accounted)
     function invariant_idleBackedByBalance() public view {
-        assertEq(usdg.balanceOf(address(daily)), daily.totalUsdgIdle());
-        assertEq(weth.balanceOf(address(daily)), daily.totalWethIdle());
+        assertEq(usdg.balanceOf(address(daily)), daily.totalUsdgIdle() + daily.usdgDust(), "usdg tight");
+        assertEq(weth.balanceOf(address(daily)), daily.wethDust(), "weth tight");
         assertEq(address(daily).balance, 0, "no stray ETH");
+    }
+
+    /// dust only changes inside advanceEpoch, which sweeps it at the threshold: it is always below it
+    function invariant_dustBounded() public view {
+        assertLt(daily.usdgDust(), daily.dustSweepMinUsdg(), "usdg dust is swept at the threshold");
+        assertEq(daily.wethDust(), 0, "weth dust is swept immediately");
     }
 
     /// aggregates == sum over plans (ghost recomputation)
     function invariant_aggregatesMatchPlans() public view {
         uint256 n = daily.nextPlanId();
         uint256 usdgSum;
-        uint256 wethSum;
         uint256 nvdaSum;
         uint256 aaplSum;
         for (uint256 id = 1; id < n; ++id) {
             Plan memory p = daily.getPlan(id);
             usdgSum += p.usdgIdle;
-            wethSum += p.wethIdle;
             if (p.stock == address(nvda)) nvdaSum += p.stockAccrued;
             else aaplSum += p.stockAccrued;
         }
         assertEq(usdgSum, daily.totalUsdgIdle());
-        assertEq(wethSum, daily.totalWethIdle());
         assertEq(nvdaSum, daily.totalStockAccrued(address(nvda)));
         assertEq(aaplSum, daily.totalStockAccrued(address(aapl)));
     }
@@ -83,7 +86,7 @@ contract VaultInvariantsTest is BaseTest {
             for (uint256 id = 1; id < n; ++id) {
                 Plan memory p = daily.getPlan(id);
                 if (p.stock != st[s]) continue;
-                if (p.usdgIdle > 0 || p.wethIdle > 0 || p.stockAccrued > 0) nonEmpty++;
+                if (p.usdgIdle > 0 || p.stockAccrued > 0) nonEmpty++;
             }
             assertGe(cnt, nonEmpty, "non-empty plans are always indexed");
         }
@@ -103,16 +106,16 @@ contract VaultInvariantsTest is BaseTest {
     /// path (invariant runs swallow reverts, so a silently dead handler would otherwise pass vacuously).
     function test_handlerReachesEpochPath() public {
         for (uint256 i; i < 40; ++i) {
-            handler.createPlan(
-                i, i, uint96(100e6 * (i + 1)), uint128(5_000e6), uint128(i % 2 == 0 ? 1 ether : 0), i % 3 == 0
-            );
+            handler.createPlan(i, i, uint96(100e6 * (i + 1)), uint128(5_000e6), uint128(i % 2 == 0 ? 1 ether : 0));
             handler.depositUSDG(i, i, uint128(1_000e6));
             handler.giveDca(i, uint32((i * 7_000) % 60_000));
+            handler.setFill(i, uint16(9_000 + (i * 97) % 1_000));
             handler.advanceEpoch(i, 3, 1);
+            handler.toggleRoute(i, i % 5 != 0);
             handler.advanceEpoch(i + 1, 4, 0);
+            handler.toggleRoute(i, true);
             handler.claim(i, i * 31);
-            handler.withdrawIdle(i, i * 17, i * 13, i % 2 == 0);
-            handler.setImpact(i * 11);
+            handler.withdrawIdle(i, i * 17);
             handler.prune(i);
         }
         assertGt(handler.epochsRun(), 10, "epochs ran");
@@ -122,5 +125,6 @@ contract VaultInvariantsTest is BaseTest {
         invariant_idleBackedByBalance();
         invariant_aggregatesMatchPlans();
         invariant_userAccruedMatches();
+        invariant_dustBounded();
     }
 }

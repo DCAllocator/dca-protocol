@@ -9,7 +9,5 @@ import {UniV3Adapter} from "./UniV3Adapter.sol";
 ///         Protocol id 3. If the Robinhood Chain deployment diverges (e.g. tick-spacing keyed factory),
 ///         deploy with factory = address(0) and register pools explicitly via `registerPool`.
 contract RamsesV3Adapter is UniV3Adapter {
-    constructor(address router_, address factory_, uint24[] memory feeTiers_, address owner_)
-        UniV3Adapter(3, router_, factory_, feeTiers_, owner_)
-    {}
+    constructor(address router_, address factory_, address owner_) UniV3Adapter(3, router_, factory_, owner_) {}
 }

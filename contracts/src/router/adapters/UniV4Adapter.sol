@@ -13,9 +13,8 @@ import {IPoolManager, IUnlockCallback, PoolKey, V4SwapParams} from "../../interf
 
 /// @title UniV4Adapter
 /// @notice Uniswap V4 adapter talking to the PoolManager directly through the unlock/callback pattern
-///         (no Universal Router, no Permit2). Pools are registered explicitly by the owner because V4 has
-///         no on-chain factory enumeration. With `poolManager == address(0)` the adapter is disabled and the
-///         router skips it.
+///         (no Universal Router, no Permit2). Pools are registered explicitly by the owner (`addPool`) and the
+///         router's approved hops name them by `PoolKey` in `Route.extra`.
 ///
 /// @dev Only ERC-20 / ERC-20 pools are supported (currency0 != address(0)); native-ETH pools are rejected
 ///      at registration. Quotes use the same unlock -> swap -> sentinel-revert technique as the V3 adapter.
@@ -29,7 +28,6 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
     /// @dev Storage slot of `mapping(PoolId => Pool.State) _pools` in PoolManager (StateLibrary.POOLS_SLOT).
     bytes32 public poolsSlot = bytes32(uint256(6));
 
-    mapping(bytes32 => PoolKey[]) private _pools; // pairKey => keys
     mapping(bytes32 => bool) public knownPool; // poolId => registered
     uint256 public poolCount;
 
@@ -49,6 +47,7 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
         address recipient;
     }
 
+    error ZeroAddress();
     error OnlyRouter();
     error OnlyPoolManager();
     error UnknownPool(bytes32 poolId);
@@ -60,6 +59,7 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
     event PoolsSlotSet(bytes32 slot);
 
     constructor(address router_, address poolManager_, address owner_) Ownable(owner_) {
+        if (router_ == address(0) || poolManager_ == address(0)) revert ZeroAddress();
         router = router_;
         poolManager = IPoolManager(poolManager_);
     }
@@ -81,24 +81,15 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
         bytes32 id = poolId(key);
         if (knownPool[id]) return;
         knownPool[id] = true;
-        _pools[_pairKey(key.currency0, key.currency1)].push(key);
         poolCount += 1;
         emit PoolAdded(id, key);
     }
 
-    /// @notice Unregister a pool.
+    /// @notice Unregister a pool. Revoke its hops on the router as well.
     function removePool(PoolKey calldata key) external onlyOwner {
         bytes32 id = poolId(key);
         if (!knownPool[id]) return;
         knownPool[id] = false;
-        PoolKey[] storage arr = _pools[_pairKey(key.currency0, key.currency1)];
-        for (uint256 i; i < arr.length; ++i) {
-            if (poolId(arr[i]) == id) {
-                arr[i] = arr[arr.length - 1];
-                arr.pop();
-                break;
-            }
-        }
         poolCount -= 1;
         emit PoolRemoved(id);
     }
@@ -118,16 +109,6 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
         return PROTOCOL_ID;
     }
 
-    /// @inheritdoc ISwapAdapter
-    function enabled() public view returns (bool) {
-        return address(poolManager) != address(0) && poolCount > 0;
-    }
-
-    function pools(address tokenA, address tokenB) external view returns (PoolKey[] memory) {
-        (address t0, address t1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
-        return _pools[_pairKey(t0, t1)];
-    }
-
     /// @notice keccak256(abi.encode(key)), identical to v4-core PoolIdLibrary.toId.
     function poolId(PoolKey memory key) public pure returns (bytes32) {
         return keccak256(abi.encode(key));
@@ -138,28 +119,21 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
     // ------------------------------------------------------------------
 
     /// @inheritdoc ISwapAdapter
-    function quote(address tokenIn, address tokenOut, uint256 amountIn)
-        external
-        returns (uint256 amountOut, uint256 midOut, Route memory route)
-    {
-        if (!enabled() || amountIn == 0 || tokenIn == tokenOut) return (0, 0, route);
-        (address t0, address t1) = tokenIn < tokenOut ? (tokenIn, tokenOut) : (tokenOut, tokenIn);
-        PoolKey[] storage keys = _pools[_pairKey(t0, t1)];
-        bool zeroForOne = tokenIn < tokenOut;
-        uint256 bestIdx = type(uint256).max;
-        for (uint256 i; i < keys.length; ++i) {
-            uint256 out = _simulate(keys[i], zeroForOne, amountIn);
-            if (out > amountOut) {
-                amountOut = out;
-                bestIdx = i;
-            }
-        }
-        if (bestIdx == type(uint256).max) return (0, 0, route);
-        PoolKey memory best = keys[bestIdx];
-        midOut = _midOut(best, zeroForOne, amountIn);
-        route = Route({
-            protocol: PROTOCOL_ID, tokenIn: tokenIn, tokenOut: tokenOut, fee: best.fee, extra: abi.encode(best)
-        });
+    function validateRoute(Route calldata route) external view returns (bool) {
+        if (route.protocol != PROTOCOL_ID || route.extra.length != 160) return false;
+        PoolKey memory key = abi.decode(route.extra, (PoolKey));
+        return knownPool[poolId(key)] && _keyMatches(key, route.tokenIn, route.tokenOut);
+    }
+
+    /// @inheritdoc ISwapAdapter
+    function quoteRoute(Route calldata route, uint256 amountIn) external returns (uint256 amountOut, uint256 midOut) {
+        if (amountIn == 0 || route.tokenIn == route.tokenOut || route.extra.length != 160) return (0, 0);
+        PoolKey memory key = abi.decode(route.extra, (PoolKey));
+        if (!knownPool[poolId(key)] || !_keyMatches(key, route.tokenIn, route.tokenOut)) return (0, 0);
+        bool zeroForOne = route.tokenIn < route.tokenOut;
+        amountOut = _simulate(key, zeroForOne, amountIn);
+        if (amountOut == 0) return (0, 0);
+        midOut = _midOut(key, zeroForOne, amountIn);
     }
 
     /// @inheritdoc ISwapAdapter
@@ -170,9 +144,7 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
     {
         PoolKey memory key = abi.decode(route.extra, (PoolKey));
         if (!knownPool[poolId(key)]) revert UnknownPool(poolId(key));
-        (address t0, address t1) =
-            route.tokenIn < route.tokenOut ? (route.tokenIn, route.tokenOut) : (route.tokenOut, route.tokenIn);
-        if (key.currency0 != t0 || key.currency1 != t1) revert PoolTokenMismatch();
+        if (!_keyMatches(key, route.tokenIn, route.tokenOut)) revert PoolTokenMismatch();
 
         bytes memory result = poolManager.unlock(
             abi.encode(
@@ -240,6 +212,11 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
     // Internals
     // ------------------------------------------------------------------
 
+    function _keyMatches(PoolKey memory key, address tokenIn, address tokenOut) internal pure returns (bool) {
+        (address t0, address t1) = tokenIn < tokenOut ? (tokenIn, tokenOut) : (tokenOut, tokenIn);
+        return key.currency0 == t0 && key.currency1 == t1;
+    }
+
     function _simulate(PoolKey memory key, bool zeroForOne, uint256 amountIn) internal returns (uint256) {
         try poolManager.unlock(
             abi.encode(
@@ -274,9 +251,5 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
             a0 := sar(128, delta)
             a1 := signextend(15, delta)
         }
-    }
-
-    function _pairKey(address t0, address t1) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(t0, t1));
     }
 }

@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockWETH} from "./mocks/MockWETH.sol";
 import {MockRouter} from "./mocks/MockRouter.sol";
-import {MockDCA} from "../src/token/MockDCA.sol";
+import {MockDCA} from "./mocks/MockDCA.sol";
 import {StockRegistry} from "../src/registries/StockRegistry.sol";
 import {DailyVault} from "../src/vault/DailyVault.sol";
 import {WeeklyVault} from "../src/vault/WeeklyVault.sol";
@@ -119,7 +119,7 @@ abstract contract BaseTest is Test {
         returns (uint256 planId)
     {
         vm.prank(user);
-        planId = v.createPlan(stock, perEpoch, false, address(0), deposit, 0, 0);
+        planId = v.createPlan(stock, perEpoch, address(0), deposit, 0, 0);
     }
 
     function _nextEpoch(PlanVault v) internal {

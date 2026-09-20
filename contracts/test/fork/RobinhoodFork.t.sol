@@ -10,6 +10,7 @@ import {UniV3Adapter} from "../../src/router/adapters/UniV3Adapter.sol";
 import {RamsesV3Adapter} from "../../src/router/adapters/RamsesV3Adapter.sol";
 import {UniV4Adapter} from "../../src/router/adapters/UniV4Adapter.sol";
 import {Route} from "../../src/router/IAggregatorRouter.sol";
+import {IUniswapV3Factory} from "../../src/interfaces/IUniswapV3.sol";
 
 /// @dev Robinhood Chain (4663) fork smoke test. Runs only when RH_RPC is set AND config/addresses.rh.json has
 ///      real (non-zero) USDG + at least one stock + one DEX factory. Otherwise every test is skipped.
@@ -61,19 +62,25 @@ contract RobinhoodForkTest is Test {
 
     function test_fork_quoteUsdgToNvda() public onlyFork {
         AggregatorRouter router = new AggregatorRouter(weth, address(this));
-        uint24[] memory tiers = new uint24[](4);
-        tiers[0] = 100;
-        tiers[1] = 500;
-        tiers[2] = 3000;
-        tiers[3] = 10000;
+        UniV3Adapter uni;
         if (uniV3Factory != address(0)) {
-            router.setAdapter(1, address(new UniV3Adapter(1, address(router), uniV3Factory, tiers, address(this))));
+            uni = new UniV3Adapter(1, address(router), uniV3Factory, address(this));
+            router.setAdapter(1, address(uni));
         }
         if (ramsesFactory != address(0)) {
-            router.setAdapter(3, address(new RamsesV3Adapter(address(router), ramsesFactory, tiers, address(this))));
+            router.setAdapter(3, address(new RamsesV3Adapter(address(router), ramsesFactory, address(this))));
         }
         if (uniV4Pm != address(0)) {
             router.setAdapter(2, address(new UniV4Adapter(address(router), uniV4Pm, address(this))));
+        }
+        // The router only trades approved hops: approve every Uniswap V3 USDG/NVDA tier the factory knows.
+        uint24[4] memory tiers = [uint24(100), 500, 3000, 10000];
+        for (uint256 i; i < 4 && address(uni) != address(0); ++i) {
+            address pool = IUniswapV3Factory(uniV3Factory).getPool(usdg, nvda, tiers[i]);
+            if (pool == address(0)) continue;
+            router.approveHop(
+                Route({protocol: 1, tokenIn: usdg, tokenOut: nvda, fee: tiers[i], extra: abi.encode(pool)})
+            );
         }
         uint256 amountIn = 1_000 * 10 ** IERC20Metadata(usdg).decimals();
         (uint256 out, Route[] memory path, uint256 impact) = router.quoteWithImpact(usdg, nvda, amountIn);

@@ -39,15 +39,17 @@ contract PeripheryTest is BaseTest {
         assertEq(address(zap).balance, 0);
     }
 
-    function test_zap_depositEthAsUsdgIntoZapLaterPlan() public {
-        vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, true, address(0), 0, 0, 0);
+    function test_zap_depositEthAsUsdgIntoPlan() public {
+        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 100e6);
         vm.prank(alice);
         uint256 out = zap.depositEthAsUsdg{value: 0.5 ether}(address(daily), id, 1_400e6);
         assertEq(out, 1_500e6);
-        assertEq(daily.getPlan(id).usdgIdle, 1_500e6, "credited as USDG, not WETH");
-        assertEq(daily.getPlan(id).wethIdle, 0);
+        assertEq(daily.getPlan(id).usdgIdle, 1_600e6, "credited as USDG");
         assertEq(usdg.allowance(address(zap), address(daily)), 0);
+        // below the vault's minimum deposit the vault refuses
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.BelowMinimum.selector, 3e6, 10e6));
+        zap.depositEthAsUsdg{value: 0.001 ether}(address(daily), id, 0);
     }
 
     function test_zap_reverts() public {

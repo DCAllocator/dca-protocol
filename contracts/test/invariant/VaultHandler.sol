@@ -7,7 +7,7 @@ import {Plan} from "../../src/vault/VaultTypes.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {MockWETH} from "../mocks/MockWETH.sol";
 import {MockRouter} from "../mocks/MockRouter.sol";
-import {MockDCA} from "../../src/token/MockDCA.sol";
+import {MockDCA} from "../mocks/MockDCA.sol";
 
 /// @dev Random-walk handler over one vault with two stocks. Every action is wrapped so reverts on
 ///      nonsensical inputs are swallowed (fail_on_revert = false) but state stays consistent.
@@ -18,6 +18,7 @@ contract VaultHandler is Test {
     MockDCA public dca;
     MockRouter public router;
     address public dcaOwner;
+    address public keeperAddr;
     address[] public stocks;
     address[] public actors;
     uint256[] public planIds;
@@ -33,9 +34,11 @@ contract VaultHandler is Test {
         MockDCA _dca,
         MockRouter _router,
         address _dcaOwner,
+        address _keeper,
         address[] memory _stocks
     ) {
         vault = _vault;
+        keeperAddr = _keeper;
         usdg = _usdg;
         weth = _weth;
         dca = _dca;
@@ -74,15 +77,13 @@ contract VaultHandler is Test {
 
     // ---- actions ----
 
-    function createPlan(uint256 a, uint256 st, uint96 amount, uint128 usdgDep, uint128 wethDep, bool zapLater)
-        external
-    {
+    function createPlan(uint256 a, uint256 st, uint96 amount, uint128 usdgDep, uint128 wethDep) external {
         calls++;
-        amount = uint96(bound(amount, 1, 20_000e6));
+        amount = uint96(bound(amount, 1, 20_000e6)); // below-minimum values exercise the BelowMinimum path
         usdgDep = uint128(bound(usdgDep, 0, 100_000e6));
         wethDep = uint128(bound(wethDep, 0, 10 ether));
         vm.prank(_actor(a));
-        try vault.createPlan(_stock(st), amount, zapLater, address(0), usdgDep, wethDep, 0) returns (uint256 id) {
+        try vault.createPlan(_stock(st), amount, address(0), usdgDep, wethDep, 0) returns (uint256 id) {
             planIds.push(id);
         } catch {}
     }
@@ -110,16 +111,14 @@ contract VaultHandler is Test {
         try vault.depositETH{value: amt}(_plan(p), 0) {} catch {}
     }
 
-    function withdrawIdle(uint256 p, uint256 uFrac, uint256 wFrac, bool unwrap) external {
+    function withdrawIdle(uint256 p, uint256 uFrac) external {
         calls++;
         uint256 id = _plan(p);
         Plan memory pl = vault.getPlan(id);
         if (pl.owner == address(0)) return;
         uint256 u = pl.usdgIdle == 0 ? 0 : bound(uFrac, 0, pl.usdgIdle);
-        uint256 w = pl.wethIdle == 0 ? 0 : bound(wFrac, 0, pl.wethIdle);
-        if (unwrap && w > 0) vm.deal(address(weth), address(weth).balance + w);
         vm.prank(pl.owner);
-        try vault.withdrawIdle(id, u, w, unwrap) {} catch {}
+        try vault.withdrawIdle(id, u) {} catch {}
     }
 
     function claim(uint256 p, uint256 frac) external {
@@ -152,7 +151,7 @@ contract VaultHandler is Test {
         uint256 id = _plan(p);
         Plan memory pl = vault.getPlan(id);
         if (pl.owner == address(0)) return;
-        amount = uint96(bound(amount, 1, 20_000e6));
+        amount = uint96(bound(amount, 10e6, 20_000e6));
         vm.prank(pl.owner);
         vault.setPlanAmount(id, amount);
     }
@@ -172,9 +171,25 @@ contract VaultHandler is Test {
         }
     }
 
-    function setImpact(uint256 bps) external {
+    /// @dev Partial fills on either leg exercise residual / dust accounting and WETH refunds.
+    function setFill(uint256 which, uint16 bps) external {
         calls++;
-        router.setImpact(address(weth), address(usdg), bound(bps, 0, 300));
+        bps = uint16(bound(bps, 2_000, 10_000));
+        if (which % 3 == 0) router.setFill(address(usdg), address(nvdaOf(0)), bps);
+        else if (which % 3 == 1) router.setFill(address(usdg), address(nvdaOf(1)), bps);
+        else router.setFill(address(weth), address(usdg), bps);
+    }
+
+    /// @dev Temporarily break / restore the stock route so the skip-not-revert path is walked.
+    function toggleRoute(uint256 st, bool on) external {
+        calls++;
+        address stock = _stock(st);
+        if (on) router.setRate(address(usdg), stock, 1e18, stock == stocks[0] ? 500e6 : 200e6);
+        else router.removePair(address(usdg), stock);
+    }
+
+    function nvdaOf(uint256 i) internal view returns (address) {
+        return stocks[i % stocks.length];
     }
 
     function advanceEpoch(uint256 st, uint256 limit, uint256 warpEpochs) external {
@@ -183,6 +198,7 @@ contract VaultHandler is Test {
         if (warpEpochs > 0) vm.warp(block.timestamp + warpEpochs * vault.epochLength());
         limit = bound(limit, 1, 4);
         uint256 before = router.swapCount();
+        vm.prank(keeperAddr);
         try vault.advanceEpoch(_stock(st), limit, "") {
             epochsRun++;
         } catch {}

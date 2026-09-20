@@ -15,6 +15,8 @@ import {MonthlyVault} from "../src/vault/MonthlyVault.sol";
 import {PlanVault} from "../src/vault/PlanVault.sol";
 import {VaultDirectory} from "../src/vault/VaultDirectory.sol";
 import {VaultParams, FeeConfig} from "../src/vault/VaultTypes.sol";
+import {Route} from "../src/router/IAggregatorRouter.sol";
+import {IUniswapV3Pool} from "../src/interfaces/IUniswapV3.sol";
 import {EpochKeeper} from "../src/keeper/EpochKeeper.sol";
 import {Zap} from "../src/periphery/Zap.sol";
 import {ClaimHelper} from "../src/periphery/ClaimHelper.sol";
@@ -26,6 +28,10 @@ import {EpochLib} from "../src/libraries/EpochLib.sol";
 ///
 /// Usage:
 ///   forge script script/Deploy.s.sol --rpc-url $RH_RPC --broadcast --verify -vvvv
+///
+/// Routes: the router only trades owner-approved hops. `V3_POOLS="1:0xpool,3:0xpool,..."` (protocol id : pool)
+/// approves both directions of each listed V3-style pool at deploy; V4 keys and later additions go through
+/// `script/ApproveRoutes.s.sol` / `router.approveHop`.
 ///
 /// Post-deploy (multisig): call `acceptOwnership()` on registry, router, adapters, vaults, keeper, directory.
 contract Deploy is Script {
@@ -41,6 +47,7 @@ contract Deploy is Script {
         address uniV4PoolManager;
         address ramsesFactory;
         address[] keepers;
+        string v3Pools;
     }
 
     struct Out {
@@ -61,7 +68,6 @@ contract Deploy is Script {
     function run() external {
         Env memory e = _env();
         FeeConfig memory fees = _fees();
-        uint24[] memory tiers = _tiers();
 
         vm.startBroadcast();
         address deployer = msg.sender;
@@ -71,7 +77,7 @@ contract Deploy is Script {
         o.registry = new StockRegistry(deployer);
         o.router = new AggregatorRouter(e.weth, deployer);
         if (e.uniV3Factory != address(0)) {
-            o.uniV3 = new UniV3Adapter(1, address(o.router), e.uniV3Factory, tiers, deployer);
+            o.uniV3 = new UniV3Adapter(1, address(o.router), e.uniV3Factory, deployer);
             o.router.setAdapter(1, address(o.uniV3));
         }
         if (e.uniV4PoolManager != address(0)) {
@@ -79,12 +85,14 @@ contract Deploy is Script {
             o.router.setAdapter(2, address(o.uniV4));
         }
         if (e.ramsesFactory != address(0)) {
-            o.ramses = new RamsesV3Adapter(address(o.router), e.ramsesFactory, tiers, deployer);
+            o.ramses = new RamsesV3Adapter(address(o.router), e.ramsesFactory, deployer);
             o.router.setAdapter(3, address(o.ramses));
         }
 
         // Stocks from STOCKS="NVDA:0x..,AAPL:0x.." (optional at deploy; can be listed later).
         _listStocks(o.registry);
+        // Approved hops from V3_POOLS="1:0x..,3:0x.." (both directions of each pool).
+        _approvePools(o.router, e.v3Pools);
 
         // Vaults with aligned origins (epoch 0 contains now; first fire at the next boundary).
         VaultParams memory p = VaultParams({
@@ -119,7 +127,8 @@ contract Deploy is Script {
         o.monthly.setMaxPlansPerTx(maxPlans);
         o.router.setMaxPriceImpactBps(uint16(_cfgUint("maxPriceImpactBps")));
 
-        // Keeper + jobs for every approved stock.
+        // Keeper + jobs for every approved stock. Vaults run keeperOnly (default); the EpochKeeper contract and
+        // every KEEPERS address are vault keepers, and KEEPERS are EpochKeeper operators.
         o.keeper = new EpochKeeper(e.usdg, deployer);
         PlanVault[3] memory vaults = [PlanVault(o.daily), PlanVault(o.weekly), PlanVault(o.monthly)];
         address[] memory stocks = o.registry.approvedStocks();
@@ -186,6 +195,7 @@ contract Deploy is Script {
         e.uniV4PoolManager = vm.envOr("UNIV4_POOL_MANAGER", address(0));
         e.ramsesFactory = vm.envOr("RAMSES_FACTORY", address(0));
         e.keepers = vm.envOr("KEEPERS", ",", new address[](0));
+        e.v3Pools = vm.envOr("V3_POOLS", string(""));
         require(e.usdg != address(0) && e.weth != address(0), "USDG / WETH required");
         require(e.feeRecipient != address(0), "FEE_RECIPIENT required");
         if (block.chainid == 4663) {
@@ -199,20 +209,11 @@ contract Deploy is Script {
         f.claimFeeBps = uint16(_cfgUint("claimFeeBps"));
         f.keeperTipBps = uint16(_cfgUint("keeperTipBps"));
         f.swapSlippageBps = uint16(_cfgUint("swapSlippageBps"));
-        f.maxWethSlippageBps = uint16(_cfgUint("maxWethSlippageBps"));
     }
 
     function _cfgUint(string memory key) internal view returns (uint256) {
         string memory json = vm.readFile("config/fees.json");
         return json.readUint(string.concat(".", key));
-    }
-
-    function _tiers() internal pure returns (uint24[] memory t) {
-        t = new uint24[](4);
-        t[0] = 100;
-        t[1] = 500;
-        t[2] = 3000;
-        t[3] = 10000;
     }
 
     /// @dev STOCKS="NVDA:0xabc...,AAPL:0xdef..." — listed as approved, not fee-on-transfer.
@@ -224,6 +225,23 @@ contract Deploy is Script {
             string[] memory kv = vm.split(entries[i], ":");
             require(kv.length == 2, "STOCKS entry must be SYMBOL:address");
             registry.listStock(vm.parseAddress(kv[1]), kv[0], false, true);
+        }
+    }
+
+    /// @dev V3_POOLS="1:0xpool,3:0xpool" — approve tokenA->tokenB and tokenB->tokenA on the given adapter.
+    function _approvePools(AggregatorRouter router, string memory raw) internal {
+        if (bytes(raw).length == 0) return;
+        string[] memory entries = vm.split(raw, ",");
+        for (uint256 i; i < entries.length; ++i) {
+            string[] memory kv = vm.split(entries[i], ":");
+            require(kv.length == 2, "V3_POOLS entry must be protocol:pool");
+            uint8 protocol = uint8(vm.parseUint(kv[0]));
+            address pool = vm.parseAddress(kv[1]);
+            address t0 = IUniswapV3Pool(pool).token0();
+            address t1 = IUniswapV3Pool(pool).token1();
+            uint24 fee = IUniswapV3Pool(pool).fee();
+            router.approveHop(Route({protocol: protocol, tokenIn: t0, tokenOut: t1, fee: fee, extra: abi.encode(pool)}));
+            router.approveHop(Route({protocol: protocol, tokenIn: t1, tokenOut: t0, fee: fee, extra: abi.encode(pool)}));
         }
     }
 

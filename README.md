@@ -2,7 +2,7 @@
 
 Scheduled, on-chain purchases of **Robinhood Stock Tokens** on **Robinhood Chain** (chain id 4663, Arbitrum Orbit).
 
-A user opens a **plan** inside a frequency **vault** (Daily / Weekly / Monthly): one Stock Token, a USDG amount per epoch, funded with USDG and/or ETH/WETH. Every epoch the vault takes the purchase fee, pools everyone's notional, routes one swap USDG → stock through the best of Uniswap V3 / Uniswap V4 / Ramses V3, and credits each plan pro-rata. Holders of ≥ 10,000 `$DCA` get stock sent straight to their wallet (0 claim fee); everyone else accrues on-vault and `claim`s (0.25%). ≥ 50,000 `$DCA` halves the purchase fee.
+A user opens a **plan** inside a frequency **vault** (Daily / Weekly / Monthly): one Stock Token, a USDG amount per epoch (≥ 10 USDG), funded with USDG and/or ETH/WETH (ETH/WETH is converted to USDG at deposit time — vaults hold USDG only). Every epoch the vault takes the purchase fee, pools everyone's notional, routes one swap USDG → stock through the best **owner-approved** route on Uniswap V3 / Uniswap V4 / Ramses V3, and credits each plan pro-rata. Holders of ≥ 10,000 `$DCA` get stock sent straight to their wallet (0 claim fee); everyone else accrues on-vault and `claim`s (0.25%). ≥ 50,000 `$DCA` halves the purchase fee.
 
 > Stock Tokens are **economic exposure, not shareholder rights**. Not offered to US persons. The contracts are permissionless; the UI is geo-blocked (US / UK / CA / AU / sanctioned). Unaudited software.
 
@@ -14,6 +14,7 @@ A user opens a **plan** inside a frequency **vault** (Daily / Weekly / Monthly):
 - [Fees](#fees)
 - [Epochs and scheduling](#epochs-and-scheduling)
 - [Routing](#routing)
+- [Querying balances](#querying-balances)
 - [Running a keeper](#running-a-keeper)
 - [Adding a stock](#adding-a-stock)
 - [Repo layout](#repo-layout)
@@ -42,19 +43,19 @@ A user opens a **plan** inside a frequency **vault** (Daily / Weekly / Monthly):
                      │ quote / swapWithRoute            └─────────────┘
                      ▼
             ┌──────────────────┐
-            │ AggregatorRouter │  best-of-N, direct or via WETH, impact cap 150 bps
+            │ AggregatorRouter │  best of the APPROVED hops, direct or via WETH, impact cap 150 bps
             └───┬─────┬─────┬──┘
                 ▼     ▼     ▼
-           UniV3   UniV4   RamsesV3   (adapters; disabled when factory / PoolManager = 0)
+           UniV3   UniV4   RamsesV3   (adapters validate / quote / execute one approved hop)
 ```
 
-**Vaults** (`src/vault/`) — one `PlanVault` implementation; `DailyVault` / `WeeklyVault` / `MonthlyVault` are thin subclasses fixing `epochLength` and the default purchase fee. Immutable, non-upgradeable, `Ownable2Step` + `Pausable` + `ReentrancyGuard`. All user balances live on `Plan` structs (`usdgIdle`, `wethIdle`, `stockAccrued`). Fees leave the vault the moment they are taken; the vault never holds protocol funds.
+**Vaults** (`src/vault/`) — one `PlanVault` implementation; `DailyVault` / `WeeklyVault` / `MonthlyVault` are thin subclasses fixing `epochLength` and the default purchase fee. Immutable, non-upgradeable, `Ownable2Step` + `Pausable` + `ReentrancyGuard`. **USDG-only**: all user balances live on `Plan` structs (`usdgIdle`, `stockAccrued`); ETH/WETH deposits are converted to USDG on the spot and any unfilled WETH is returned to the depositor. Fees leave the vault the moment they are taken; rounding dust that cannot be split exactly (`usdgDust`, and any WETH forwarded back by a partially filled second hop, `wethDust`) is swept to the treasury. `advanceEpoch` is keeper-only by default.
 
 **Registry** (`src/registries/StockRegistry.sol`) — owner-curated whitelist. Tokens are never forgotten (`known` stays true) so `rescueERC20` can never touch user accounting. Fee-on-transfer tokens are refused.
 
-**Router** (`src/router/`) — the only swap entry the vaults call. Vaults approve **only** the router; adapters pay pools from their transient balance (V3 callback / V4 settle), so no approvals to third-party routers exist anywhere.
+**Router** (`src/router/`) — the only swap entry the vaults call. It trades **only owner-approved hops** (`approveHop` / `revokeHop`, one per pool and direction) and picks the highest output — i.e. the lowest effective fee + slippage — among approved direct routes and approved two-hop routes via WETH; `swapWithRoute` refuses any path with an unapproved hop, whoever supplies it. Vaults approve **only** the router; adapters pay pools from their transient balance (V3 callback / V4 settle), so no approvals to third-party routers exist anywhere.
 
-**Keeper** (`src/keeper/EpochKeeper.sol`) — job list `(vault, stock)`, permissionless `runDue()`, Chainlink/Gelato-compatible `checkUpkeep` / `performUpkeep`. One failing job never blocks the others.
+**Keeper** (`src/keeper/EpochKeeper.sol`) — job list `(vault, stock)`, operator-only `runDue()` / `run()` / `performUpkeep()` (register your bots and the Chainlink Automation forwarder with `setOperator`), public `checkUpkeep`. One failing job never blocks the others.
 
 **Periphery** — `Zap` (ETH/WETH ⇄ USDG, deposit ETH as USDG into a plan), `ClaimHelper` (read-only aggregation: positions, claimables, fee previews), `TwapOracle` (mean-tick helper for keepers).
 
@@ -64,14 +65,16 @@ A user opens a **plan** inside a frequency **vault** (Daily / Weekly / Monthly):
 
 | Decision | Why |
 |---|---|
-| **Per-page swaps.** `advanceEpoch(stock, limit)` processes ≤ `maxPlansPerTx` (150) plans per call with at most two swaps (aggregate WETH→USDG zap, aggregate USDG→stock buy). | Bounded gas with no two-pass cursor; a 10k-plan stock is simply several txs. |
+| **Per-page swaps.** `advanceEpoch(stock, limit)` processes ≤ `maxPlansPerTx` (150) plans per call with exactly one swap (aggregate USDG→stock buy). | Bounded gas with no two-pass cursor; a 10k-plan stock is simply several txs. |
+| **Skip, never revert.** If a page's purchase cannot be quoted or executed, the page is skipped (`EpochPageSkipped`): nobody is charged, the cursor still advances. | One plan's state, a thin pool or a dust-sized page can never brick an epoch for everyone else. |
+| **Minimums.** `amountPerEpoch ≥ minAmountPerEpoch` and every deposit must credit ≥ `minDeposit` (both 10 USDG by default, owner-settable). | Dust plans never enter the index; spamming the index costs real capital. |
 | **Only the current epoch executes.** Missed epochs are skipped, never caught up. | Users are charged at most one spend per epoch; a keeper outage never triple-buys. |
 | **Rounding dust → next-epoch pot** (`dustPot[stock]`). | User-favourable; tested. Never sent to the treasury. |
 | **Auto-distribute uses a non-reverting transfer.** If a Stock Token blocks the recipient, the share accrues instead. | A permissioned token can't brick an epoch page for 149 other users. |
 | **Aligned origins.** Daily = 00:00 UTC, Weekly = Monday 00:00 UTC, Monthly = 30-day epochs from 00:00 UTC of deploy day. Epoch 0 is never executed. | Predictable cron; first fire is the next boundary. |
 | **USDG decimals detected at deploy** (`usdgDecimals`). `amountPerEpoch` is in USDG units. | Works with 6- or 18-decimal USDG. |
 | **No on-chain factory.** `VaultDirectory` records addresses; `contracts/script/Deploy.s.sol` deploys. | Three ~23 KB vault initcodes can't fit under EIP-170 inside a factory. |
-| **Deposits are open** (anyone may fund any plan). | Enables `Zap.depositEthAsUsdg`; it can only add value. |
+| **Deposits are open** (anyone may fund any plan, ≥ `minDeposit`). | Enables `Zap.depositEthAsUsdg`; it can only add value. |
 
 ---
 
@@ -85,7 +88,7 @@ All fees are in **bps** (`uint16`), hard-capped at **90 bps** in `FeeMath.MAX_FE
 | Purchase — Weekly | 50 bps | 0–90 | " |
 | Purchase — Monthly | 25 bps | 0–90 | " |
 | Deposit | **0** | 0–90 | on deposit (hook exists, off) |
-| Withdraw idle | 25 bps | 0–90 | on `withdrawIdle` notional (USDG and WETH) |
+| Withdraw idle | 25 bps | 0–90 | on `withdrawIdle` notional (USDG) |
 | Claim | 25 bps | 0–90 | on `claim` path only; **0** when auto-distribute tier |
 
 `$DCA` tiers (thresholds owner-settable, in raw token units; deploy = `10_000 * 10**dec`, `50_000 * 10**dec`):
@@ -93,7 +96,7 @@ All fees are in **bps** (`uint16`), hard-capped at **90 bps** in `FeeMath.MAX_FE
 - `balance ≥ autoDistributeThreshold` → stock sent to `plan.recipient` at epoch, no claim fee (also 0 fee on `claim` for older accruals).
 - `balance ≥ feeHalveThreshold` → `purchaseFeeBps / 2`, **floored** (75 → 37, 25 → 12).
 
-Other tolerances (not fees): `swapSlippageBps` (minOut = quote × (1 − 0.50%)), `maxWethSlippageBps` (100 bps default cap on zap-at-epoch impact, per-plan override), `keeperTipBps` (share of purchase fees paid to whoever calls `advanceEpoch`, default 0, max 50%).
+Other tolerances (not fees): `swapSlippageBps` (minOut = quote × (1 − 0.50%), also the floor for any route override), `keeperTipBps` (share of purchase fees paid to whoever calls `advanceEpoch`, default 0, max 50%). Minimums: `minAmountPerEpoch` / `minDeposit` (10 USDG). Dust: `dustSweepMinUsdg` (1 USDG) — `usdgDust` is forwarded to `feeRecipient` during `advanceEpoch` once it reaches this; `wethDust` whenever non-zero; `sweepDust()` (owner / feeManager) forces it.
 
 Fee math is exact integer arithmetic, rounds down in the user's favour, and is fuzzed (`test/unit/FeeMath.t.sol`).
 
@@ -105,15 +108,15 @@ Fee math is exact integer arithmetic, rounds down in the user's favour, and is f
 
 Per page of plans:
 
-1. **Collect** eligible plans (unpaused, has idle, not yet filled this epoch).
-2. **Zap** — for zap-at-epoch plans whose `usdgIdle < amountPerEpoch`: size just enough WETH (conservative rate from a sizing quote), quote the aggregate, **skip** any plan whose cap is below the quoted impact (`PlanSkippedSlippage`) or if there is no WETH route (`PlanSkippedNoRoute`), then one aggregate WETH→USDG swap credited pro-rata.
-3. **Spend** — `spend = min(amountPerEpoch, usdgIdle)`; snapshot `$DCA` balance; `fee = spend × effBps / 10_000`; debit.
+1. **Collect** eligible plans (unpaused, has idle, not yet filled this epoch) and tally, in memory, `spend = min(amountPerEpoch, usdgIdle)`, the `$DCA` perks snapshot and `fee = spend × effBps / 10_000`.
+2. **Buy** — one swap `totalNet` USDG → stock via `router.quote` + `swapWithRoute` (or the keeper's `routeOverride`). If the quote fails, is too small, or the swap reverts, the **page is skipped** (`EpochPageSkipped(reason)`): nothing below happens, nobody is charged. Override failures revert instead (the page is not consumed).
+3. **Commit** — debit `spend` from each plan, mark `lastEpochId`.
 4. **Fees out** — keeper tip to `msg.sender`, remainder to `feeRecipient`.
-5. **Buy** — one swap `totalNet` USDG → stock via `router.quote` + `swapWithRoute` (or the keeper's `routeOverride`). Reverts on zero output. Unspent USDG (partial fill) is returned pro-rata.
-6. **Distribute** — `share = mulDiv(bought + dustPot, net, totalNet)` (floor); auto-distribute or accrue; remainder → `dustPot`.
+5. **Distribute** — `share = mulDiv(bought + dustPot, net, totalNet)` (floor); auto-distribute or accrue; stock remainder → `dustPot`. Unspent USDG (partial fill) is returned pro-rata; its remainder → `usdgDust`.
+6. **Sweep** — `usdgDust ≥ dustSweepMinUsdg` and any `wethDust` go to `feeRecipient`.
 7. **Cursor** — `nextPlanIndex[stock][epochId] = end`; when `end == stockPlanCount`, `lastExecutedEpoch[stock] = epochId`.
 
-Events: `PlanFilled`, `EpochPageExecuted`, `EpochExecuted`, `WethZapped`, `PlanSkipped*`. Counters: `totalNotionalUsdg`, `epochsCompleted`.
+Events: `PlanFilled`, `EpochPageExecuted`, `EpochPageSkipped`, `EpochExecuted`, `DustSwept`. Counters: `totalNotionalUsdg` (USDG actually spent), `epochsCompleted`.
 
 While an epoch is pending (cursor started, not finished) `prunePlan` reverts (`EpochInProgress`) so the index cannot be reordered under the keeper. Deposits, withdrawals and claims are never blocked by a pending epoch.
 
@@ -123,13 +126,36 @@ While an epoch is pending (cursor started, not finished) `prunePlan` reverts (`E
 
 ## Routing
 
-`AggregatorRouter.quoteWithImpact(tokenIn, tokenOut, amountIn)` probes each enabled adapter for the best direct pool and for a one-hop path via WETH, computes price impact against the pool mid-price (`slot0.sqrtPriceX96`), and returns the highest-output path with `impact ≤ maxPriceImpactBps` (150). `swapWithRoute` executes a path from `quote` or a trusted override.
+The router holds an **allowlist of hops**. A hop is `(protocol, tokenIn, tokenOut, fee, pool)` — one pool in one direction — approved by the owner with `approveHop(Route)` after the adapter validates it (`validateRoute`: registered / factory-verified pool, matching tokens). `quoteWithImpact(tokenIn, tokenOut, amountIn)` quotes every approved direct hop and every approved `(tokenIn → WETH) × (WETH → tokenOut)` combination, computes price impact against the pool mid-price (`slot0.sqrtPriceX96`), and returns the highest-output path with `impact ≤ maxPriceImpactBps` (150) — the lowest effective fee + slippage among approved routes. `swapWithRoute` executes a path only if every hop is approved (`RouteNotApproved` otherwise).
 
-- **UniV3Adapter / RamsesV3Adapter** — factory discovery over fee tiers `100 / 500 / 3000 / 10000` plus explicitly registered pools. Quotes by simulating the swap and reverting inside `uniswapV3SwapCallback` with a sentinel (no QuoterV2 dependency). Callback is authenticated against `verifiedPool`.
-- **UniV4Adapter** — talks to the `PoolManager` directly (`unlock` → `swap` → `sync/settle/take`). Pools are registered by `PoolKey` (`addPool`). ERC-20/ERC-20 pools only. Mid-price via `extsload` at the v4-core `POOLS_SLOT` (owner-overridable).
-- An adapter with `factory == 0` / `poolManager == 0` (or no pools) reports `enabled() == false` and is skipped.
+A typical SPY allowlist: `USDG → SPY` (Uniswap V3), `USDG → WETH` + `WETH → SPY` (Uniswap V4 keys), `USDG → SPY` (Ramses V3), plus `WETH → USDG` / `USDG → WETH` for deposits and the Zap. Approve at deploy with `V3_POOLS="1:0xpool,3:0xpool"` (both directions of each pool) or later with `script/ApproveRoutes.s.sol`.
+
+- **UniV3Adapter / RamsesV3Adapter** — accept a pool if the owner registered it (`registerPool`) or, with a factory configured, if `factory.getPool(token0, token1, fee)` returns it. Quotes by simulating the swap and reverting inside `uniswapV3SwapCallback` with a sentinel (no QuoterV2 dependency). Callback is authenticated against `verifiedPool`.
+- **UniV4Adapter** — talks to the `PoolManager` directly (`unlock` → `swap` → `sync/settle/take`). Pools are registered by `PoolKey` (`addPool`) before their hops can be approved. ERC-20/ERC-20 pools only. Mid-price via `extsload` at the v4-core `POOLS_SLOT` (owner-overridable).
+- Unspent input of the first hop is refunded to the caller; unspent intermediate tokens of a later hop are forwarded to the recipient (the vault books them as `wethDust`).
 
 Split routes are out of scope for V1 (single pool per hop).
+
+---
+
+## Querying balances
+
+```bash
+pnpm balance <wallet> ETH
+pnpm balance <wallet> WETH
+pnpm balance <wallet> USDG
+pnpm balance <wallet> NVDA --json
+pnpm balance <wallet> 0xTokenAddress --rpc http://127.0.0.1:8545
+pnpm balance --list
+
+pnpm transfer <from> <to> ETH 1.5
+pnpm transfer <from> <to> USDG 250
+pnpm transfer <from> <to> NVDA 2.5 --json
+```
+
+The CLI accepts `ETH`, `WETH`, `USDG`, every Robinhood Stock Token ticker in the connected deployment's `StockRegistry`, or a raw ERC-20 address. RPC selection is `--rpc`, then `RPC_URL`, then `apps/scheduler/.env.local`, with Robinhood Chain RPC as the default. Production ticker addresses come from `contracts/config/addresses.rh.json`; zero-address placeholders are rejected until populated.
+
+`pnpm transfer` is restricted to the local Anvil fork (chain 31337). It parses amounts in the asset's native decimals, waits for the transaction receipt, and requires the `from` wallet to be one of Anvil's unlocked accounts. No private key is passed on the command line.
 
 ---
 
@@ -154,11 +180,11 @@ It reads `EpochKeeper.jobs()` / `dueJobs()`, and for each due job calls `EpochKe
 cast send $KEEPER "runDue()" --rpc-url $RH_RPC --private-key $BOT_KEY
 ```
 
-`runDue()` runs one page for every due job in a single transaction and forwards any USDG keeper tips to the caller. It is permissionless (unless a vault has `keeperOnly` on — then the `EpochKeeper` contract itself is whitelisted, so calling through it still works).
+`runDue()` runs one page for every due job in a single transaction and forwards any USDG keeper tips to the caller. **Operators only**: vaults run `keeperOnly` (default), the `EpochKeeper` contract is their keeper, and `runDue` / `run` / `performUpkeep` require `isOperator[msg.sender]` (or the owner). `KEEPERS` in `.env` become operators at deploy; add more with `keeper.setOperator(addr, true)`.
 
-**Chainlink Automation / Gelato:** register `EpochKeeper` as an upkeep. `checkUpkeep("")` returns `(true, abi.encode(uint256[] jobIndices))` for up to `maxJobsPerUpkeep` due jobs; `performUpkeep(performData)` re-checks due-ness on chain.
+**Chainlink Automation / Gelato:** register `EpochKeeper` as an upkeep and register the Automation **forwarder** (or Gelato's dedicated sender) as an operator. `checkUpkeep("")` (public view) returns `(true, abi.encode(uint256[] jobIndices))` for up to `maxJobsPerUpkeep` due jobs; `performUpkeep(performData)` re-checks due-ness on chain.
 
-**Trusted route override** (owner / vault keeper / keeper operator only) — for a broken auto-router or a tighter `minOut`:
+**Route override** (operators) — to pin a specific approved path or, more usefully, to pass a **tighter `minOut`** derived from an off-chain reference price (the recommended MEV mitigation today, see SECURITY.md):
 
 ```bash
 # 1. Quote (simulation, no --broadcast). Prints the best path and a ready routeOverride blob.
@@ -169,7 +195,7 @@ cd contracts && forge script script/Quote.s.sol --rpc-url $RH_RPC \
 cast send $KEEPER "run(uint256,uint256,bytes)" $JOB_INDEX 0 $ROUTE_OVERRIDE --rpc-url $RH_RPC --private-key $OPERATOR_KEY
 ```
 
-`minOut` must be > 0. WETH zaps always auto-route. Use a private mempool for keeper txs (see SECURITY.md).
+Every hop of the override must be approved on the router, and `minOut` may not be below the auto-route's own floor (`quote × (1 − swapSlippageBps)`) — an override can pick a path, never a worse price. An override that cannot fill reverts (the page is not consumed); an auto-route that cannot fill skips the page. Use a private mempool for keeper txs (see SECURITY.md).
 
 Useful views: `vault.isEpochDue(stock)`, `vault.isEpochPending(stock)`, `vault.nextPlanIndex(stock, epochId)`, `vault.stockPlanCount(stock)`, `keeper.dueJobs()`.
 
@@ -177,7 +203,7 @@ Useful views: `vault.isEpochDue(stock)`, `vault.isEpochPending(stock)`, `vault.n
 
 ## Adding a stock
 
-1. Confirm the token is a standard ERC-20 (no fee-on-transfer, no hooks) and that a USDG (or WETH) pool with real depth exists on one of the supported DEXes.
+1. Confirm the token is a standard ERC-20 (no fee-on-transfer, no hooks, 18 decimals preferred) and that a USDG (or WETH) pool with real depth exists on one of the supported DEXes.
 2. List it (owner):
    ```bash
    cast send $REGISTRY "listStock(address,string,bool,bool)" $TOKEN "NVDA" false true --rpc-url $RH_RPC --private-key $OWNER_KEY
@@ -188,7 +214,7 @@ Useful views: `vault.isEpochDue(stock)`, `vault.isEpochPending(stock)`, `vault.n
    cast send $KEEPER "addJob(address,address)" $WEEKLY $TOKEN ...
    cast send $KEEPER "addJob(address,address)" $MONTHLY $TOKEN ...
    ```
-4. If the pool lives on V4, register its key: `UniV4Adapter.addPool(PoolKey)`. If a V3-fork factory has a non-standard ABI, `UniV3Adapter.registerPool(pool)`.
+4. Approve the route(s) on the router — nothing trades until you do. V3-style pool: `forge script script/ApproveRoutes.s.sol --sig "v3(address,uint8,address,address,address)" $ROUTER 1 $POOL $USDG $TOKEN ...` (protocol 3 for Ramses; `UniV3Adapter.registerPool(pool)` first if the factory ABI is non-standard). V4: `UniV4Adapter.addPool(PoolKey)` then `--sig "v4(...)"`. For a two-hop route approve both legs (`USDG → WETH`, `WETH → TOKEN`).
 5. Sanity-check a quote with `contracts/script/Quote.s.sol`.
 
 The frontend picks the stock up automatically from `registry.approvedStocks()`. Delist with `setApproved(token, false)`.
@@ -229,8 +255,9 @@ Requires Foundry (nightly ≥ 1.6 used here; `via_ir = true`, solc 0.8.28) and N
 ```bash
 cd contracts
 forge build --sizes            # vaults ~22.3 KB runtime (EIP-170 margin ~2.3 KB)
-forge test                     # 201 tests: unit, fuzz, invariant (fork suite self-skips without RH_RPC)
-forge coverage --ir-minimum --no-match-coverage "(script|test)/"   # src/: 97% lines; vault 98.9%, router 91–98%
+forge test                     # 244 tests: unit, fuzz, invariant, audit regression (fork suite self-skips without RH_RPC)
+forge test --match-path "test/audit/*" -vv   # regression suite for the v0.1 audit findings (real router + CPMM pool)
+forge coverage --ir-minimum --no-match-coverage "(script|test)/"
 ```
 
 **Local stack (anvil + mocks + real router/vaults/keeper):**
@@ -267,7 +294,7 @@ Note that anvil evaluates `eth_call` at the **last mined block's** timestamp, so
 **Robinhood Chain:**
 
 ```bash
-cp contracts/.env.example contracts/.env   # fill USDG, WETH, DCA, DEX factories, OWNER, FEE_RECIPIENT, STOCKS
+cp contracts/.env.example contracts/.env   # fill USDG, WETH, DCA, DEX factories, OWNER, FEE_RECIPIENT, KEEPERS, STOCKS, V3_POOLS
 pnpm protocol:deploy
 # → contracts/deployments/4663.json
 # then, from the OWNER multisig: acceptOwnership() on registry, router, adapters, vaults, keeper, directory
@@ -311,12 +338,13 @@ pnpm dev                       # http://localhost:3000 (or: pnpm --filter @dca/w
 
 Read [SECURITY.md](SECURITY.md) for the threat model. Headlines:
 
-- **Router / liquidity.** Purchases execute against on-chain pools. Thin liquidity → impact cap trips → no fill that epoch. A broken router blocks epochs until the owner points vaults at a new one (`setRouter`) or a keeper passes a route override.
-- **Keeper liveness.** No keeper, no purchases. Missed epochs are skipped, not caught up.
+- **Router / liquidity.** Purchases execute against on-chain pools. Thin liquidity → impact cap trips → the page is skipped that epoch (nobody charged). A broken router skips epochs until the owner points vaults at a new one (`setRouter`) or approves other hops.
+- **MEV on the epoch swap (open, see SECURITY.md §2).** Triggering is operator-only, but an operator's transaction can still be sandwiched at the block level. Operators should submit through a private relay and pass a reference-price `minOut` override.
+- **Keeper liveness.** No operator, no purchases (there is no permissionless fallback). Missed epochs are skipped, not caught up.
 - **`$DCA` flash-buy.** Perks read spot balances at execution; someone can buy right before an epoch. Accepted for V1; a checkpointed snapshot is the V2 fix.
-- **Zap-at-epoch.** WETH sits unhedged until the epoch; it can be skipped for slippage. Zap-now (default) takes the ETH/USDG risk at deposit time instead.
+- **ETH deposits.** ETH/WETH is converted to USDG at deposit with the depositor's `minUsdgOut`; the ETH/USDG price risk is taken at deposit time, never at epoch.
 - **Stock Token depeg.** The token can trade away from the underlying's NYSE/Nasdaq price; the vault buys at the on-chain price.
-- **Admin.** Owner can pause, change fees (≤ 0.90%), thresholds, router and keepers. Use a multisig; ownership is 2-step.
+- **Admin.** Owner can pause, change fees (≤ 0.90%), thresholds, minimums, router, approved routes, keepers and operators. Use a multisig; ownership is 2-step.
 
 ## Geo / legal
 

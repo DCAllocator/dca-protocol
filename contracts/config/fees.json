@@ -9,8 +9,10 @@
   "autoDistributeThreshold": "10000",
   "feeHalveThreshold": "50000",
   "maxPriceImpactBps": 150,
-  "maxWethSlippageBps": 100,
   "swapSlippageBps": 50,
   "maxPlansPerTx": 150,
-  "keeperTipBps": 0
+  "keeperTipBps": 0,
+  "minAmountPerEpochUsdg": "10",
+  "minDepositUsdg": "10",
+  "dustSweepMinUsdg": "1"
 }
