@@ -1,0 +1,24 @@
+{
+  "name": "@dca/scheduler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Epoch scheduler bot: advances DCA vault epochs through EpochKeeper as they come due.",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "once": "tsx src/index.ts --once",
+    "dry-run": "tsx src/index.ts --dry-run",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "abi": "node scripts/export-abi.mjs"
+  },
+  "dependencies": {
+    "viem": "^2.56.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
