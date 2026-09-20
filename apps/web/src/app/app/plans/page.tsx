@@ -142,8 +142,12 @@ export default function Plans() {
       {address && (
         <div className="stat-strip mb-4">
           <div className="stat-cell stat-cell-key">
-            <span className="stat-label">Waiting to buy</span>
+            <span className="stat-label">USD Balance</span>
             <span className="stat-num">{fmtUsd(waiting)}</span>
+          </div>
+          <div className="stat-cell">
+            <span className="stat-label">Purchased Stock Value</span>
+            <span className="stat-num">{rows.length === 0 ? "—" : fmtUsd(stockUsd)}</span>
           </div>
           <div className="stat-cell">
             <span className="stat-label">Plans</span>
@@ -151,10 +155,6 @@ export default function Plans() {
               {rows.length}
               {rows.length > 0 && <span className="ml-2 text-[13px] text-ink-2">{activeCount} active</span>}
             </span>
-          </div>
-          <div className="stat-cell">
-            <span className="stat-label">Stock owned</span>
-            <span className="stat-num">{rows.length === 0 ? "—" : fmtUsd(stockUsd)}</span>
           </div>
           <div className="stat-cell">
             <span className="stat-label">Next buy</span>
@@ -187,7 +187,7 @@ export default function Plans() {
                 <SortTh k="plan" label="Plan" sort={sort} onSort={toggleSort} />
                 <SortTh k="per" label="Per buy" sort={sort} onSort={toggleSort} right />
                 <SortTh k="balance" label="Balance" sort={sort} onSort={toggleSort} right />
-                <SortTh k="stock" label="Stock owned" sort={sort} onSort={toggleSort} right />
+                <SortTh k="stock" label="Purchase value" sort={sort} onSort={toggleSort} right />
                 <SortTh k="next" label="Next buy" sort={sort} onSort={toggleSort} />
                 <SortTh k="status" label="Status" sort={sort} onSort={toggleSort} />
                 <th className="stick-r text-right">Actions</th>

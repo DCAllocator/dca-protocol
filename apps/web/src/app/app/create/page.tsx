@@ -289,7 +289,7 @@ export default function CreatePlan() {
                 <div className="mt-4 flex items-start gap-3 rounded-xl border border-lime/20 bg-lime/5 p-4">
                   <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-lime text-[11px] font-bold text-lime-ink">$</span>
                   <div className="text-[13px] leading-relaxed text-ink-2">
-                    <b className="text-ink">Hold $DCA</b> and your stock is sent straight to your wallet after every buy, with lower fees on every plan.{" "}
+                    <b className="text-ink">Hold $DCA</b> for automatic stock distributions to your wallet, and with lower fees on every plan.{" "}<br/>
                     <Link href={`${DOCS_PATH}#dca`} className="font-semibold text-lime hover:underline">
                       Find out more →
                     </Link>
