@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Wordmark } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { PerkThreshold } from "@/components/site/Live";
-import { BoostTeaser, PlansPreview, StockGrid } from "@/components/site/LandingLive";
+import { BoostTeaser, LaunchAppLink, PlansPreview, StockGrid } from "@/components/site/LandingLive";
 import { BUY_DCA_URL, DOCS_PATH, PRODUCTION_VAULT_KINDS, VAULT_META } from "@/lib/config";
 
 /*
@@ -46,9 +46,7 @@ export function LandingNav() {
           ))}
         </nav>
         <div className="ml-auto flex items-center gap-2">
-          <Link href="/app" className="btn-secondary hidden sm:inline-flex">
-            Launch app
-          </Link>
+          <LaunchAppLink className="btn-secondary hidden sm:inline-flex">Launch app</LaunchAppLink>
           <BuyDca />
           <ThemeToggle />
         </div>
@@ -412,9 +410,7 @@ export function LandingFooter() {
           </p>
         </div>
         <div className="grid grid-cols-2 gap-x-10 gap-y-2 text-[13px] text-ink-2">
-          <Link href="/app" className="hover:text-ink">
-            App
-          </Link>
+          <LaunchAppLink className="hover:text-ink">App</LaunchAppLink>
           <a href="#flywheel" className="hover:text-ink">
             Buyback
           </a>
