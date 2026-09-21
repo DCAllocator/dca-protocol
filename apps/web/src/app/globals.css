@@ -1,8 +1,10 @@
 @import "tailwindcss";
 
 /* ------------------------------------------------------------------
-   Design tokens — the $PIE visual system, dark register. One ladder of
-   warm greys, one step of contrast between every layer:
+   Design tokens — the $PIE visual system. One ladder of warm greys, one
+   step of contrast between every layer. The dark register is the default
+   (these values); the light register below re-points the same tokens and
+   is selected by <html data-theme="light"> (lib/theme.ts).
 
    surface-0  #0c0c0b  frame      sidebar, key stat tile, modal chrome
    surface-1  #121211  canvas     page background
@@ -24,11 +26,18 @@
   --color-lime: #ccff00;
   --color-lime-2: #a7d100;
   --color-lime-ink: #14120d;
+  /* lime as *text*: same as the fill here, a darker accent on light (lime is 1.3:1 on white) */
+  --color-lime-text: #ccff00;
   --color-good: #30d158;
   --color-warn: #ffd166;
   --color-bad: #ff6b3d;
   --color-amber-bg: #2b2100;
   --color-amber-line: #6b5200;
+  /* translucent washes for hover / selected rows, so they read on either register */
+  --color-hover: rgb(255 255 255 / 0.06);
+  --color-selected: rgb(255 255 255 / 0.08);
+
+  --shadow-pop: 0 12px 32px rgb(0 0 0 / 0.5);
 
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -38,6 +47,36 @@
 
   --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+/* Light register: the ladder mirrored onto warm off-whites (frame white, canvas a step down, cards a
+   step back up, inputs and fills darker). Status colours drop to shades that pass as text on white. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-surface-0: #ffffff;
+  --color-surface-1: #f4f3ef;
+  --color-surface-2: #fbfaf8;
+  --color-surface-3: #efeeea;
+  --color-surface-4: #e2e0da;
+  --color-line: rgb(0 0 0 / 0.09);
+  --color-line-strong: rgb(0 0 0 / 0.2);
+  --color-ink: #14120d;
+  --color-ink-2: #5d5a54;
+  --color-ink-3: #8b8882;
+  --color-lime-text: #5f7d00;
+  --color-good: #177f36;
+  --color-warn: #9a6b00;
+  --color-bad: #d1401a;
+  --color-amber-bg: #fff3d1;
+  --color-amber-line: #e3c268;
+  --color-hover: rgb(0 0 0 / 0.04);
+  --color-selected: rgb(0 0 0 / 0.07);
+  --shadow-pop: 0 12px 32px rgb(0 0 0 / 0.14);
+}
+/* `text-lime` is the brand accent for text (links, eyebrows, active marks); on light it takes the darker
+   accent while lime fills, borders and tints stay on-brand. `eyebrow` applies text-lime-text directly. */
+:root[data-theme="light"] .text-lime {
+  color: var(--color-lime-text);
 }
 
 html {
@@ -59,7 +98,7 @@ body {
 }
 
 *:focus-visible {
-  outline: 2px solid var(--color-lime);
+  outline: 2px solid var(--color-lime-text);
   outline-offset: 1px;
 }
 
@@ -80,10 +119,10 @@ body {
   @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3.5 text-[13.5px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 bg-lime text-lime-ink hover:bg-lime-2;
 }
 @utility btn-secondary {
-  @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3.5 text-[13.5px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 border border-line-strong bg-transparent text-ink hover:border-ink hover:bg-white/5;
+  @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3.5 text-[13.5px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 border border-line-strong bg-transparent text-ink hover:border-ink hover:bg-hover;
 }
 @utility btn-ghost {
-  @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3.5 text-[13.5px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 text-ink-2 hover:bg-white/5 hover:text-ink;
+  @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3.5 text-[13.5px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 text-ink-2 hover:bg-hover hover:text-ink;
 }
 @utility btn-lg {
   @apply h-12 px-6 text-[15px];
@@ -175,10 +214,10 @@ body {
 
 /* sidebar + tabs */
 @utility side-item {
-  @apply flex h-10 items-center gap-2.5 rounded-lg px-3 text-[14px] font-medium text-ink-2 transition-colors hover:bg-white/[0.06] hover:text-ink;
+  @apply flex h-10 items-center gap-2.5 rounded-lg px-3 text-[14px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink;
 }
 @utility side-item-active {
-  @apply bg-white/[0.08] text-ink;
+  @apply bg-selected text-ink;
 }
 @utility side-label {
   @apply px-3 pt-5 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3;
@@ -229,10 +268,63 @@ body {
 
 /* option tiles (stock / frequency pickers) sit on a card, so they take the next step up */
 @utility tile {
-  @apply rounded-xl border border-line bg-surface-3 text-left transition-colors hover:border-line-strong;
+  @apply rounded-lg border border-line-strong bg-surface-3 text-left transition-colors hover:border-ink;
 }
 @utility tile-active {
-  @apply border-lime bg-lime/5;
+  @apply border-lime bg-lime/5 shadow-[inset_0_0_0_1px_var(--color-lime)] hover:border-lime;
+}
+
+/* create flow: numbered step panels on a card (the $PIE `.flow-step` metrics — 42px head, 14px body,
+   12.5px hints) and Jupiter-style amount boxes (one big number, the unit beside it, quick picks below) */
+@utility step-head {
+  @apply flex min-h-[42px] items-center gap-3 border-b border-line px-3.5 py-1.5;
+}
+@utility step-n {
+  @apply inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm bg-surface-4 text-[12px] font-semibold text-ink;
+}
+@utility step-n-done {
+  @apply bg-lime text-lime-ink;
+}
+@utility step-title {
+  @apply shrink-0 text-[14px] font-medium whitespace-nowrap text-ink;
+}
+@utility step-hint {
+  @apply ml-auto text-right text-[12.5px] text-ink-3;
+}
+@utility step-body {
+  @apply grid gap-3 p-3.5;
+}
+@utility note {
+  @apply flex items-start gap-1.5 text-[12.5px] leading-normal text-ink-3;
+}
+@utility amount-box {
+  @apply grid gap-1.5 rounded-lg border border-line-strong bg-surface-3 px-3.5 py-3 transition-colors focus-within:border-ink;
+}
+@utility amount-input {
+  @apply w-full min-w-0 bg-transparent p-0 text-[26px] leading-[1.15] font-medium tracking-[-0.01em] text-ink tabular-nums outline-none placeholder:text-ink-3;
+}
+@utility amount-meta {
+  @apply flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 text-[12.5px] text-ink-3;
+}
+@utility quick {
+  @apply inline-flex h-6 items-center rounded-sm border border-line px-2 text-[11.5px] font-medium text-ink-2 transition-colors hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink-2;
+}
+@utility quick-on {
+  @apply border-lime/60 bg-lime/10 text-ink;
+}
+@utility summary-row {
+  @apply flex items-baseline justify-between gap-3 text-[13px];
+}
+@utility check-item {
+  @apply flex items-start gap-2 text-[12.5px] text-ink-3;
+}
+@utility check-item-done {
+  @apply text-ink-3/70 line-through;
+}
+/* swap card (/app/create): the field box carries the focus border, so its input draws no ring
+   (unlayered on purpose — it has to beat the global *:focus-visible rule above) */
+.swap-input:focus-visible {
+  outline: none;
 }
 
 /* toolbar: search + segmented + count, in a panel head */
@@ -296,10 +388,60 @@ body {
   @apply fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 backdrop-blur-[2px] sm:items-center sm:p-4;
 }
 @utility menu {
-  @apply z-[60] min-w-40 overflow-hidden rounded-lg border border-line-strong bg-surface-3 py-1 shadow-[0_12px_32px_rgba(0,0,0,0.5)];
+  @apply z-[60] min-w-40 overflow-hidden rounded-lg border border-line-strong bg-surface-3 py-1 shadow-pop;
 }
 @utility menu-item {
   @apply flex w-full items-center px-3 py-2 text-left text-[13px] text-ink-2 hover:bg-surface-4 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40;
+}
+
+/* transaction flow dialog: the card sliding in, a check popping into a step mark, and the halo that
+   pulses around the step waiting on the wallet */
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes halo {
+  from {
+    box-shadow: 0 0 0 0 rgb(204 255 0 / 0.5);
+  }
+  to {
+    box-shadow: 0 0 0 12px rgb(204 255 0 / 0);
+  }
+}
+@utility anim-dialog-in {
+  animation: dialog-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@utility anim-pop {
+  animation: pop 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@utility anim-halo {
+  animation: halo 1.5s ease-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-dialog-in,
+  .anim-pop,
+  .anim-halo {
+    animation: none;
+  }
 }
 
 /* landing helpers */
@@ -307,7 +449,7 @@ body {
   @apply mx-auto w-full max-w-6xl px-6;
 }
 @utility eyebrow {
-  @apply text-[12px] font-semibold uppercase tracking-[0.12em] text-lime;
+  @apply text-[12px] font-semibold uppercase tracking-[0.12em] text-lime-text;
 }
 @utility h-section {
   @apply text-3xl font-bold tracking-tight text-ink md:text-4xl;

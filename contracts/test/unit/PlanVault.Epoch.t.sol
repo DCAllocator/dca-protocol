@@ -164,7 +164,8 @@ contract PlanVaultEpochTest is BaseTest {
     }
 
     // ------------------------------------------------------------------
-    // $DCA tiers: auto-distribute (>= 10k) and fee halving (>= 50k)
+    // $DCA perks: auto-distribute and fee halving both unlock at 100k by default; the two thresholds stay
+    // independently settable (`setThresholds`).
     // ------------------------------------------------------------------
 
     function _runTier(uint256 dcaWhole) internal returns (Plan memory p, uint256 walletStock, uint256 fee) {
@@ -187,62 +188,71 @@ contract PlanVaultEpochTest is BaseTest {
         assertEq(p.stockAccrued, _nvdaFor(198.5e6));
     }
 
-    function test_tier_9999() public {
-        (Plan memory p, uint256 wallet, uint256 fee) = _runTier(9_999);
-        assertEq(fee, 1.5e6);
+    function test_tier_99999_noPerks() public {
+        (Plan memory p, uint256 wallet, uint256 fee) = _runTier(99_999);
+        assertEq(fee, 1.5e6, "full fee");
         assertEq(wallet, 0, "below auto-dist threshold");
-        assertGt(p.stockAccrued, 0);
+        assertEq(p.stockAccrued, _nvdaFor(198.5e6));
     }
 
-    function test_tier_10000_autoDistributes() public {
-        (Plan memory p, uint256 wallet, uint256 fee) = _runTier(10_000);
-        assertEq(fee, 1.5e6, "full fee");
-        assertEq(wallet, _nvdaFor(198.5e6), "stock sent to wallet, 0 claim fee");
+    function test_tier_100000_autoDistributesAndHalvesFee() public {
+        (Plan memory p, uint256 wallet, uint256 fee) = _runTier(100_000);
+        // 75 bps -> 37 bps (floor). 200 * 0.0037 = 0.74
+        assertEq(fee, 0.74e6, "halved fee");
+        assertEq(wallet, _nvdaFor(199.26e6), "stock sent to wallet, 0 claim fee");
         assertEq(p.stockAccrued, 0);
         assertEq(nvda.balanceOf(address(daily)), 0);
     }
 
-    function test_tier_49999_autoDistFullFee() public {
-        (, uint256 wallet, uint256 fee) = _runTier(49_999);
-        assertEq(fee, 1.5e6);
-        assertEq(wallet, _nvdaFor(198.5e6));
-    }
-
-    function test_tier_50000_halvesFee() public {
-        (, uint256 wallet, uint256 fee) = _runTier(50_000);
-        // 75 bps -> 37 bps (floor). 200 * 0.0037 = 0.74
+    function test_tier_100001_autoDistributesAndHalvesFee() public {
+        (Plan memory p, uint256 wallet, uint256 fee) = _runTier(100_001);
         assertEq(fee, 0.74e6);
         assertEq(wallet, _nvdaFor(199.26e6));
+        assertEq(p.stockAccrued, 0);
     }
 
-    function test_tier_50001_halvesFee() public {
-        (, uint256 wallet, uint256 fee) = _runTier(50_001);
-        assertEq(fee, 0.74e6);
-        assertEq(wallet, _nvdaFor(199.26e6));
+    function test_tier_thresholdsIndependent_autoDistOnly() public {
+        // auto-distribute unlocks first, halving later: the band in between gets the wallet delivery at full fee.
+        vm.prank(owner);
+        daily.setThresholds(10_000e18, 50_000e18);
+        (Plan memory p, uint256 wallet, uint256 fee) = _runTier(49_999);
+        assertEq(fee, 1.5e6, "full fee");
+        assertEq(wallet, _nvdaFor(198.5e6), "auto-distributed");
+        assertEq(p.stockAccrued, 0);
+    }
+
+    function test_tier_thresholdsIndependent_halveOnly() public {
+        // halving unlocks first: the band in between pays the halved fee but still accrues on-vault.
+        vm.prank(owner);
+        daily.setThresholds(50_000e18, 10_000e18);
+        (Plan memory p, uint256 wallet, uint256 fee) = _runTier(49_999);
+        assertEq(fee, 0.74e6, "halved fee");
+        assertEq(wallet, 0, "not auto-distributed");
+        assertEq(p.stockAccrued, _nvdaFor(199.26e6));
     }
 
     function test_tier_snapshotAtExecutionNotCreation() public {
         uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
-        _giveDca(alice, 60_000); // bought after creating the plan
+        _giveDca(alice, 100_000); // bought after creating the plan
         _nextEpoch(daily);
         _advance(daily, address(nvda));
         assertEq(nvda.balanceOf(alice), _nvdaFor(199.26e6), "perks read at execution");
         assertEq(daily.getPlan(id).stockAccrued, 0);
         // sells DCA before next epoch -> perks gone
         vm.prank(alice);
-        assertTrue(dca.transfer(bob, 60_000e18));
+        assertTrue(dca.transfer(bob, 100_000e18));
         _nextEpoch(daily);
         _advance(daily, address(nvda));
         assertEq(daily.getPlan(id).stockAccrued, _nvdaFor(198.5e6));
     }
 
     function test_tier_recipientReceivesAutoDist() public {
-        _giveDca(alice, 10_000);
+        _giveDca(alice, 100_000);
         vm.prank(alice);
         uint256 id = daily.createPlan(address(nvda), 200e6, carol, 1_000e6, 0, 0, false);
         _nextEpoch(daily);
         _advance(daily, address(nvda));
-        assertEq(nvda.balanceOf(carol), _nvdaFor(198.5e6));
+        assertEq(nvda.balanceOf(carol), _nvdaFor(199.26e6));
         assertEq(nvda.balanceOf(alice), 0);
         assertEq(daily.getPlan(id).stockAccrued, 0);
     }
@@ -250,10 +260,16 @@ contract PlanVaultEpochTest is BaseTest {
     function test_effectiveFeeViews() public {
         assertEq(daily.effectivePurchaseFeeBps(alice), 75);
         assertFalse(daily.isAutoDistribute(alice));
-        _giveDca(alice, 10_000);
-        assertTrue(daily.isAutoDistribute(alice));
+        _giveDca(alice, 99_999);
+        assertFalse(daily.isAutoDistribute(alice));
         assertEq(daily.effectivePurchaseFeeBps(alice), 75);
-        _giveDca(alice, 40_000);
+        _giveDca(alice, 1);
+        assertTrue(daily.isAutoDistribute(alice));
+        assertEq(daily.effectivePurchaseFeeBps(alice), 37);
+        // each view follows its own threshold
+        vm.prank(owner);
+        daily.setThresholds(200_000e18, 100_000e18);
+        assertFalse(daily.isAutoDistribute(alice));
         assertEq(daily.effectivePurchaseFeeBps(alice), 37);
     }
 
@@ -262,14 +278,14 @@ contract PlanVaultEpochTest is BaseTest {
         vm.prank(owner);
         registry.listStock(address(blk), "BLK", false, true);
         router.setRate(address(usdg), address(blk), 1e18, 100e6);
-        _giveDca(alice, 10_000);
+        _giveDca(alice, 100_000);
         blk.setBlocked(alice, true);
         uint256 id = _createUsdgPlan(daily, alice, address(blk), 200e6, 1_000e6);
         _nextEpoch(daily);
         vm.expectEmit(true, true, false, true);
-        emit IPlanVault.PlanFilled(id, 1, 200e6, 1.5e6, 1.985e18, false);
+        emit IPlanVault.PlanFilled(id, 1, 200e6, 0.74e6, 1.9926e18, false);
         _advance(daily, address(blk));
-        assertEq(daily.getPlan(id).stockAccrued, 1.985e18, "accrued instead of bricking the epoch");
+        assertEq(daily.getPlan(id).stockAccrued, 1.9926e18, "accrued instead of bricking the epoch");
         assertEq(blk.balanceOf(alice), 0);
     }
 
@@ -309,7 +325,7 @@ contract PlanVaultEpochTest is BaseTest {
         _advance(daily, address(nvda));
         uint256 accrued = daily.getPlan(id).stockAccrued;
         assertGt(accrued, 0);
-        _giveDca(alice, 10_000); // buys $DCA between epoch and claim
+        _giveDca(alice, 100_000); // buys $DCA between epoch and claim
         vm.prank(alice);
         daily.claim(id, type(uint256).max);
         assertEq(nvda.balanceOf(alice), accrued, "0 claim fee");
@@ -800,8 +816,9 @@ contract PlanVaultEpochTest is BaseTest {
         // deploy a vault with dca = address(0)
         vm.warp(T0);
         DailyNoDca v = new DailyNoDca(owner, address(usdg), address(weth), address(registry), address(router), treasury);
-        assertEq(v.autoDistributeThreshold(), 10_000e18);
-        _giveDca(alice, 100_000);
+        assertEq(v.autoDistributeThreshold(), 100_000e18);
+        assertEq(v.feeHalveThreshold(), 100_000e18);
+        _giveDca(alice, 200_000);
         assertEq(v.effectivePurchaseFeeBps(alice), 75);
         assertFalse(v.isAutoDistribute(alice));
         // thresholds cannot be zeroed, and with no token there are no perks whatever they are

@@ -194,9 +194,10 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         });
         emit FeeConfigSet(_fees);
 
+        // Both perks unlock at the same balance by default; `setThresholds` keeps them independently settable.
         uint8 dcaDec = p.dca == address(0) ? 18 : IDCA(p.dca).decimals();
-        autoDistributeThreshold = 10_000 * 10 ** dcaDec;
-        feeHalveThreshold = 50_000 * 10 ** dcaDec;
+        autoDistributeThreshold = 100_000 * 10 ** dcaDec;
+        feeHalveThreshold = 100_000 * 10 ** dcaDec;
         emit ThresholdsSet(autoDistributeThreshold, feeHalveThreshold);
 
         uint256 unit = 10 ** usdgDecimals;

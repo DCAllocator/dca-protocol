@@ -29,6 +29,16 @@ export const fmtUsdCompact = (v: bigint | undefined, decimals = 6): string => {
   return fmtUsd(v, decimals);
 };
 
+/** Compact token amount for inline labels: "100k", "1.5M", "999". */
+export const fmtUnitsCompact = (v: bigint | undefined, decimals: number): string => {
+  if (v === undefined) return "—";
+  const n = Number(formatUnits(v, decimals));
+  const trim = (x: number) => Number(x.toFixed(1)).toString();
+  if (n >= 1_000_000) return `${trim(n / 1_000_000)}M`;
+  if (n >= 1_000) return `${trim(n / 1_000)}k`;
+  return trim(n);
+};
+
 export const fmtBps = (bps: number | bigint | undefined): string =>
   bps === undefined ? "—" : `${(Number(bps) / 100).toFixed(2)}%`;
 

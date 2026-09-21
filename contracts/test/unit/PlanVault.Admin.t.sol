@@ -38,8 +38,8 @@ contract PlanVaultAdminTest is BaseTest {
         assertEq(f.claimFeeBps, 25);
         assertEq(f.keeperTipBps, 0);
         assertEq(f.swapSlippageBps, 50);
-        assertEq(daily.autoDistributeThreshold(), 10_000e18);
-        assertEq(daily.feeHalveThreshold(), 50_000e18);
+        assertEq(daily.autoDistributeThreshold(), 100_000e18);
+        assertEq(daily.feeHalveThreshold(), 100_000e18);
         assertEq(daily.maxPlansPerTx(), 150);
         assertEq(daily.minAmountPerEpoch(), 10e6, "10 USDG");
         assertEq(daily.minDeposit(), 10e6, "10 USDG");

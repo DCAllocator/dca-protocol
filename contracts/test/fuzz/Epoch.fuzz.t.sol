@@ -39,7 +39,7 @@ contract EpochFuzzTest is BaseTest {
             uint256 r = uint256(keccak256(abi.encode(seed, i)));
             uint96 amount = uint96(bound(r, 10e6, 50_000e6));
             uint128 deposit = uint128(bound(r >> 64, 10e6, 100_000e6));
-            uint32 dcaWhole = uint32(bound(r >> 128, 0, 60_000));
+            uint32 dcaWhole = uint32(bound(r >> 128, 0, 120_000));
             users[i] = _user(i);
             if (dcaWhole > 0) _giveDca(users[i], dcaWhole);
             ids[i] = _createUsdgPlan(daily, users[i], address(nvda), amount, deposit);

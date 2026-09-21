@@ -23,13 +23,13 @@ export function BoostCard({
   disabled?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-4 rounded-xl border border-line bg-surface-3 px-4 py-3.5">
+    <div className="flex items-center gap-3 rounded-lg border border-line-strong bg-surface-3 px-3.5 py-3">
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5 text-[15px] font-semibold text-ink">
+        <div className="flex items-center gap-1.5 text-[14px] font-medium text-ink">
           {BOOST.title}
           <Tip text={BOOST.tip} />
         </div>
-        <p className="mt-0.5 text-[13px] leading-snug text-ink-2">
+        <p className="mt-0.5 text-[12.5px] leading-normal text-ink-2">
           {available ? (
             <>
               Earn <span className="font-semibold text-good">{fmtPct(apy, true)} APY</span> on idle USDG. The rate updates with the market.

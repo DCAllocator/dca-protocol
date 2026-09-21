@@ -96,5 +96,15 @@ function fmtEpochLength(seconds: number): string {
   return `${seconds} seconds`;
 }
 
+/**
+ * $DCA balances that unlock the holder perks, as the contracts deploy them (raw 18-decimal units; mirrors
+ * `contracts/config/fees.json`). The vaults are the source of truth — `usePerkThresholds` reads them live and only
+ * falls back to these before the chain responds (or when the app is not configured).
+ */
+export const DCA_PERK_DEFAULTS = {
+  autoDistribute: 100_000n * 10n ** 18n,
+  feeHalve: 100_000n * 10n ** 18n,
+} as const;
+
 /** Marketing name for the docs link shown next to the $DCA quip. */
 export const DOCS_PATH = "/app/docs";

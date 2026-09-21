@@ -141,6 +141,8 @@ contract VaultInvariantsTest is BaseTest {
             handler.toggleBoost(i + 1, i % 4 != 3);
             handler.giveDca(i, uint32((i * 7_000) % 60_000));
             handler.setFill(i, uint16(9_000 + (i * 97) % 1_000));
+            // casting to 'uint32' is safe: i < 40
+            // forge-lint: disable-next-line(unsafe-typecast)
             handler.warp(uint32(i * 1000));
             if (i % 7 == 6) handler.liquidity(2 * i, true);
             handler.advanceEpoch(i, 3, 1);

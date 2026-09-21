@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { PageHeader, Card } from "@/components/ui";
+import { PerkThreshold } from "@/components/site/Live";
 
 /** Placeholder docs. Anchors (#plans, #dca, #fees, #risks) are linked from the app. */
 export default function Docs() {
@@ -79,12 +80,16 @@ export default function Docs() {
             <p>$DCA is the protocol token. Holding it in your wallet changes how your plans behave. No staking, no lock-ups.</p>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl border border-line bg-surface-2 p-4">
-                <div className="chip-lime">10,000 $DCA</div>
+                <div className="chip-lime">
+                  <PerkThreshold perk="autoDistribute" />
+                </div>
                 <div className="mt-2 text-[15px] font-semibold text-ink">Stock sent to your wallet</div>
                 <p className="mt-1 text-[13px] text-ink-2">Every buy is delivered automatically and claiming is free.</p>
               </div>
               <div className="rounded-xl border border-line bg-surface-2 p-4">
-                <div className="chip-lime">50,000 $DCA</div>
+                <div className="chip-lime">
+                  <PerkThreshold perk="feeHalve" />
+                </div>
                 <div className="mt-2 text-[15px] font-semibold text-ink">Half the purchase fee</div>
                 <p className="mt-1 text-[13px] text-ink-2">The per-buy fee is halved on every plan.</p>
               </div>
@@ -128,7 +133,9 @@ export default function Docs() {
                   <td className="num text-right">0.25%</td>
                 </tr>
                 <tr>
-                  <td className="text-ink-2">Claim stock (free with 10k $DCA)</td>
+                  <td className="text-ink-2">
+                    Claim stock (free with <PerkThreshold perk="autoDistribute" compact />)
+                  </td>
                   <td className="num text-right">0.25%</td>
                   <td className="num text-right">0.25%</td>
                   <td className="num text-right">0.25%</td>

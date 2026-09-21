@@ -4,6 +4,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { createPortal } from "react-dom";
 import { countdown } from "@/lib/format";
 import { tickerIconUrl } from "@/lib/tickers";
+import { useTheme } from "@/lib/theme";
 
 /* ------------------------------------------------------------------ */
 /* Layout                                                               */
@@ -15,15 +16,18 @@ export function PageHeader({
   description,
   right,
   rightMobile = true,
+  className = "mb-8",
 }: {
   title: ReactNode;
   description?: ReactNode;
   right?: ReactNode;
   /** Hide the right slot below md when it only repeats what the page shows anyway. */
   rightMobile?: boolean;
+  /** Outer spacing; forms sit closer to their header than dashboards do. */
+  className?: string;
 }) {
   return (
-    <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+    <div className={`flex flex-col gap-4 md:flex-row md:items-end md:justify-between ${className}`}>
       <div>
         <h1 className="page-title">{title}</h1>
         {description && <p className="page-sub">{description}</p>}
@@ -226,7 +230,7 @@ export function Tip({ text, className = "" }: { text: string; className?: string
       </button>
       <span
         role="tooltip"
-        className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-20 w-64 -translate-x-1/2 rounded-lg border border-line-strong bg-surface-3 px-3 py-2 text-left text-[12px] leading-relaxed font-normal text-ink-2 opacity-0 shadow-[0_12px_32px_rgba(0,0,0,0.5)] transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+        className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-20 w-64 -translate-x-1/2 rounded-lg border border-line-strong bg-surface-3 px-3 py-2 text-left text-[12px] leading-relaxed font-normal text-ink-2 opacity-0 shadow-pop transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
       >
         {text}
       </span>
@@ -415,9 +419,13 @@ export function Notice({ kind = "info", children }: { kind?: "info" | "warn" | "
 /** Tickers whose /tickers/<TICKER>.svg already 404'd this session, so later instances skip the probe. */
 const missingLogos = new Set<string>();
 
-/** Stock mark: the ticker's logo from /public/tickers when present, else its letters on a lime disc. */
+/**
+ * Stock mark: the ticker's logo from /public/tickers when present, else its letters on a lime disc.
+ * Dark-ink logos have a whitened `-dark.svg` twin that is served on the dark register (see tickers.ts).
+ */
 export function StockAvatar({ symbol, size = 24 }: { symbol: string; size?: number }) {
   const key = symbol.toUpperCase();
+  const theme = useTheme();
   const [failed, setFailed] = useState(() => missingLogos.has(key));
   if (failed || !symbol || symbol === "?" || symbol === "…") {
     return (
@@ -434,7 +442,7 @@ export function StockAvatar({ symbol, size = 24 }: { symbol: string; size?: numb
     // eslint-disable-next-line @next/next/no-img-element
     <img
       className="shrink-0"
-      src={tickerIconUrl(symbol)}
+      src={tickerIconUrl(symbol, theme)}
       alt={symbol}
       width={size}
       height={size}
@@ -509,7 +517,7 @@ export function Empty({ children }: { children: ReactNode }) {
 /* Icons (16px, stroke)                                                 */
 /* ------------------------------------------------------------------ */
 
-export type IconName = "plus" | "plans" | "activity" | "overview" | "token" | "docs" | "x" | "dots" | "menu" | "arrow" | "external" | "check" | "chevron" | "info" | "bolt";
+export type IconName = "plus" | "plans" | "activity" | "overview" | "token" | "docs" | "x" | "dots" | "menu" | "arrow" | "external" | "check" | "chevron" | "info" | "bolt" | "sun" | "moon";
 
 export function Icon({ name, size = 16, className = "" }: { name: IconName; size?: number; className?: string }) {
   const p: Record<IconName, ReactNode> = {
@@ -571,6 +579,13 @@ export function Icon({ name, size = 16, className = "" }: { name: IconName; size
       </>
     ),
     bolt: <path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z" fill="currentColor" stroke="none" />,
+    sun: (
+      <>
+        <circle cx="8" cy="8" r="3" />
+        <path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06" />
+      </>
+    ),
+    moon: <path d="M13.2 10.1A5.6 5.6 0 0 1 5.9 2.8a5.6 5.6 0 1 0 7.3 7.3z" />,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>

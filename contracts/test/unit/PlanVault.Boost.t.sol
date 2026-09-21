@@ -537,12 +537,12 @@ contract PlanVaultBoostTest is BaseTest {
     }
 
     function test_fill_boostedPlan_autoDistribute() public {
-        _giveDca(alice, 10_000);
+        _giveDca(alice, 100_000);
         uint256 id = _createBoostedPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         _nextEpoch(daily);
         uint256 v = _boostValue(daily, id);
         _advance(daily, address(nvda));
-        assertEq(nvda.balanceOf(alice), _nvdaFor(198.5e6), "sent straight to the wallet");
+        assertEq(nvda.balanceOf(alice), _nvdaFor(199.26e6), "sent straight to the wallet, halved fee");
         assertEq(daily.getPlan(id).stockAccrued, 0);
         assertApproxEqAbs(_boostValue(daily, id), v - 200e6, 2);
         _checkInvariants(daily);
@@ -743,7 +743,7 @@ contract PlanVaultBoostTest is BaseTest {
         address emitter;
     }
 
-    function _logs() internal returns (VmSafeLog[] memory out) {
+    function _logs() internal view returns (VmSafeLog[] memory out) {
         Vm.Log[] memory raw = vm.getRecordedLogs();
         out = new VmSafeLog[](raw.length);
         for (uint256 i; i < raw.length; ++i) {

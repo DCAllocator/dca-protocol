@@ -1,8 +1,8 @@
 "use client";
 
-import { useDirectory, useVaults, useStocks } from "@/hooks/useProtocol";
+import { useDirectory, useVaults, useStocks, usePerkThresholds } from "@/hooks/useProtocol";
 import { Countdown, StockAvatar } from "@/components/ui";
-import { fmtUsd, fmtBps } from "@/lib/format";
+import { fmtUsd, fmtBps, fmtUnits, fmtUnitsCompact } from "@/lib/format";
 import { PRODUCTION_VAULT_KINDS, VAULT_META, type ProductionVaultKind } from "@/lib/config";
 
 /** Stats strip under the hero. Degrades to placeholders when the app is not configured. */
@@ -33,15 +33,25 @@ export function LiveStats() {
   );
 }
 
+/**
+ * The $DCA balance that unlocks a perk, e.g. "100,000 $DCA" (`compact`: "100k $DCA"). Live from the vaults, deploy
+ * default until the chain responds — so server-rendered copy never goes stale when the owner moves a threshold.
+ */
+export function PerkThreshold({ perk, compact }: { perk: "autoDistribute" | "feeHalve"; compact?: boolean }) {
+  const t = usePerkThresholds();
+  return <>{compact ? fmtUnitsCompact(t[perk], 18) : fmtUnits(t[perk], 18, 0)} $DCA</>;
+}
+
 /** Live fee table (falls back to config defaults before the chain responds). */
 export function FeeTable() {
   const { vaults } = useDirectory();
   const { byKind } = useVaults(vaults);
+  const { autoDistribute } = usePerkThresholds();
   const rows = [
     ["Purchase fee, per buy", (k: ProductionVaultKind) => byKind[k]?.fees?.purchaseFeeBps ?? VAULT_META[k].defaultFeeBps],
     ["Deposit", (k: ProductionVaultKind) => byKind[k]?.fees?.depositFeeBps ?? 0],
     ["Withdraw idle funds", (k: ProductionVaultKind) => byKind[k]?.fees?.withdrawFeeBps ?? 25],
-    ["Claim (free with 10k $DCA)", (k: ProductionVaultKind) => byKind[k]?.fees?.claimFeeBps ?? 25],
+    [`Claim (free with ${fmtUnitsCompact(autoDistribute, 18)} $DCA)`, (k: ProductionVaultKind) => byKind[k]?.fees?.claimFeeBps ?? 25],
   ] as const;
   return (
     <table className="tbl">
