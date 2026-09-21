@@ -7,9 +7,9 @@ import { THEME_BOOTSTRAP } from "@/lib/theme-bootstrap";
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
 
 export const metadata: Metadata = {
-  title: "DCA — Buy stocks on a clock",
+  title: "DCA — Wall Street stocks. On a clock. On-chain.",
   description:
-    "Scheduled on-chain purchases of Robinhood Stock Tokens on Robinhood Chain. Daily, weekly or monthly vaults. Deposit USDG or ETH, get stock every epoch.",
+    "Recurring on-chain buys of Robinhood Stock Tokens on Robinhood Chain, delivered to your wallet. $DCA is the protocol's token — and what the protocol's fees buy back.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

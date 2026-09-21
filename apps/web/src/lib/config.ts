@@ -108,3 +108,9 @@ export const DCA_PERK_DEFAULTS = {
 
 /** Marketing name for the docs link shown next to the $DCA quip. */
 export const DOCS_PATH = "/app/docs";
+
+/**
+ * Where "Buy $DCA" sends people. The token launches through Pons; until that link is set
+ * (NEXT_PUBLIC_BUY_DCA_URL) the button goes to the in-app token page.
+ */
+export const BUY_DCA_URL = process.env.NEXT_PUBLIC_BUY_DCA_URL ?? "/app/token";
