@@ -4,7 +4,10 @@
  * (a handful of newer / private-company tickers are deliberately left unmapped rather than guessed).
  *
  * Icons: an SVG at apps/web/public/tickers/<TICKER>.svg shows a logo (shared with the $PIE project);
- * the UI falls back to the ticker's letters on a lime disc when the file is missing.
+ * the UI falls back to the ticker's letters on a lime disc when the file is missing. Logos drawn in
+ * black / near-black vanish on the dark register, so those listed in DARK_ICON_TICKERS also ship a
+ * <TICKER>-dark.svg twin with the dark fills turned white (brand colours untouched); the original is
+ * served on the light register.
  */
 export const TICKER_NAMES: Record<string, string> = {
   AAPL: "Apple",
@@ -149,4 +152,11 @@ export const TICKER_NAMES: Record<string, string> = {
 };
 
 export const tickerName = (symbol: string) => TICKER_NAMES[symbol.toUpperCase()] ?? symbol;
-export const tickerIconUrl = (symbol: string) => `/tickers/${symbol.toUpperCase()}.svg`;
+
+/** Tickers with a whitened `<TICKER>-dark.svg` twin in /public/tickers (keep in sync with the files). */
+export const DARK_ICON_TICKERS = new Set(["AAPL", "AMD", "AMZN", "GLD", "GME", "HIMS", "PLTR", "RDDT", "SGOV", "SPCX", "SPY"]);
+
+export const tickerIconUrl = (symbol: string, theme: "light" | "dark") => {
+  const t = symbol.toUpperCase();
+  return `/tickers/${t}${theme === "dark" && DARK_ICON_TICKERS.has(t) ? "-dark" : ""}.svg`;
+};

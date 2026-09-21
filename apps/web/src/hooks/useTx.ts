@@ -1,8 +1,8 @@
 "use client";
 
 import { useWriteContract, useWaitForTransactionReceipt, usePublicClient, useAccount } from "wagmi";
-import { useCallback, useEffect, useState } from "react";
-import type { Abi, Address, PublicClient } from "viem";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Abi, Address, Hash, PublicClient } from "viem";
 
 // Loosely typed on purpose: callers pass `{ address, abi, functionName, args, value? }` for any contract.
 export type TxParams = { address: Address; abi: Abi; functionName: string; args?: readonly unknown[]; value?: bigint };
@@ -53,35 +53,59 @@ export function useTx(onSuccess?: () => void) {
 export type TxStep = { label: string; params: TxParams };
 
 /**
+ * Where one step of a sequence is: waiting its turn → in the wallet → broadcast and waiting for the receipt
+ * → mined (or failed, with the reason). `hash` is set as soon as the wallet returns it.
+ */
+export type TxStepPhase = "todo" | "signing" | "mining" | "done" | "error";
+export type TxStepState = { label: string; phase: TxStepPhase; hash?: Hash; error?: string };
+
+type SeqState = { running: boolean; step: number; total: number; label?: string; error: string | null; done: boolean; steps: TxStepState[] };
+const IDLE: SeqState = { running: false, step: 0, total: 0, error: null, done: false, steps: [] };
+
+/**
  * Runs several writes one after another, waiting for each receipt (the vault has no multicall, so
- * "remove plan" is withdraw → claim → prune). Stops at the first failure and reports which step it was.
+ * "remove plan" is withdraw → claim → prune). Stops at the first failure and reports which step it was;
+ * `retry()` picks up again from that step, keeping the receipts of the ones already mined.
  */
 export function useTxSequence(onDone?: () => void) {
   const { writeContractAsync } = useWriteContract();
   const client = usePublicClient();
   const { address } = useAccount();
-  const [state, setState] = useState<{ running: boolean; step: number; total: number; label?: string; error: string | null; done: boolean }>({
-    running: false,
-    step: 0,
-    total: 0,
-    error: null,
-    done: false,
-  });
+  const [state, setState] = useState<SeqState>(IDLE);
+  // The steps of the current run and where it stopped, for `retry`.
+  const runRef = useRef<{ steps: TxStep[]; failedAt: number } | null>(null);
 
-  const run = useCallback(
-    async (steps: TxStep[]) => {
+  const runFrom = useCallback(
+    async (steps: TxStep[], from: number) => {
       if (!client || steps.length === 0) return;
-      setState({ running: true, step: 0, total: steps.length, label: steps[0].label, error: null, done: false });
-      for (let i = 0; i < steps.length; i++) {
-        setState((s) => ({ ...s, step: i, label: steps[i].label }));
+      runRef.current = { steps, failedAt: -1 };
+      setState((s) => ({
+        running: true,
+        step: from,
+        total: steps.length,
+        label: steps[from].label,
+        error: null,
+        done: false,
+        // Steps before `from` are the ones a previous run already mined.
+        steps: steps.map((st, i) => (i < from && s.steps[i]?.phase === "done" ? s.steps[i] : { label: st.label, phase: "todo" })),
+      }));
+      for (let i = from; i < steps.length; i++) {
+        const patch = (p: Partial<TxStepState>) =>
+          setState((s) => ({ ...s, step: i, label: steps[i].label, steps: s.steps.map((x, j) => (j === i ? { ...x, ...p } : x)) }));
         try {
+          patch({ phase: "signing" });
           const gas = await gasWithBuffer(client, steps[i].params, address);
           const hash = await writeContractAsync({ ...steps[i].params, gas } as never);
+          patch({ phase: "mining", hash });
           const receipt = await client.waitForTransactionReceipt({ hash });
           if (receipt.status !== "success") throw new Error(`${steps[i].label} reverted`);
+          patch({ phase: "done" });
         } catch (e) {
           const err = e as Error & { shortMessage?: string };
-          setState((s) => ({ ...s, running: false, error: `${steps[i].label}: ${err.shortMessage ?? err.message}` }));
+          const msg = err.shortMessage ?? err.message;
+          runRef.current = { steps, failedAt: i };
+          patch({ phase: "error", error: msg });
+          setState((s) => ({ ...s, running: false, error: `${steps[i].label}: ${msg}` }));
           return;
         }
       }
@@ -91,6 +115,14 @@ export function useTxSequence(onDone?: () => void) {
     [client, address, writeContractAsync, onDone],
   );
 
-  const reset = useCallback(() => setState({ running: false, step: 0, total: 0, error: null, done: false }), []);
-  return { ...state, run, reset };
+  const run = useCallback((steps: TxStep[]) => runFrom(steps, 0), [runFrom]);
+  const retry = useCallback(() => {
+    const r = runRef.current;
+    if (r && r.failedAt >= 0) return runFrom(r.steps, r.failedAt);
+  }, [runFrom]);
+  const reset = useCallback(() => {
+    runRef.current = null;
+    setState(IDLE);
+  }, []);
+  return { ...state, run, retry, reset };
 }

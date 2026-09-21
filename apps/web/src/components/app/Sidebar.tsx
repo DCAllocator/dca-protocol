@@ -4,7 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useDirectory, useVaults } from "@/hooks/useProtocol";
 import { Wordmark } from "@/components/Logo";
-import { Countdown, Dot, Icon, type IconName } from "@/components/ui";
+import { Dot, Icon, type IconName } from "@/components/ui";
+import { fmtUsdCompact } from "@/lib/format";
 import { VAULT_META } from "@/lib/config";
 
 const primary: { href: string; label: string; icon: IconName }[] = [
@@ -70,7 +71,10 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   {VAULT_META[v.kind].label}
                   {v.kind === "test" && <span className="chip-dev">dev</span>}
                 </span>
-                <Countdown target={v.nextEpochStart} className="text-[12px] text-ink-3" />
+                {/* USDG waiting to buy on this vault: idle on the vault plus what is lent out for boosted plans. */}
+                <span className="num text-[12px] text-ink-3">
+                  {v.totalUsdgIdle === undefined ? "—" : fmtUsdCompact(v.totalUsdgIdle + (v.boostAssets ?? 0n))}
+                </span>
               </div>
             ))}
           </div>

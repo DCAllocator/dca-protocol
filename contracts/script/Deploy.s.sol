@@ -23,10 +23,11 @@ import {ClaimHelper} from "../src/periphery/ClaimHelper.sol";
 import {EpochLib} from "../src/libraries/EpochLib.sol";
 import {MorphoBlueStrategy} from "../src/boost/MorphoBlueStrategy.sol";
 import {IMorpho, Id, MarketParams} from "../src/interfaces/IMorpho.sol";
+import {IDCA} from "../src/token/IDCA.sol";
 
 /// @title Deploy
 /// @notice Production deployment for Robinhood Chain (4663). Reads external addresses from the environment
-///         (see .env.example) and fee defaults from config/fees.json. Never deploys a mock $DCA.
+///         (see .env.example) and fee defaults + $DCA perk thresholds from config/fees.json. Never deploys a mock $DCA.
 ///
 /// Usage:
 ///   forge script script/Deploy.s.sol --rpc-url $RH_RPC --broadcast --verify -vvvv
@@ -135,6 +136,11 @@ contract Deploy is Script {
         o.daily.setMaxPlansPerTx(maxPlans);
         o.weekly.setMaxPlansPerTx(maxPlans);
         o.monthly.setMaxPlansPerTx(maxPlans);
+        // $DCA perk thresholds from config, in whole tokens (scaled by the token's decimals; 18 without a token).
+        (uint256 autoDist, uint256 feeHalve) = _thresholds(e.dca);
+        o.daily.setThresholds(autoDist, feeHalve);
+        o.weekly.setThresholds(autoDist, feeHalve);
+        o.monthly.setThresholds(autoDist, feeHalve);
         o.router.setMaxPriceImpactBps(uint16(_cfgUint("maxPriceImpactBps")));
 
         // Keeper + jobs for every approved stock. Vaults run keeperOnly (default); the EpochKeeper contract and
@@ -239,6 +245,13 @@ contract Deploy is Script {
     function _cfgUint(string memory key) internal view returns (uint256) {
         string memory json = vm.readFile("config/fees.json");
         return json.readUint(string.concat(".", key));
+    }
+
+    /// @dev `autoDistributeThreshold` / `feeHalveThreshold` from config are whole $DCA; the vault wants raw units.
+    function _thresholds(address dca) internal view returns (uint256 autoDist, uint256 feeHalve) {
+        uint256 unit = 10 ** (dca == address(0) ? 18 : IDCA(dca).decimals());
+        autoDist = _cfgUint("autoDistributeThreshold") * unit;
+        feeHalve = _cfgUint("feeHalveThreshold") * unit;
     }
 
     /// @dev STOCKS="NVDA:0xabc...,AAPL:0xdef..." — listed as approved, not fee-on-transfer.

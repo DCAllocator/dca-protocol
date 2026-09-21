@@ -77,7 +77,7 @@ Anyone else is untrusted.
 
 ### 4. `$DCA` flash-buy
 
-**Risk.** Perks read `dca.balanceOf(owner)` at execution and at claim. A user can buy ≥ 50k `$DCA` right before the epoch (halved fee, auto-send) and sell right after.
+**Risk.** Perks read `dca.balanceOf(owner)` at execution and at claim. A user can buy ≥ 100k `$DCA` (the deploy threshold for both perks) right before the epoch (halved fee, auto-send) and sell right after.
 
 **Handling.** Accepted for V1 and documented in the app. Since epochs are operator-only the flash-buy can no longer be made atomic with the epoch by the user. The economic damage is bounded to the fee discount / claim fee waiver on one epoch's spend. V2 option: checkpointed balances (`ERC20Votes`-style `getPastVotes`) with a lookback, or a staking snapshot. With `dca == address(0)` there are no perks regardless of thresholds; thresholds cannot be zeroed.
 

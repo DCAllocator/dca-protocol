@@ -4,9 +4,15 @@ import { useMemo } from "react";
 import { useAccount, useBalance, useReadContract, useReadContracts, usePublicClient } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
 import type { Address } from "viem";
-import { VaultDirectoryAbi, StockRegistryAbi, PlanVaultAbi, ERC20Abi, ClaimHelperAbi, AggregatorRouterAbi, MorphoBlueStrategyAbi } from "@/abi";
-import { ADDRESSES, isZero, TEST_VAULT, VAULT_KINDS, SECONDS_PER_YEAR, type VaultKind } from "@/lib/config";
+import { VaultDirectoryAbi, StockRegistryAbi, PlanVaultAbi, ERC20Abi, ClaimHelperAbi, AggregatorRouterAbi, MorphoBlueStrategyAbi, IMorphoAbi } from "@/abi";
+import { Market, UnsupportedMarketIrmError } from "@morpho-org/blue-sdk";
+import type { PublicClient } from "viem";
+import { ADDRESSES, isZero, TEST_VAULT, VAULT_KINDS, SECONDS_PER_YEAR, DCA_PERK_DEFAULTS, type VaultKind } from "@/lib/config";
 import { valueOf } from "@/lib/format";
+import marketCapSnapshot from "@/data/market-caps.json";
+
+/** Periodic CoinGecko snapshot of each Stock Token's market cap (symbol → USD), see scripts/snapshot-market-caps.mjs. */
+const STOCK_MARKET_CAPS: Record<string, number> = marketCapSnapshot.marketCaps;
 
 export type Directory = {
   daily: Address;
@@ -174,6 +180,19 @@ export function useVaults(vaults?: VaultMap) {
   return { infos, byKind: Object.fromEntries(infos.map((i) => [i.kind, i])) as Record<VaultKind, VaultInfo | undefined>, isLoading: q.isLoading, refetch: q.refetch };
 }
 
+/**
+ * $DCA balances that unlock the holder perks (raw units), live from the vaults; the deploy defaults stand in
+ * until the chain responds. Every vault is deployed with the same pair, so the first one is read.
+ */
+export function usePerkThresholds() {
+  const { vaults } = useDirectory();
+  const { infos } = useVaults(vaults);
+  return {
+    autoDistribute: infos[0]?.autoDistributeThreshold ?? DCA_PERK_DEFAULTS.autoDistribute,
+    feeHalve: infos[0]?.feeHalveThreshold ?? DCA_PERK_DEFAULTS.feeHalve,
+  };
+}
+
 /** Wallet balances (USDG, WETH, native ETH, $DCA) + $DCA perks for the connected account. */
 export function useUser(dir?: Directory, vault?: Address) {
   const { address } = useAccount();
@@ -254,32 +273,111 @@ export function usePositions(vaults?: VaultMap) {
 export const kindOf = (vaults: VaultMap | undefined, a: Address): VaultKind | undefined =>
   vaults ? (VAULT_KINDS.find((k) => vaults[k].toLowerCase() === a.toLowerCase()) as VaultKind | undefined) : undefined;
 
+/** How a strategy's APY was obtained (see `useBoostApys`). */
+export type BoostApy = {
+  /** Supply APY as a fraction (0.0494 = 4.94%); undefined while loading or when the strategy exposes no rate. */
+  apy?: number;
+  /** `morpho`: Morpho's own definition via the blue-sdk. `strategy`: the on-chain average-rate fallback. */
+  source: "morpho" | "strategy";
+};
+
+/** AdaptiveCurveIrm's stored rate at target utilisation (int256, WAD per second). Only this IRM has it. */
+const AdaptiveCurveIrmAbi = [
+  { type: "function", name: "rateAtTarget", stateMutability: "view", inputs: [{ name: "id", type: "bytes32" }], outputs: [{ type: "int256" }] },
+] as const;
+
 /**
- * Live supply APY of every boost strategy in use, straight from the Morpho Blue market: the strategy exposes the
- * market's per-second supply rate (`borrowRate × utilisation × (1 − fee)`, from the market's IRM), and
- * APY = e^(rate × 1 year) − 1. Keyed by strategy address (lower-case). Refreshes every 30 s — the rate
- * moves with the market. Strategies that do not expose the view (another ERC-4626) resolve to undefined.
+ * Supply APY of one boost strategy, computed the way Morpho computes it.
+ *
+ * Primary path — Morpho's own maths (`@morpho-org/blue-sdk` `Market.getSupplyApy`): read the market's totals,
+ * fee and `lastUpdate` from Morpho Blue plus the AdaptiveCurveIrm's `rateAtTarget`, then
+ * `expm1(endBorrowRate × utilisation × (1 − fee) × 1 year)` where `endBorrowRate` is the IRM's instantaneous
+ * rate at the chain's current timestamp (the number the Morpho app shows).
+ *
+ * Fallback — the strategy's `supplyRatePerSecond()` = `borrowRateView × utilisation × (1 − fee)`. That uses the
+ * IRM's *average* rate since the market was last touched (what Morpho pays for that period); it equals the
+ * instantaneous rate whenever the market was touched this block and only drifts on an idle market. The SDK
+ * throws `UnsupportedMarketIrmError` for IRMs without `rateAtTarget` (e.g. the local MockIrm) — that is when
+ * the fallback is used.
+ */
+async function readStrategyApy(client: PublicClient, strategy: Address, now: bigint): Promise<BoostApy> {
+  // Plain reads rather than multicall: a chain without Multicall3 (viem's `anvil` definition) must work too.
+  const s = { address: strategy, abi: MorphoBlueStrategyAbi } as const;
+  const [morpho, marketId, params, rate] = await Promise.all([
+    tryRead(() => client.readContract({ ...s, functionName: "morpho" })),
+    tryRead(() => client.readContract({ ...s, functionName: "marketId" })),
+    tryRead(() => client.readContract({ ...s, functionName: "marketParams" })),
+    tryRead(() => client.readContract({ ...s, functionName: "supplyRatePerSecond" })),
+  ]);
+  const fallback: BoostApy = { apy: rate === undefined ? undefined : apyFromRate(rate), source: "strategy" };
+  if (!morpho || !marketId || !params) return fallback;
+  const [market, rateAtTarget] = await Promise.all([
+    tryRead(() => client.readContract({ address: morpho, abi: IMorphoAbi, functionName: "market", args: [marketId] })),
+    tryRead(() => client.readContract({ address: params.irm, abi: AdaptiveCurveIrmAbi, functionName: "rateAtTarget", args: [marketId] })),
+  ]);
+  if (!market) return fallback;
+  try {
+    const apy = new Market({
+      params: { loanToken: params.loanToken, collateralToken: params.collateralToken, oracle: params.oracle, irm: params.irm, lltv: params.lltv },
+      totalSupplyAssets: market.totalSupplyAssets,
+      totalSupplyShares: market.totalSupplyShares,
+      totalBorrowAssets: market.totalBorrowAssets,
+      totalBorrowShares: market.totalBorrowShares,
+      lastUpdate: market.lastUpdate,
+      fee: market.fee,
+      rateAtTarget,
+    }).getSupplyApy(now);
+    return { apy, source: "morpho" };
+  } catch (e) {
+    if (e instanceof UnsupportedMarketIrmError) return fallback;
+    throw e;
+  }
+}
+
+/** A contract read that resolves to undefined instead of throwing (missing function, revert, no code). */
+async function tryRead<T>(read: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await read();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Live supply APY of every boost strategy in use, keyed by strategy address (lower-case), evaluated at the
+ * chain's latest block timestamp (not the wall clock: a local anvil can be warped). Refreshes every 30 s —
+ * the rate moves with the market. See `readStrategyApy` for the two sources.
  */
 export function useBoostApys(infos?: VaultInfo[]) {
+  const client = usePublicClient();
   const strategies = useMemo(
     () => Array.from(new Set((infos ?? []).map((v) => v.boostStrategy).filter((a): a is Address => !!a && !isZero(a)).map((a) => a.toLowerCase() as Address))),
     [infos],
   );
-  const q = useReadContracts({
-    contracts: strategies.map((address) => ({ address, abi: MorphoBlueStrategyAbi, functionName: "supplyRatePerSecond" }) as const),
-    query: { enabled: strategies.length > 0, refetchInterval: 30_000 },
+  const q = useQuery({
+    queryKey: ["boostApy", strategies.join(",")],
+    enabled: !!client && strategies.length > 0,
+    refetchInterval: 30_000,
+    retry: false,
+    queryFn: async () => {
+      const block = await client!.getBlock();
+      const out: Record<string, BoostApy> = {};
+      await Promise.all(strategies.map(async (a) => (out[a] = await readStrategyApy(client!, a, block.timestamp))));
+      return out;
+    },
   });
   return useMemo(() => {
-    const out: Record<string, number | undefined> = {};
-    strategies.forEach((a, i) => {
-      const rate = q.data?.[i]?.result as bigint | undefined;
-      out[a] = rate === undefined ? undefined : apyFromRate(rate);
-    });
-    return { apys: out, apyOf: (strategy?: Address) => (strategy ? out[strategy.toLowerCase()] : undefined), isLoading: q.isLoading };
-  }, [strategies, q.data, q.isLoading]);
+    const apys = q.data ?? {};
+    return {
+      apys,
+      apyOf: (strategy?: Address) => (strategy ? apys[strategy.toLowerCase()]?.apy : undefined),
+      sourceOf: (strategy?: Address) => (strategy ? apys[strategy.toLowerCase()]?.source : undefined),
+      isLoading: q.isLoading,
+    };
+  }, [q.data, q.isLoading]);
 }
 
-/** Per-second WAD rate → APY fraction (0.0494 = 4.94%), continuously compounded like Morpho's own UI. */
+/** Per-second WAD rate → APY fraction (0.0494 = 4.94%), continuously compounded — Morpho's `rateToApy`. */
 export const apyFromRate = (ratePerSecond: bigint): number => Math.expm1((Number(ratePerSecond) / 1e18) * SECONDS_PER_YEAR);
 
 /** Router quote via eth_call simulation (quote() is state-changing because adapters simulate swaps). */
@@ -341,7 +439,36 @@ export function usePrices(router?: Address, usdg?: Address, tokens?: { address: 
       return out;
     },
   });
-  return { prices: q.data ?? ({} as PriceMap), isLoading: q.isLoading };
+  return { prices: q.data ?? ({} as PriceMap), isLoading: q.isLoading, ready: q.data !== undefined };
+}
+
+/** Number of stocks the create page shows as "Popular". */
+export const TOP_STOCKS = 5;
+
+/**
+ * The registry's stocks ranked by market cap, from the periodic CoinGecko snapshot (each Stock Token is
+ * listed on CoinGecko under the "Robinhood Chain Stocks Ecosystem" category, market cap = circulating
+ * supply × price aggregated across venues). That snapshot is a static import — no network call on page
+ * load — refreshed by `pnpm snapshot:market-caps` (also run on a schedule, see
+ * .github/workflows/snapshot-market-caps.yml). Stocks missing from the snapshot (newly approved, or not
+ * yet listed on CoinGecko) keep their place at the bottom in symbol order. `ready` flips once the
+ * registry has answered: until then `top` is empty rather than an alphabetical guess, so the "Popular"
+ * row never shows the wrong five and then flips.
+ */
+export function useRankedStocks(dir?: Directory) {
+  const { stocks, byAddress, isLoading: stocksLoading } = useStocks(dir?.registry);
+  const tokens = useMemo(() => stocks.map((s) => ({ address: s.address, decimals: s.decimals })), [stocks]);
+  const { prices } = usePrices(dir?.router, dir?.usdg, tokens);
+  return useMemo(() => {
+    const marketCapOf = (s: Stock) => STOCK_MARKET_CAPS[s.symbol.toUpperCase()];
+    const ranked = [...stocks].sort((a, b) => {
+      const diff = (marketCapOf(b) ?? 0) - (marketCapOf(a) ?? 0);
+      return diff !== 0 ? diff : a.symbol.localeCompare(b.symbol);
+    });
+    const ready = stocks.length > 0 && !stocksLoading;
+    const top = ready ? ranked.filter((s) => (marketCapOf(s) ?? 0) > 0).slice(0, TOP_STOCKS) : [];
+    return { stocks, byAddress, ranked, top, prices, marketCapOf, ready };
+  }, [stocks, byAddress, prices, stocksLoading]);
 }
 
 /** Stock still sitting on each vault (accrued, not yet claimed), per stock and in total. */

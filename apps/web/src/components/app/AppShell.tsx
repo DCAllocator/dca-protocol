@@ -3,6 +3,7 @@
 import { useState, type ReactNode } from "react";
 import { useAccount, useConnect } from "wagmi";
 import { ConnectButton } from "@/components/ConnectButton";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Sidebar } from "@/components/app/Sidebar";
 import { Icon } from "@/components/ui";
 import { Logo } from "@/components/Logo";
@@ -10,7 +11,7 @@ import { activeChain } from "@/lib/chain";
 import { TEST_WALLET_ID } from "@/lib/wagmi";
 import { TEST_VAULT } from "@/lib/config";
 
-/** Sidebar + slim header (wallet top-right) + centred content column. */
+/** Sidebar + slim header (wallet + theme switch top-right) + centred content column. */
 export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const local = activeChain.id === 31337;
@@ -36,6 +37,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               </span>
             )}
             <ConnectButton />
+            <ThemeToggle />
           </div>
         </header>
         <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-20 pt-4 md:px-8">{children}</main>

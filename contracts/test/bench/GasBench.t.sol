@@ -93,10 +93,10 @@ contract GasBenchTest is Test {
         }
     }
 
-    /// @dev Steady state: N auto-distribute plans (>= 10k $DCA): one extra ERC20 transfer per plan.
+    /// @dev Steady state: N auto-distribute plans (>= 100k $DCA): one extra ERC20 transfer per plan.
     function test_bench_autoDistribute() public {
         uint16[7] memory sizes = [uint16(1), 5, 10, 25, 50, 100, 150];
-        console2.log("--- auto-distribute path (>=10k DCA), plans per page -> gas of EpochKeeper.run ---");
+        console2.log("--- auto-distribute path (>=100k DCA), plans per page -> gas of EpochKeeper.run ---");
         for (uint256 i; i < sizes.length; ++i) {
             (uint256 g,) = _benchStock(sizes[i], true);
             console2.log("plans", sizes[i], "gas", g);
@@ -194,7 +194,7 @@ contract GasBenchTest is Test {
             usdg.mint(u, 100_000e6);
             if (autoDist) {
                 vm.prank(owner);
-                dca.mint(u, 10_000e18);
+                dca.mint(u, 100_000e18);
             }
             vm.startPrank(u);
             usdg.approve(address(vault), type(uint256).max);

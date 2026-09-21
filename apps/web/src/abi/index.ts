@@ -6,4 +6,5 @@ export { AggregatorRouterAbi } from "./AggregatorRouter";
 export { ZapAbi } from "./Zap";
 export { EpochKeeperAbi } from "./EpochKeeper";
 export { MorphoBlueStrategyAbi } from "./MorphoBlueStrategy";
+export { IMorphoAbi } from "./IMorpho";
 export { ERC20Abi } from "./ERC20";

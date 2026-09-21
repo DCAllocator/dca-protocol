@@ -114,8 +114,12 @@ contract MorphoBlueStrategy is ERC4626, Ownable2Step {
         return m.totalSupplyAssets > m.totalBorrowAssets ? m.totalSupplyAssets - m.totalBorrowAssets : 0;
     }
 
-    /// @notice Current supply rate per second (WAD): `borrowRate × utilisation × (1 − marketFee)`, the rate
-    ///         Morpho pays suppliers of this market at this block. APY = exp(rate × 365 days) − 1.
+    /// @notice Supply rate per second (WAD): `borrowRate × utilisation × (1 − marketFee)`, with `borrowRate` =
+    ///         `IIrm.borrowRateView` — the rate Morpho pays suppliers for the period since the market was last
+    ///         touched (for the AdaptiveCurveIrm that is the *average* over that period; it equals the
+    ///         instantaneous rate whenever the market was touched in this block and only drifts on an idle
+    ///         market). APY = exp(rate × 365 days) − 1. IRM-agnostic; the app prefers Morpho's SDK definition
+    ///         (instantaneous rate from `rateAtTarget`) and uses this as the fallback.
     function supplyRatePerSecond() external view returns (uint256) {
         if (_params.irm == address(0)) return 0;
         Market memory raw = morpho.market(marketId);

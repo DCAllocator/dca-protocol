@@ -225,7 +225,7 @@ contract VaultHandler is Test {
 
     function giveDca(uint256 a, uint32 whole) external {
         calls++;
-        whole = uint32(bound(whole, 0, 60_000));
+        whole = uint32(bound(whole, 0, 120_000));
         address who = _actor(a);
         uint256 have = dca.balanceOf(who);
         uint256 want = uint256(whole) * 1e18;

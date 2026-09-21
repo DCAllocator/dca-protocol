@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { Wordmark } from "@/components/Logo";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { PRODUCTION_VAULT_KINDS, VAULT_META } from "@/lib/config";
+import { PerkThreshold } from "@/components/site/Live";
 
 export function SiteNav() {
   return (
@@ -24,12 +26,10 @@ export function SiteNav() {
           </a>
         </nav>
         <div className="ml-auto flex items-center gap-2">
-          <Link href="/app" className="btn-ghost hidden sm:inline-flex">
-            Sign in
-          </Link>
           <Link href="/app/create" className="btn-primary">
             Launch app
           </Link>
+          <ThemeToggle />
         </div>
       </div>
     </header>
@@ -145,14 +145,18 @@ export function Perks() {
         <div className="grid gap-3">
           <div className="rounded-lg border border-line bg-surface-3 p-5">
             <div className="flex items-center gap-2">
-              <span className="chip-lime">10,000 $DCA</span>
+              <span className="chip-lime">
+                <PerkThreshold perk="autoDistribute" />
+              </span>
               <span className="text-[16px] font-semibold text-ink">Auto-send, free claims</span>
             </div>
             <p className="mt-2 text-[14px] text-ink-2">Stock goes straight to your wallet every epoch. The 0.25% claim fee disappears.</p>
           </div>
           <div className="rounded-lg border border-line bg-surface-3 p-5">
             <div className="flex items-center gap-2">
-              <span className="chip-lime">50,000 $DCA</span>
+              <span className="chip-lime">
+                <PerkThreshold perk="feeHalve" />
+              </span>
               <span className="text-[16px] font-semibold text-ink">Half the purchase fee</span>
             </div>
             <p className="mt-2 text-[14px] text-ink-2">0.75% becomes 0.37%, 0.50% becomes 0.25%, 0.25% becomes 0.12% — on every buy, in every vault.</p>

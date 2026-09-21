@@ -101,7 +101,7 @@ contract PeripheryTest is BaseTest {
         assertEq(fee, 1.5e6);
         assertEq(bps, 75);
         assertFalse(auto_);
-        _giveDca(alice, 50_000);
+        _giveDca(alice, 100_000);
         (spend, fee, bps, auto_) = helper.previewFill(daily, id);
         assertEq(fee, 0.74e6);
         assertEq(bps, 37);

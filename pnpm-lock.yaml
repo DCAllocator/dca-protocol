@@ -26,6 +26,12 @@ importers:
 
   apps/web:
     dependencies:
+      '@morpho-org/blue-sdk':
+        specifier: ^6.11.0
+        version: 6.11.0(@morpho-org/morpho-ts@2.15.0)
+      '@morpho-org/morpho-ts':
+        specifier: ^2.15.0
+        version: 2.15.0
       '@tanstack/react-query':
         specifier: ^5.103.1
         version: 5.103.1(react@19.3.0)
@@ -561,6 +567,14 @@ packages:
     resolution: {integrity: sha512-w8CVbdkDrVXFJbfBSlDfafDR6BAkpDmv1bC1UJVCoVny5tW2RKAdn9i68Xf7asYT4TnUhl/hN4zfUiKQq9II4g==}
     engines: {node: '>=16.0.0'}
 
+  '@morpho-org/blue-sdk@6.11.0':
+    resolution: {integrity: sha512-qYIWWe6VvgIwbAkxRmgv1yirbM9y8rAxUNyUShY5HIcsmASS98mNUamhdOqA4OupWkXJ4wLuaOIpUy81FW4zeA==}
+    peerDependencies:
+      '@morpho-org/morpho-ts': ^2.10.0
+
+  '@morpho-org/morpho-ts@2.15.0':
+    resolution: {integrity: sha512-bLGITX+sa4Fv1M1YQ7mpQhyONMZIDToLf/GpUVPErKJVxEFPfJg+G5BK93/XGMsaN8EYEvDjhZhMQrU658e1GQ==}
+
   '@next/env@15.5.25':
     resolution: {integrity: sha512-42h1lLr07vl4gawALP1hsgRZjHB1xYa58JfUfHwr0f7jG/zhPakh5GHkADHXOC9ZxUvlQFOPIrp7s6qX4DezPQ==}
 
@@ -662,6 +676,10 @@ packages:
   '@noble/hashes@1.8.0':
     resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
     engines: {node: ^14.21.3 || >=16}
+
+  '@noble/hashes@2.4.0':
+    resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
+    engines: {node: '>= 20.19.0'}
 
   '@paulmillr/qr@0.2.1':
     resolution: {integrity: sha512-IHnV6A+zxU7XwmKFinmYjUcwlyK9+xkG3/s9KcQhI9BjQKycrJ1JRO+FbNYPwZiPKW3je/DR0k7w8/gLa5eaxQ==}
@@ -3229,6 +3247,13 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@morpho-org/blue-sdk@6.11.0(@morpho-org/morpho-ts@2.15.0)':
+    dependencies:
+      '@morpho-org/morpho-ts': 2.15.0
+      '@noble/hashes': 2.4.0
+
+  '@morpho-org/morpho-ts@2.15.0': {}
+
   '@next/env@15.5.25': {}
 
   '@next/swc-darwin-arm64@15.5.25':
@@ -3288,6 +3313,8 @@ snapshots:
   '@noble/hashes@1.7.1': {}
 
   '@noble/hashes@1.8.0': {}
+
+  '@noble/hashes@2.4.0': {}
 
   '@paulmillr/qr@0.2.1': {}
 

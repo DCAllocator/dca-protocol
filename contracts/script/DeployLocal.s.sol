@@ -58,35 +58,41 @@ contract DeployLocal is Script {
 
     string[] internal SYMBOLS;
     uint256[] internal PRICES_USDG;
+    uint256[] internal SUPPLIES;
     string[] internal OTHER_SYMBOLS;
 
-    function _liquid(string memory symbol, uint256 priceUsdg) internal {
+    function _liquid(string memory symbol, uint256 priceUsdg, uint256 supply) internal {
         SYMBOLS.push(symbol);
         PRICES_USDG.push(priceUsdg);
+        SUPPLIES.push(supply);
     }
 
     function _other(string memory symbol) internal {
         OTHER_SYMBOLS.push(symbol);
     }
 
-    /// @dev Prices are illustrative USDG-per-share mocks for seeding a local pool, not real quotes.
+    /// @dev Prices are illustrative USDG-per-share mocks for seeding a local pool, not real quotes. The
+    ///      supply is the whole minted amount (it all sits in the pool) and is shaped like Robinhood Chain,
+    ///      where Stock Tokens are minted on demand — these are the mainnet `totalSupply()` figures of
+    ///      21 Sep 2026 ×10, so the web app's "Popular" row (ranked by supply × price, the tokenised market
+    ///      cap) orders the same way locally as it does live. Even the thinnest pool holds ~$1M of stock.
     function _seedSymbols() internal {
-        _liquid("NVDA", 500e6);
-        _liquid("AAPL", 190e6);
-        _liquid("TSLA", 250e6);
-        _liquid("SPY", 560e6);
-        _liquid("QQQ", 480e6);
-        _liquid("GOOGL", 175e6);
-        _liquid("META", 520e6);
-        _liquid("MSFT", 430e6);
-        _liquid("AMZN", 185e6);
-        _liquid("AVGO", 170e6);
-        _liquid("COST", 890e6);
-        _liquid("NFLX", 700e6);
-        _liquid("ORCL", 180e6);
-        _liquid("COIN", 230e6);
-        _liquid("PLTR", 70e6);
-        _liquid("TSM", 165e6);
+        _liquid("NVDA", 500e6, 912_570e18);
+        _liquid("AAPL", 190e6, 162_340e18);
+        _liquid("TSLA", 250e6, 135_030e18);
+        _liquid("SPY", 560e6, 318_810e18);
+        _liquid("QQQ", 480e6, 71_780e18);
+        _liquid("GOOGL", 175e6, 153_330e18);
+        _liquid("META", 520e6, 76_710e18);
+        _liquid("MSFT", 430e6, 60_270e18);
+        _liquid("AMZN", 185e6, 139_490e18);
+        _liquid("AVGO", 170e6, 5_670e18);
+        _liquid("COST", 890e6, 14_990e18);
+        _liquid("NFLX", 700e6, 125_110e18);
+        _liquid("ORCL", 180e6, 65_560e18);
+        _liquid("COIN", 230e6, 112_040e18);
+        _liquid("PLTR", 70e6, 138_800e18);
+        _liquid("TSM", 165e6, 35_530e18);
 
         _other("ADBE");
         _other("AEIS");
@@ -260,7 +266,7 @@ contract DeployLocal is Script {
                 address(st), address(usdg), 3000, _sqrt(address(st), 1e18, address(usdg), PRICES_USDG[i])
             );
             usdg.mint(p, 1_000_000_000e6);
-            st.mint(p, 10_000_000e18);
+            st.mint(p, SUPPLIES[i]);
             _approveBoth(router, 1, p, address(usdg), address(st), 3000);
             stocks[i] = address(st);
         }
@@ -357,7 +363,7 @@ contract DeployLocal is Script {
         for (uint256 i; i < testWallets.length; ++i) {
             usdg.mint(testWallets[i], 1_000_000e6);
             weth.mint(testWallets[i], 100e18);
-            dca.mint(testWallets[i], 60_000e18);
+            dca.mint(testWallets[i], 150_000e18); // clears both $DCA perk thresholds (100k)
         }
 
         // Seed the test vault with three deployer-owned plans (NVDA / AAPL / TSLA, the first three liquid
