@@ -1,24 +1,33 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {PlanVault} from "../../src/vault/PlanVault.sol";
 import {Plan} from "../../src/vault/VaultTypes.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {MockWETH} from "../mocks/MockWETH.sol";
 import {MockRouter} from "../mocks/MockRouter.sol";
 import {MockDCA} from "../mocks/MockDCA.sol";
+import {MockMorpho} from "../mocks/MockMorpho.sol";
+import {MorphoBlueStrategy} from "../../src/boost/MorphoBlueStrategy.sol";
+import {Id} from "../../src/interfaces/IMorpho.sol";
 
 /// @dev Random-walk handler over one vault with two stocks. Every action is wrapped so reverts on
-///      nonsensical inputs are swallowed (fail_on_revert = false) but state stays consistent.
+///      nonsensical inputs are swallowed (fail_on_revert = false) but state stays consistent. Boost is part of
+///      the walk: plans are created boosted or not, toggled, time passes (yield), the Morpho market runs dry
+///      and recovers, and bad debt is written off.
 contract VaultHandler is Test {
     PlanVault public vault;
     MockERC20 public usdg;
     MockWETH public weth;
     MockDCA public dca;
     MockRouter public router;
+    MockMorpho public morpho;
+    MorphoBlueStrategy public strategy;
+    Id public marketId;
     address public dcaOwner;
     address public keeperAddr;
+    address public borrower = makeAddr("handlerBorrower");
     address[] public stocks;
     address[] public actors;
     uint256[] public planIds;
@@ -26,6 +35,9 @@ contract VaultHandler is Test {
     uint256 public calls;
     uint256 public epochsRun;
     uint256 public swaps;
+    uint256 public boostedFills;
+    uint256 public boostToggles;
+    uint256 public boostWithdrawFailures;
 
     constructor(
         PlanVault _vault,
@@ -35,7 +47,10 @@ contract VaultHandler is Test {
         MockRouter _router,
         address _dcaOwner,
         address _keeper,
-        address[] memory _stocks
+        address[] memory _stocks,
+        MockMorpho _morpho,
+        MorphoBlueStrategy _strategy,
+        Id _marketId
     ) {
         vault = _vault;
         keeperAddr = _keeper;
@@ -43,8 +58,13 @@ contract VaultHandler is Test {
         weth = _weth;
         dca = _dca;
         router = _router;
+        morpho = _morpho;
+        strategy = _strategy;
+        marketId = _marketId;
         dcaOwner = _dcaOwner;
         stocks = _stocks;
+        vm.prank(borrower);
+        usdg.approve(address(morpho), type(uint256).max);
         for (uint256 i; i < 6; ++i) {
             address a = makeAddr(string(abi.encodePacked("actor", i)));
             actors.push(a);
@@ -82,10 +102,53 @@ contract VaultHandler is Test {
         amount = uint96(bound(amount, 1, 20_000e6)); // below-minimum values exercise the BelowMinimum path
         usdgDep = uint128(bound(usdgDep, 0, 100_000e6));
         wethDep = uint128(bound(wethDep, 0, 10 ether));
+        bool boost = (a + st) % 3 == 0; // a third of new plans start boosted
         vm.prank(_actor(a));
-        try vault.createPlan(_stock(st), amount, address(0), usdgDep, wethDep, 0) returns (uint256 id) {
+        try vault.createPlan(_stock(st), amount, address(0), usdgDep, wethDep, 0, boost) returns (uint256 id) {
             planIds.push(id);
         } catch {}
+    }
+
+    function toggleBoost(uint256 p, bool enabled) external {
+        calls++;
+        uint256 id = _plan(p);
+        Plan memory pl = vault.getPlan(id);
+        if (pl.owner == address(0)) return;
+        vm.prank(pl.owner);
+        try vault.setPlanBoost(id, enabled) {
+            boostToggles++;
+        } catch {}
+    }
+
+    /// @dev Time passes: interest accrues on the Morpho market (never crosses an epoch boundary by itself).
+    function warp(uint32 dt) external {
+        calls++;
+        vm.warp(block.timestamp + bound(dt, 1, 6 hours));
+    }
+
+    /// @dev Drain the market's free liquidity (boosted withdrawals / spends fail) or repay to restore it.
+    function liquidity(uint256 seed, bool drain) external {
+        calls++;
+        if (drain) {
+            uint256 free = strategy.liquidity();
+            if (free == 0) return;
+            // even seeds drain the market completely (boosted spends fail), odd ones only tighten it
+            morpho.mockBorrow(marketId, seed % 2 == 0 ? free : bound(seed, free / 2, free), borrower);
+        } else {
+            uint256 bal = usdg.balanceOf(borrower);
+            if (bal == 0) return;
+            uint256 amt = bound(seed, 1, bal);
+            vm.prank(borrower);
+            try morpho.mockRepay(marketId, amt) {} catch {}
+        }
+    }
+
+    /// @dev Bad debt: up to 1% of the market's debt is written off against suppliers.
+    function loss(uint256 seed) external {
+        calls++;
+        uint256 debt = morpho.market(marketId).totalBorrowAssets;
+        if (debt == 0) return;
+        morpho.mockLoss(marketId, bound(seed, 0, debt / 100));
     }
 
     function depositUSDG(uint256 p, uint256 a, uint128 amt) external {
@@ -116,7 +179,11 @@ contract VaultHandler is Test {
         uint256 id = _plan(p);
         Plan memory pl = vault.getPlan(id);
         if (pl.owner == address(0)) return;
-        uint256 u = pl.usdgIdle == 0 ? 0 : bound(uFrac, 0, pl.usdgIdle);
+        uint256 avail = pl.usdgIdle;
+        if (pl.boostShares > 0) {
+            avail += (uint256(pl.boostShares) * (vault.boostAssets() + 1)) / (vault.totalBoostShares() + 1);
+        }
+        uint256 u = avail == 0 ? 0 : bound(uFrac, 0, avail + 1); // +1 exercises the InsufficientIdle path
         vm.prank(pl.owner);
         try vault.withdrawIdle(id, u) {} catch {}
     }
@@ -198,11 +265,19 @@ contract VaultHandler is Test {
         if (warpEpochs > 0) vm.warp(block.timestamp + warpEpochs * vault.epochLength());
         limit = bound(limit, 1, 4);
         uint256 before = router.swapCount();
+        uint256 poolBefore = vault.totalBoostShares();
+        vm.recordLogs();
         vm.prank(keeperAddr);
         try vault.advanceEpoch(_stock(st), limit, "") {
             epochsRun++;
         } catch {}
         swaps += router.swapCount() - before;
+        if (vault.totalBoostShares() < poolBefore) boostedFills++;
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 failed = keccak256("BoostWithdrawFailed(address,uint32,uint256,bytes)");
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] == failed) boostWithdrawFailures++;
+        }
     }
 
     function prune(uint256 p) external {

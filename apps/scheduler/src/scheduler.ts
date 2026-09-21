@@ -21,7 +21,7 @@ import {
   type WalletClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { AggregatorRouterAbi, EpochKeeperAbi, PlanVaultAbi, StockRegistryAbi } from "./abi/index.js";
+import { AggregatorRouterAbi, EpochKeeperAbi, MorphoBlueStrategyAbi, PlanVaultAbi, StockRegistryAbi } from "./abi/index.js";
 import { REPO_ROOT, type Config } from "./config.js";
 import { log } from "./log.js";
 
@@ -245,6 +245,12 @@ export class Scheduler {
         tx: hash,
       });
       if (s.skipped.length > 0) log.warn(`${label}: page skipped — nobody charged`, { job: index, epoch: s.epochId, reason: s.skipped.join("; ") });
+      if (s.boostFailed.length > 0)
+        log.warn(`${label}: boosted plans sat this page out — the boost strategy could not pay (illiquid Morpho market?)`, {
+          job: index,
+          epoch: s.epochId,
+          detail: s.boostFailed.join("; "),
+        });
       if (s.completed) return;
     }
     log.warn(`${label}: reached MAX_PAGES_PER_JOB=${this.cfg.maxPagesPerJob}; continuing next tick`, { job: index });
@@ -262,6 +268,7 @@ export class Scheduler {
     let from: bigint | undefined;
     let to: bigint | undefined;
     const skipped: string[] = [];
+    const boostFailed: string[] = [];
     let completed = false;
     for (const e of vaultLogs) {
       if (e.eventName === "EpochPageExecuted") {
@@ -275,6 +282,10 @@ export class Scheduler {
       else if (e.eventName === "EpochPageSkipped") {
         // The purchase for this page could not be quoted / executed: nobody was charged, the cursor advanced.
         skipped.push(`${e.args.fromIndex}-${e.args.toIndex}: ${describeSkipReason(e.args.reason)}`);
+      } else if (e.eventName === "BoostWithdrawFailed") {
+        // The vault could not pull the page's boosted spend from the strategy: boosted plans were dropped from
+        // this page (not charged, not marked filled); unboosted plans were still filled.
+        boostFailed.push(`${formatUnits(e.args.usdgRequested, this.usdgDecimals)} USDG: ${describeSkipReason(e.args.reason)}`);
       }
     }
     const keeperLogs = parseEventLogs({ abi: EpochKeeperAbi, logs: receipt.logs, eventName: ["JobRun", "TipsForwarded"] });
@@ -283,7 +294,7 @@ export class Scheduler {
       if (e.eventName === "JobRun") completed = completed || e.args.completed;
       else if (e.eventName === "TipsForwarded") tips += e.args.amount;
     }
-    return { netUsdg, stockOut, plansFilled, epochId, range: from !== undefined ? `${from}-${to}` : undefined, skipped, completed, tips };
+    return { netUsdg, stockOut, plansFilled, epochId, range: from !== undefined ? `${from}-${to}` : undefined, skipped, boostFailed, completed, tips };
   }
 
   // ------------------------------------------------------------------
@@ -453,12 +464,13 @@ export function describeError(err: unknown): string {
 const sig = (name: string, args?: readonly unknown[]) => `${name}(${(args ?? []).map(String).join(", ")})`;
 
 /**
- * Reason bytes of an EpochPageSkipped event: the router's revert data verbatim (custom error), an
+ * Reason bytes of an EpochPageSkipped / BoostWithdrawFailed event: the router's or the boost strategy's revert
+ * data verbatim (custom error, e.g. `ERC4626ExceededMaxWithdraw` when the Morpho market is illiquid), an
  * `Error(string)`, or a short ASCII tag from the vault (`"quote too small"`).
  */
 export function describeSkipReason(raw: `0x${string}` | undefined): string {
   if (!raw || raw === "0x") return "no route";
-  for (const abi of [AggregatorRouterAbi, PlanVaultAbi]) {
+  for (const abi of [AggregatorRouterAbi, PlanVaultAbi, MorphoBlueStrategyAbi]) {
     try {
       const d = decodeErrorResult({ abi, data: raw });
       return sig(d.errorName, d.args);

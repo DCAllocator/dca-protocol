@@ -14,8 +14,38 @@ contract VaultInvariantsTest is BaseTest {
         address[] memory stocks = new address[](2);
         stocks[0] = address(nvda);
         stocks[1] = address(aapl);
-        handler = new VaultHandler(daily, usdg, weth, dca, router, owner, keeper, stocks);
+        handler = new VaultHandler(daily, usdg, weth, dca, router, owner, keeper, stocks, morpho, strategy, marketId);
         targetContract(address(handler));
+    }
+
+    /// boost pool: sum(plan.boostShares) == totalBoostShares; unboosted plans hold no shares; the sum of plan
+    /// values never exceeds the pool; the pool is exactly the vault's strategy position (nothing else holds it)
+    function invariant_boostPoolConsistent() public view {
+        uint256 n = daily.nextPlanId();
+        uint256 shares;
+        uint256 values;
+        uint256 poolAssets = daily.boostAssets();
+        uint256 poolShares = daily.totalBoostShares();
+        for (uint256 id = 1; id < n; ++id) {
+            Plan memory p = daily.getPlan(id);
+            shares += p.boostShares;
+            if (p.boostShares > 0) values += (uint256(p.boostShares) * (poolAssets + 1)) / (poolShares + 1);
+            if (!p.boosted) assertEq(p.boostShares, 0, "unboosted => no shares");
+            if (p.boostShares == 0) assertEq(p.boostPrincipal, 0, "no shares => no basis");
+        }
+        assertEq(shares, poolShares, "sum(shares) == totalBoostShares");
+        assertLe(values, poolAssets, "values <= pool");
+        assertEq(strategy.convertToAssets(strategy.balanceOf(address(daily))), poolAssets, "pool == strategy position");
+        // every full drain of the pool can strand at most 1 wei of strategy shares (floor on the way out)
+        if (poolShares == 0) {
+            assertLe(strategy.balanceOf(address(daily)), handler.calls(), "empty pool leaves only dust");
+        }
+    }
+
+    /// boosted USDG never sits on the vault, and the strategy never holds USDG between transactions
+    function invariant_boostFundsAreLent() public view {
+        assertEq(usdg.balanceOf(address(strategy)), 0, "strategy holds no USDG");
+        assertEq(usdg.balanceOf(address(daily)), daily.totalUsdgIdle() + daily.usdgDust(), "vault usdg tight");
     }
 
     /// vault.stockBalance >= sum(stockAccrued) + dustPot, for every stock
@@ -108,23 +138,34 @@ contract VaultInvariantsTest is BaseTest {
         for (uint256 i; i < 40; ++i) {
             handler.createPlan(i, i, uint96(100e6 * (i + 1)), uint128(5_000e6), uint128(i % 2 == 0 ? 1 ether : 0));
             handler.depositUSDG(i, i, uint128(1_000e6));
+            handler.toggleBoost(i + 1, i % 4 != 3);
             handler.giveDca(i, uint32((i * 7_000) % 60_000));
             handler.setFill(i, uint16(9_000 + (i * 97) % 1_000));
+            handler.warp(uint32(i * 1000));
+            if (i % 7 == 6) handler.liquidity(2 * i, true);
             handler.advanceEpoch(i, 3, 1);
+            if (i % 7 == 6) handler.liquidity(i * 3, false);
             handler.toggleRoute(i, i % 5 != 0);
             handler.advanceEpoch(i + 1, 4, 0);
             handler.toggleRoute(i, true);
+            handler.loss(i * 13);
             handler.claim(i, i * 31);
             handler.withdrawIdle(i, i * 17);
+            handler.toggleBoost(i, false);
             handler.prune(i);
         }
         assertGt(handler.epochsRun(), 10, "epochs ran");
         assertGt(handler.swaps(), 10, "swaps happened");
+        assertGt(handler.boostToggles(), 10, "boost toggled");
+        assertGt(handler.boostedFills(), 3, "boosted plans were filled");
+        assertGt(handler.boostWithdrawFailures(), 0, "an illiquid market was hit");
         assertGt(daily.epochsCompleted(), 0);
         invariant_stockBackedByBalance();
         invariant_idleBackedByBalance();
         invariant_aggregatesMatchPlans();
         invariant_userAccruedMatches();
         invariant_dustBounded();
+        invariant_boostPoolConsistent();
+        invariant_boostFundsAreLent();
     }
 }

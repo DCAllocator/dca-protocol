@@ -1,20 +1,47 @@
 "use client";
 
-import { useWriteContract, useWaitForTransactionReceipt, usePublicClient } from "wagmi";
+import { useWriteContract, useWaitForTransactionReceipt, usePublicClient, useAccount } from "wagmi";
 import { useCallback, useEffect, useState } from "react";
-import type { Abi, Address } from "viem";
+import type { Abi, Address, PublicClient } from "viem";
+
+// Loosely typed on purpose: callers pass `{ address, abi, functionName, args, value? }` for any contract.
+export type TxParams = { address: Address; abi: Abi; functionName: string; args?: readonly unknown[]; value?: bigint };
+
+/**
+ * Gas limit = estimate × 1.25 + 100k. Vault calls that touch the boost strategy accrue Morpho interest for the
+ * seconds since the market was last touched; an estimate taken against a block where that accrual already
+ * happened is cheaper than the real execution one block later, and the exact estimate then runs out. Unused gas
+ * is refunded, so padding costs nothing. Estimation failures fall through to writeContract's own simulation
+ * so the user still sees the revert reason.
+ */
+async function gasWithBuffer(client: PublicClient | undefined, params: TxParams, account?: Address): Promise<bigint | undefined> {
+  if (!client || !account) return undefined;
+  try {
+    const est = await client.estimateContractGas({ ...params, account } as never);
+    return est + est / 4n + 100_000n;
+  } catch {
+    return undefined;
+  }
+}
 
 /** writeContract + receipt wait with a single status surface. */
 export function useTx(onSuccess?: () => void) {
   const w = useWriteContract();
+  const client = usePublicClient();
+  const { address } = useAccount();
   const r = useWaitForTransactionReceipt({ hash: w.data });
   useEffect(() => {
     if (r.isSuccess) onSuccess?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [r.isSuccess]);
   const error = (w.error ?? r.error) as (Error & { shortMessage?: string }) | null;
+  const writeContractAsync = w.writeContractAsync;
+  const write = useCallback(
+    async (params: TxParams) => writeContractAsync({ ...params, gas: await gasWithBuffer(client, params, address) } as never),
+    [writeContractAsync, client, address],
+  );
   return {
-    write: w.writeContractAsync,
+    write,
     hash: w.data,
     pending: w.isPending || r.isLoading,
     success: r.isSuccess,
@@ -23,8 +50,7 @@ export function useTx(onSuccess?: () => void) {
   };
 }
 
-// Loosely typed on purpose: callers pass `{ address, abi, functionName, args, value? }` for any contract.
-export type TxStep = { label: string; params: { address: Address; abi: Abi; functionName: string; args?: readonly unknown[]; value?: bigint } };
+export type TxStep = { label: string; params: TxParams };
 
 /**
  * Runs several writes one after another, waiting for each receipt (the vault has no multicall, so
@@ -33,6 +59,7 @@ export type TxStep = { label: string; params: { address: Address; abi: Abi; func
 export function useTxSequence(onDone?: () => void) {
   const { writeContractAsync } = useWriteContract();
   const client = usePublicClient();
+  const { address } = useAccount();
   const [state, setState] = useState<{ running: boolean; step: number; total: number; label?: string; error: string | null; done: boolean }>({
     running: false,
     step: 0,
@@ -48,7 +75,8 @@ export function useTxSequence(onDone?: () => void) {
       for (let i = 0; i < steps.length; i++) {
         setState((s) => ({ ...s, step: i, label: steps[i].label }));
         try {
-          const hash = await writeContractAsync(steps[i].params as never);
+          const gas = await gasWithBuffer(client, steps[i].params, address);
+          const hash = await writeContractAsync({ ...steps[i].params, gas } as never);
           const receipt = await client.waitForTransactionReceipt({ hash });
           if (receipt.status !== "success") throw new Error(`${steps[i].label} reverted`);
         } catch (e) {
@@ -60,7 +88,7 @@ export function useTxSequence(onDone?: () => void) {
       setState((s) => ({ ...s, running: false, done: true, step: steps.length }));
       onDone?.();
     },
-    [client, writeContractAsync, onDone],
+    [client, address, writeContractAsync, onDone],
   );
 
   const reset = useCallback(() => setState({ running: false, step: 0, total: 0, error: null, done: false }), []);

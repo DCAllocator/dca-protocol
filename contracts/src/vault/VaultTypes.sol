@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @notice One DCA plan. Field order is chosen for storage packing (4 slots). Vaults hold USDG only: ETH/WETH
-///         deposits are converted to USDG at deposit time (see PlanVault), never held.
+/// @notice One DCA plan. Field order is chosen for storage packing: 4 slots for a plain plan, 6 for a boosted
+///         one (slots 4-5 are only ever written for boosted plans). Vaults hold USDG only: ETH/WETH deposits are
+///         converted to USDG at deposit time (see PlanVault), never held.
 struct Plan {
     // slot 0
     address owner;
@@ -11,11 +12,17 @@ struct Plan {
     address recipient; // receives stock (auto-distribute and claim)
     uint32 lastEpochId; // last epoch this plan was filled in
     bool paused; // paused plans skip spend but keep balances
+    bool boosted; // idle USDG is parked in the vault's boostStrategy (Morpho Blue) instead of sitting in usdgIdle
     // slot 2
     address stock; // registry-approved Stock Token
     // slot 3
-    uint128 usdgIdle; // USDG reserved for future epochs
+    uint128 usdgIdle; // USDG reserved for future epochs, held by the vault (0 for a boosted plan, bar residuals)
     uint128 stockAccrued; // unclaimed stock (claim path)
+    // slot 4 — boosted plans only
+    uint128 boostShares; // this plan's share of the vault's boost pool (see PlanVault.boostValueOf)
+    uint128 boostPrincipal; // USDG cost basis of boostShares; value above it is unrealised yield
+    // slot 5 — boosted plans only
+    uint128 boostEarned; // yield realised so far (USDG), booked whenever boosted funds are spent or withdrawn
 }
 
 /// @notice Every fee / tolerance knob on a vault, in bps.

@@ -239,7 +239,7 @@ contract PlanVaultEpochTest is BaseTest {
     function test_tier_recipientReceivesAutoDist() public {
         _giveDca(alice, 10_000);
         vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, carol, 1_000e6, 0, 0);
+        uint256 id = daily.createPlan(address(nvda), 200e6, carol, 1_000e6, 0, 0, false);
         _nextEpoch(daily);
         _advance(daily, address(nvda));
         assertEq(nvda.balanceOf(carol), _nvdaFor(198.5e6));
@@ -279,7 +279,7 @@ contract PlanVaultEpochTest is BaseTest {
 
     function test_claim_feeAndRecipient() public {
         vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, carol, 1_000e6, 0, 0);
+        uint256 id = daily.createPlan(address(nvda), 200e6, carol, 1_000e6, 0, 0, false);
         _nextEpoch(daily);
         _advance(daily, address(nvda));
         uint256 accrued = daily.getPlan(id).stockAccrued;
@@ -640,7 +640,7 @@ contract PlanVaultEpochTest is BaseTest {
 
     function test_weth_depositIsConvertedAndSpentAsUsdg() public {
         vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, address(0), 50e6, 1 ether, 0);
+        uint256 id = daily.createPlan(address(nvda), 200e6, address(0), 50e6, 1 ether, 0, false);
         assertEq(daily.getPlan(id).usdgIdle, 3_050e6);
         assertEq(router.swapCount(), 1, "one conversion at deposit");
         _nextEpoch(daily);
@@ -655,7 +655,7 @@ contract PlanVaultEpochTest is BaseTest {
         router.removePair(address(weth), address(usdg));
         vm.prank(alice);
         vm.expectRevert();
-        daily.createPlan{value: 1 ether}(address(nvda), 200e6, address(0), 0, 0, 0);
+        daily.createPlan{value: 1 ether}(address(nvda), 200e6, address(0), 0, 0, 0, false);
     }
 
     // ------------------------------------------------------------------

@@ -28,19 +28,19 @@ contract AuditH01ZapDustDoS is AuditBase {
     function test_attackPlanCannotBeCreated() public {
         vm.prank(mallory);
         vm.expectRevert(abi.encodeWithSelector(IPlanVault.BelowMinimum.selector, 1, 10e6));
-        daily.createPlan(address(nvda), 1, address(0), 0, 0.001 ether, 0);
+        daily.createPlan(address(nvda), 1, address(0), 0, 0.001 ether, 0, false);
         // minimum-sized amount but dust funding: 0.001 ETH = 3 USDG < 10 USDG minimum deposit
         vm.prank(mallory);
         vm.expectPartialRevert(IPlanVault.BelowMinimum.selector);
-        daily.createPlan(address(nvda), 10e6, address(0), 0, 0.001 ether, 0);
+        daily.createPlan(address(nvda), 10e6, address(0), 0, 0.001 ether, 0, false);
     }
 
     /// The honest "one unit short" user is now just a USDG plan: no WETH sizing exists, the buy proceeds.
     function test_honestUserOneUnitShortFillsNormally() public {
         vm.prank(alice);
-        uint256 a = daily.createPlan(address(nvda), 100e6, address(0), 10_000e6, 0, 0);
+        uint256 a = daily.createPlan(address(nvda), 100e6, address(0), 10_000e6, 0, 0, false);
         vm.prank(bob);
-        uint256 b = daily.createPlan(address(nvda), 100e6, address(0), 100e6 - 1, 1 ether, 0);
+        uint256 b = daily.createPlan(address(nvda), 100e6, address(0), 100e6 - 1, 1 ether, 0, false);
         assertEq(weth.balanceOf(address(daily)), 0, "WETH converted at deposit");
         _nextEpoch();
         assertTrue(_advance(keeper));
@@ -52,7 +52,7 @@ contract AuditH01ZapDustDoS is AuditBase {
     /// the next epoch works again once the route is back. Nothing an attacker controls can trigger a revert.
     function test_unquotablePageIsSkippedNotReverted() public {
         vm.prank(alice);
-        uint256 a = daily.createPlan(address(nvda), 100e6, address(0), 10_000e6, 0, 0);
+        uint256 a = daily.createPlan(address(nvda), 100e6, address(0), 10_000e6, 0, 0, false);
         vm.prank(owner);
         router.revokeHop(_route(address(usdg), address(nvda), 500, address(usdgNvda)));
         _nextEpoch();
@@ -82,9 +82,9 @@ contract AuditH01ZapDustDoS is AuditBase {
         vm.prank(owner);
         daily.setMaxPlansPerTx(1);
         vm.prank(alice);
-        daily.createPlan(address(six), 10e6, address(0), 100e6, 0, 0); // idx 0: dust output
+        daily.createPlan(address(six), 10e6, address(0), 100e6, 0, 0, false); // idx 0: dust output
         vm.prank(bob);
-        daily.createPlan(address(six), 100_000e6, address(0), 100_000e6, 0, 0); // idx 1: real output
+        daily.createPlan(address(six), 100_000e6, address(0), 100_000e6, 0, 0, false); // idx 1: real output
         _nextEpoch();
         vm.prank(keeper);
         assertFalse(daily.advanceEpoch(address(six), 0, ""), "page 0 skipped");
@@ -98,7 +98,7 @@ contract AuditH01ZapDustDoS is AuditBase {
     /// Dust WETH cannot enter the vault: every WETH/ETH deposit must convert to >= minDeposit USDG.
     function test_vaultNeverHoldsWeth() public {
         vm.prank(alice);
-        uint256 a = daily.createPlan(address(nvda), 100e6, address(0), 100e6, 0, 0);
+        uint256 a = daily.createPlan(address(nvda), 100e6, address(0), 100e6, 0, 0, false);
         vm.prank(mallory);
         vm.expectRevert(); // 1 wei: the router has no quote for dust (NoRoute); larger dust fails BelowMinimum
         daily.depositWETH(a, 1, 0);

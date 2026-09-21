@@ -134,7 +134,7 @@ contract EpochFuzzTest is BaseTest {
         vm.assume(expectedUsdg >= daily.minDeposit());
         uint256 wethBefore = weth.balanceOf(alice);
         vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 100e6, address(0), 0, wethDeposit, 0);
+        uint256 id = daily.createPlan(address(nvda), 100e6, address(0), 0, wethDeposit, 0, false);
         Plan memory p = daily.getPlan(id);
         assertEq(p.usdgIdle, expectedUsdg, "credited exactly what the swap produced");
         assertEq(weth.balanceOf(alice), wethBefore - used, "unfilled WETH refunded to the depositor");

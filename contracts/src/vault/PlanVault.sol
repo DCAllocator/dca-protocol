@@ -9,6 +9,8 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {BoostLib} from "../libraries/BoostLib.sol";
 
 import {IPlanVault} from "../interfaces/IPlanVault.sol";
 import {IStockRegistry} from "../interfaces/IStockRegistry.sol";
@@ -32,10 +34,19 @@ import {Plan, FeeConfig, VaultParams} from "./VaultTypes.sol";
 ///      - Rounding dust on the USDG side (unspent purchase notional that cannot be split exactly) and any WETH
 ///        the router forwards back from a partially filled second hop accrue in `usdgDust` / `wethDust` and
 ///        are swept to `feeRecipient` once `usdgDust >= dustSweepMinUsdg` (WETH: whenever non-zero).
+///      - Boost: a plan may opt in (`boosted`) to have its idle USDG lent out through `boostStrategy`, an
+///        owner-set ERC-4626 vault (MorphoBlueStrategy = one Morpho Blue market). The vault keeps ONE strategy
+///        position and splits it between boosted plans with internal shares (`boostShares`, `totalBoostShares`;
+///        see BoostLib, a linked external library that holds the pool mutations). A boosted plan's spendable
+///        balance is `usdgIdle + boostValueOf(plan)`; spends and withdrawals take `usdgIdle` first, then pull
+///        from the strategy. `boostPrincipal` (cost basis) and `boostEarned` (realised yield) track earnings
+///        per plan. Epoch pages pull the page's boosted spend in one strategy withdrawal; if the strategy
+///        cannot pay (illiquid market) the boosted plans of that page are dropped and everyone else fills.
 ///      - Invariants (see test/invariant):
 ///          stock.balanceOf(vault) == totalStockAccrued[stock] + dustPot[stock]
 ///          usdg.balanceOf(vault)  == totalUsdgIdle + usdgDust
 ///          weth.balanceOf(vault)  == wethDust
+///          sum(plan.boostShares)  == totalBoostShares;  !plan.boosted => plan.boostShares == 0
 ///
 ///      Epoch execution is paginated: `advanceEpoch(stock, limit, ...)` processes plans
 ///      [nextPlanIndex, nextPlanIndex + limit) of `stockPlans[stock]` with ONE aggregate USDG->stock swap per
@@ -83,6 +94,9 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     uint256 public dustSweepMinUsdg;
     mapping(address => bool) public isKeeper;
 
+    /// @dev The boost pool: strategy + internal share supply (see BoostLib).
+    BoostLib.Pool internal _boost;
+
     uint16 internal constant MAX_KEEPER_TIP_BPS = 5_000;
     uint16 internal constant MAX_SWAP_SLIPPAGE_BPS = 500;
     uint16 internal constant MAX_PLANS_PER_TX_CAP = 1_000;
@@ -123,6 +137,7 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         uint128 spend;
         uint128 net;
         uint128 fee;
+        uint128 fromBoost; // part of `spend` that comes out of the plan's boosted balance
         bool autoDist;
     }
 
@@ -137,6 +152,9 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         uint256 totalFee;
         uint256 bought; // stock received from the swap this page
         uint256 spent; // USDG the swap actually consumed
+        uint256 boostOut; // boosted USDG this page pulls from the strategy (sum of Fill.fromBoost)
+        uint256 poolAssets; // boost pool snapshot taken while collecting: value ...
+        uint256 poolShares; // ... and shares, so boosted spends are priced consistently across the page
         uint32 filled;
     }
 
@@ -220,13 +238,17 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     ///                         wrapped and converted.
     /// @param minUsdgOut       Min USDG when converting WETH/ETH (0 = quote-based). Applies to EACH leg separately
     ///                         if both `wethAmount` and `msg.value` are supplied.
+    /// @param boost            Lend the plan's idle USDG through `boostStrategy` from the first deposit on
+    ///                         (the deposit reverts `BoostUnavailable` if no strategy is set). Toggle later with
+    ///                         `setPlanBoost`.
     function createPlan(
         address stock,
         uint96 amountPerEpoch,
         address recipient,
         uint256 usdgAmount,
         uint256 wethAmount,
-        uint256 minUsdgOut
+        uint256 minUsdgOut,
+        bool boost
     ) external payable whenNotPaused nonReentrant returns (uint256 planId) {
         if (!_registry.isPurchasable(stock)) revert StockNotPurchasable(stock);
         if (amountPerEpoch < minAmountPerEpoch) revert BelowMinimum(amountPerEpoch, minAmountPerEpoch);
@@ -238,8 +260,10 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         p.recipient = recipient;
         p.stock = stock;
         p.amountPerEpoch = amountPerEpoch;
+        p.boosted = boost;
         _userPlans[msg.sender].push(planId);
         emit PlanCreated(planId, msg.sender, stock, amountPerEpoch, recipient);
+        if (boost) emit PlanBoostSet(planId, true);
 
         uint256 credited;
         if (usdgAmount > 0) credited += _depositUSDG(planId, usdgAmount);
@@ -288,16 +312,25 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     }
 
     /// @inheritdoc IPlanVault
-    /// @notice Withdraw idle USDG. `type(uint256).max` = all. Withdraw fee applies. Works while paused.
+    /// @notice Withdraw idle USDG — for a boosted plan that includes its boosted balance, yield included, pulled
+    ///         back from the strategy (subject to the market's liquidity). `type(uint256).max` = all. Withdraw
+    ///         fee applies. Works while paused.
     function withdrawIdle(uint256 planId, uint256 usdgAmount) external nonReentrant onlyPlanOwner(planId) {
         Plan storage p = _plans[planId];
-        if (usdgAmount == type(uint256).max) usdgAmount = p.usdgIdle;
-        if (usdgAmount == 0) revert ZeroAmount();
-        if (usdgAmount > p.usdgIdle) revert InsufficientIdle(usdgAmount, p.usdgIdle);
+        uint256 fromIdle;
+        if (p.boosted) {
+            // usdgIdle first, then the strategy; the library does the checks and debits the plan.
+            (usdgAmount, fromIdle) = BoostLib.withdrawIdle(_boost, p, planId, usdgAmount);
+        } else {
+            if (usdgAmount == type(uint256).max) usdgAmount = p.usdgIdle;
+            if (usdgAmount == 0) revert ZeroAmount();
+            if (usdgAmount > p.usdgIdle) revert InsufficientIdle(usdgAmount, p.usdgIdle);
+            p.usdgIdle -= usdgAmount.toUint128();
+            fromIdle = usdgAmount;
+        }
+        totalUsdgIdle -= fromIdle;
 
         (uint256 net, uint256 fee) = FeeMath.split(usdgAmount, _fees.withdrawFeeBps);
-        p.usdgIdle -= usdgAmount.toUint128();
-        totalUsdgIdle -= usdgAmount;
         if (fee > 0) _usdg.safeTransfer(feeRecipient, fee);
         _usdg.safeTransfer(msg.sender, net);
         emit IdleWithdrawn(planId, usdgAmount, fee);
@@ -327,6 +360,16 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     }
 
     /// @inheritdoc IPlanVault
+    /// @notice Boost (lend the plan's idle USDG through the strategy, future deposits included) or unboost (pull
+    ///         everything back into `usdgIdle`, realising the yield). Boosting an already boosted plan sweeps any
+    ///         unboosted residual into the pool. Boosting needs an unpaused vault; unboosting always works.
+    function setPlanBoost(uint256 planId, bool enabled) external nonReentrant onlyPlanOwner(planId) {
+        if (enabled) _requireNotPaused();
+        (uint256 toPool, uint256 fromPool) = BoostLib.setPlanBoost(_boost, _plans[planId], planId, enabled);
+        totalUsdgIdle = totalUsdgIdle + fromPool - toPool;
+    }
+
+    /// @inheritdoc IPlanVault
     function setPlanAmount(uint256 planId, uint96 amountPerEpoch) external onlyPlanOwner(planId) {
         if (amountPerEpoch < minAmountPerEpoch) revert BelowMinimum(amountPerEpoch, minAmountPerEpoch);
         _plans[planId].amountPerEpoch = amountPerEpoch;
@@ -346,7 +389,7 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     function prunePlan(uint256 planId) external nonReentrant {
         Plan storage p = _plans[planId];
         if (p.owner == address(0)) revert PlanNotFound(planId);
-        if (p.usdgIdle > 0 || p.stockAccrued > 0) revert PlanNotEmpty(planId);
+        if (p.usdgIdle > 0 || p.stockAccrued > 0 || p.boostShares > 0) revert PlanNotEmpty(planId);
         if (_isEpochPending(p.stock)) revert EpochInProgress(p.stock);
         _unindex(planId);
     }
@@ -390,6 +433,11 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
 
         Fill[] memory fills = new Fill[](ctx.end - ctx.start);
         _collect(ctx, fills);
+        // Boosted spend is pulled from the strategy before the swap; if the strategy cannot pay, boosted plans
+        // sit this page out (their fills are dropped) and the unboosted ones are still filled.
+        if (ctx.boostOut > 0 && !BoostLib.withdrawPage(_boost, stock, ctx.epochId, ctx.boostOut)) {
+            _dropBoostedFills(ctx, fills);
+        }
         if (ctx.totalNet > 0) {
             (bool ok, bytes memory reason) = _buyStock(ctx, routeOverride);
             if (ok) {
@@ -400,6 +448,8 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
                 dustPot[stock] = pot - distributed;
             } else {
                 emit EpochPageSkipped(stock, ctx.epochId, ctx.start, ctx.end, reason);
+                // Nobody is charged, so the boosted USDG already pulled goes straight back to the strategy.
+                if (ctx.boostOut > 0) _boost.strategy.deposit(ctx.boostOut, address(this));
                 ctx.totalNet = 0;
                 ctx.totalFee = 0;
                 ctx.filled = 0;
@@ -420,15 +470,23 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     // ------------------------------------------------------------------
 
     /// @dev Phase 1: pick eligible plans on this page and tally spend / fee / net in memory. No storage writes.
+    ///      Boosted balances are valued against one pool snapshot for the whole page; a spend takes `usdgIdle`
+    ///      first and the boosted balance for the rest.
     function _collect(Ctx memory ctx, Fill[] memory fills) internal view {
         uint256[] storage ids = _stockPlans[ctx.stock];
         uint16 baseBps = _fees.purchaseFeeBps;
+        ctx.poolShares = _boost.totalShares;
+        if (ctx.poolShares > 0) ctx.poolAssets = BoostLib.poolAssets(_boost);
         uint256 n;
         for (uint256 i = ctx.start; i < ctx.end; ++i) {
             uint256 planId = ids[i];
             Plan storage p = _plans[planId];
-            if (p.paused || p.lastEpochId == ctx.epochId || p.usdgIdle == 0) continue;
-            uint256 spend = p.usdgIdle < p.amountPerEpoch ? p.usdgIdle : p.amountPerEpoch;
+            if (p.paused || p.lastEpochId == ctx.epochId) continue;
+            uint256 idle = p.usdgIdle;
+            uint256 avail = idle;
+            if (p.boosted) avail += BoostLib.valueOf(p.boostShares, ctx.poolAssets, ctx.poolShares);
+            if (avail == 0) continue;
+            uint256 spend = avail < p.amountPerEpoch ? avail : p.amountPerEpoch;
             (bool halve, bool autoDist) = _perks(p.owner);
             (uint256 net, uint256 fee) = FeeMath.split(spend, halve ? FeeMath.halve(baseBps) : baseBps);
             Fill memory f = fills[n];
@@ -436,6 +494,10 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
             f.spend = spend.toUint128();
             f.net = net.toUint128();
             f.fee = fee.toUint128();
+            if (spend > idle) {
+                f.fromBoost = (spend - idle).toUint128();
+                ctx.boostOut += spend - idle;
+            }
             f.autoDist = autoDist;
             ctx.totalSpend += spend;
             ctx.totalNet += net;
@@ -494,15 +556,36 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         ok = true;
     }
 
-    /// @dev Phase 3: debit idle USDG and mark plans filled. Only runs after a successful purchase.
+    /// @dev Phase 3: debit idle USDG (and burn the boost shares behind any boosted spend, priced at the page's
+    ///      pool snapshot) and mark plans filled. Only runs after a successful purchase.
     function _commitSpend(Ctx memory ctx, Fill[] memory fills) internal {
         for (uint256 j; j < ctx.n; ++j) {
             Fill memory f = fills[j];
+            if (f.spend == 0) continue; // dropped boosted fill
             Plan storage p = _plans[f.planId];
-            p.usdgIdle -= f.spend;
+            p.usdgIdle -= f.spend - f.fromBoost;
+            if (f.fromBoost > 0) BoostLib.burn(_boost, p, f.planId, f.fromBoost, ctx.poolAssets, ctx.poolShares);
             p.lastEpochId = ctx.epochId;
         }
-        totalUsdgIdle -= ctx.totalSpend;
+        totalUsdgIdle -= ctx.totalSpend - ctx.boostOut;
+    }
+
+    /// @dev Remove every fill that needed boosted funds from the page tallies (the plans keep their balances
+    ///      and are not marked filled, so they simply try again next epoch).
+    function _dropBoostedFills(Ctx memory ctx, Fill[] memory fills) internal pure {
+        for (uint256 j; j < ctx.n; ++j) {
+            Fill memory f = fills[j];
+            if (f.fromBoost == 0) continue;
+            ctx.totalSpend -= f.spend;
+            ctx.totalNet -= f.net;
+            ctx.totalFee -= f.fee;
+            --ctx.filled;
+            f.spend = 0;
+            f.net = 0;
+            f.fee = 0;
+            f.fromBoost = 0;
+        }
+        ctx.boostOut = 0;
     }
 
     /// @dev Phase 4: purchase fees leave the vault immediately (keeper tip carved out first).
@@ -629,6 +712,13 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         _setRouter(newRouter);
     }
 
+    /// @notice Set (or migrate) the ERC-4626 strategy boosted plans lend through. Its asset must be USDG. With
+    ///         boosted positions open the whole pool is redeemed from the old strategy and deposited into the new
+    ///         one in this call (internal shares are untouched); clearing the strategy then reverts `BoostInUse`.
+    function setBoostStrategy(address strategy) external onlyOwner nonReentrant {
+        BoostLib.setStrategy(_boost, _usdg, strategy);
+    }
+
     function setFeeRecipient(address recipient) external onlyOwner {
         if (recipient == address(0)) revert ZeroAddress();
         feeRecipient = recipient;
@@ -661,9 +751,13 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         _unpause();
     }
 
-    /// @notice Recover tokens that can never be user accounting: not USDG, not WETH, never listed as a stock.
+    /// @notice Recover tokens that can never be user accounting: not USDG, not WETH, not the boost strategy's
+    ///         shares, never listed as a stock.
     function rescueERC20(address token, address to, uint256 amount) external onlyOwner {
-        if (token == address(_usdg) || token == address(_weth) || _registry.isKnown(token)) {
+        if (
+            token == address(_usdg) || token == address(_weth) || token == address(_boost.strategy)
+                || _registry.isKnown(token)
+        ) {
             revert TokenNotRescuable(token);
         }
         if (to == address(0)) revert ZeroAddress();
@@ -712,6 +806,20 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     }
 
     /// @inheritdoc IPlanVault
+    /// @notice USDG value of the vault's whole boost position (yield accrued to this block), i.e. what the
+    ///         internal boost pool is worth. A plan's share of it is `boostShares / (totalBoostShares + 1)`
+    ///         (see BoostLib.valueOf; ClaimHelper.boostValueOf does the maths).
+    function boostAssets() external view returns (uint256) {
+        return BoostLib.poolAssets(_boost);
+    }
+
+    /// @inheritdoc IPlanVault
+    /// @notice Internal boost-pool shares held by all boosted plans; the pool is worth `boostAssets()`.
+    function totalBoostShares() external view returns (uint256) {
+        return _boost.totalShares;
+    }
+
+    /// @inheritdoc IPlanVault
     function fees() external view returns (FeeConfig memory) {
         return _fees;
     }
@@ -752,6 +860,12 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     /// @inheritdoc IPlanVault
     function router() external view returns (address) {
         return address(_router);
+    }
+
+    /// @inheritdoc IPlanVault
+    /// @notice The ERC-4626 strategy boosted plans lend through (address(0) = boost unavailable).
+    function boostStrategy() external view returns (address) {
+        return address(_boost.strategy);
     }
 
     // ==================================================================
@@ -795,7 +909,12 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     }
 
     function _creditUsdg(uint256 planId, uint256 amount) internal {
-        _plans[planId].usdgIdle += amount.toUint128();
+        Plan storage p = _plans[planId];
+        if (p.boosted) {
+            BoostLib.deposit(_boost, p, planId, amount);
+            return;
+        }
+        p.usdgIdle += amount.toUint128();
         totalUsdgIdle += amount;
     }
 

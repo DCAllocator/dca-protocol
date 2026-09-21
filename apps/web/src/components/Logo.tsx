@@ -1,19 +1,15 @@
-/** Split-ring token mark: lime disc, ink gap. Placeholder — not Robinhood's feather. */
+import Image from "next/image";
+
 export function Logo({ size = 22 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" aria-label="DCA" role="img">
-      <circle cx="16" cy="16" r="16" fill="#ccff00" />
-      <circle
-        cx="16"
-        cy="16"
-        r="9"
-        fill="none"
-        stroke="#14120d"
-        strokeWidth="5"
-        strokeDasharray="40 17"
-        transform="rotate(-30 16 16)"
-      />
-    </svg>
+    <Image
+      src="/logo.png"
+      alt="DCA"
+      width={size}
+      height={size}
+      priority
+      className="shrink-0"
+    />
   );
 }
 

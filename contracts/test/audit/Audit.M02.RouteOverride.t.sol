@@ -28,7 +28,7 @@ contract AuditM02RouteOverride is AuditBase {
         usdg.mint(address(badPool), 1_000_000_000e6);
         nvda.mint(address(badPool), 1_000_000e18);
         vm.prank(alice);
-        daily.createPlan(address(nvda), 10_000e6, address(0), 100_000e6, 0, 0);
+        daily.createPlan(address(nvda), 10_000e6, address(0), 100_000e6, 0, 0, false);
         _nextEpoch();
     }
 

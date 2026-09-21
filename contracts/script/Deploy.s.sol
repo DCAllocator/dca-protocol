@@ -21,6 +21,8 @@ import {EpochKeeper} from "../src/keeper/EpochKeeper.sol";
 import {Zap} from "../src/periphery/Zap.sol";
 import {ClaimHelper} from "../src/periphery/ClaimHelper.sol";
 import {EpochLib} from "../src/libraries/EpochLib.sol";
+import {MorphoBlueStrategy} from "../src/boost/MorphoBlueStrategy.sol";
+import {IMorpho, Id, MarketParams} from "../src/interfaces/IMorpho.sol";
 
 /// @title Deploy
 /// @notice Production deployment for Robinhood Chain (4663). Reads external addresses from the environment
@@ -33,7 +35,12 @@ import {EpochLib} from "../src/libraries/EpochLib.sol";
 /// approves both directions of each listed V3-style pool at deploy; V4 keys and later additions go through
 /// `script/ApproveRoutes.s.sol` / `router.approveHop`.
 ///
-/// Post-deploy (multisig): call `acceptOwnership()` on registry, router, adapters, vaults, keeper, directory.
+/// Boost: `MORPHO` (Morpho Blue singleton) + `MORPHO_MARKET_ID` (bytes32 id of a market whose loan token is USDG)
+/// deploy a `MorphoBlueStrategy` over that market, allow the three vaults to deposit and set it as their
+/// `boostStrategy`. Leave `MORPHO` empty to ship without boost; `setBoostStrategy` can wire it up later.
+///
+/// Post-deploy (multisig): call `acceptOwnership()` on registry, router, adapters, vaults, keeper, directory,
+/// boost strategy.
 contract Deploy is Script {
     using stdJson for string;
 
@@ -48,6 +55,8 @@ contract Deploy is Script {
         address ramsesFactory;
         address[] keepers;
         string v3Pools;
+        address morpho;
+        bytes32 morphoMarketId;
     }
 
     struct Out {
@@ -63,6 +72,7 @@ contract Deploy is Script {
         VaultDirectory directory;
         Zap zap;
         ClaimHelper helper;
+        MorphoBlueStrategy boostStrategy;
     }
 
     function run() external {
@@ -145,6 +155,17 @@ contract Deploy is Script {
             o.keeper.setOperator(e.keepers[k], true);
         }
 
+        // Boost (optional): one strategy over the configured Morpho Blue USDG market, shared by the vaults.
+        if (e.morpho != address(0)) {
+            MarketParams memory market = IMorpho(e.morpho).idToMarketParams(Id.wrap(e.morphoMarketId));
+            require(market.loanToken == e.usdg, "MORPHO_MARKET_ID: loan token is not USDG");
+            o.boostStrategy = new MorphoBlueStrategy(e.morpho, market, deployer);
+            for (uint256 v; v < 3; ++v) {
+                o.boostStrategy.setDepositor(address(vaults[v]), true);
+                vaults[v].setBoostStrategy(address(o.boostStrategy));
+            }
+        }
+
         // Periphery + directory.
         o.zap = new Zap(e.weth, e.usdg, address(o.router));
         o.helper = new ClaimHelper();
@@ -175,6 +196,7 @@ contract Deploy is Script {
             o.monthly.transferOwnership(e.owner);
             o.keeper.transferOwnership(e.owner);
             o.directory.transferOwnership(e.owner);
+            if (address(o.boostStrategy) != address(0)) o.boostStrategy.transferOwnership(e.owner);
         }
         vm.stopBroadcast();
 
@@ -196,7 +218,10 @@ contract Deploy is Script {
         e.ramsesFactory = vm.envOr("RAMSES_FACTORY", address(0));
         e.keepers = vm.envOr("KEEPERS", ",", new address[](0));
         e.v3Pools = vm.envOr("V3_POOLS", string(""));
+        e.morpho = vm.envOr("MORPHO", address(0));
+        e.morphoMarketId = vm.envOr("MORPHO_MARKET_ID", bytes32(0));
         require(e.usdg != address(0) && e.weth != address(0), "USDG / WETH required");
+        require(e.morpho == address(0) || e.morphoMarketId != bytes32(0), "MORPHO set: MORPHO_MARKET_ID required");
         require(e.feeRecipient != address(0), "FEE_RECIPIENT required");
         if (block.chainid == 4663) {
             require(e.dca != address(0) || vm.envOr("ALLOW_NO_DCA", false), "set DCA or ALLOW_NO_DCA=true");
@@ -268,6 +293,9 @@ contract Deploy is Script {
         j.serialize("keeper", address(o.keeper));
         j.serialize("directory", address(o.directory));
         j.serialize("zap", address(o.zap));
+        j.serialize("morpho", e.morpho);
+        j.serialize("morphoMarketId", e.morphoMarketId);
+        j.serialize("boostStrategy", address(o.boostStrategy));
         string memory out = j.serialize("claimHelper", address(o.helper));
         string memory path = string.concat("deployments/", vm.toString(block.chainid), ".json");
         vm.writeJson(out, path);

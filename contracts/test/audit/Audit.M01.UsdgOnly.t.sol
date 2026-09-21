@@ -28,17 +28,17 @@ contract AuditM01UsdgOnly is AuditBase {
     /// Bob's small ETH deposit converts at his own (tiny) impact regardless of what a whale does around him.
     function test_whaleCannotGriefOtherDepositors() public {
         vm.prank(bob);
-        uint256 bobId = daily.createPlan(address(nvda), 300e6, address(0), 0, 0.1 ether, 0);
+        uint256 bobId = daily.createPlan(address(nvda), 300e6, address(0), 0, 0.1 ether, 0, false);
         uint256 bobUsdg = _plan(bobId).usdgIdle;
         assertApproxEqRel(bobUsdg, 300e6, 0.002e18, "~0.1% cost: fee + own impact");
 
         // Mallory tries to convert 50 WETH (5% of the pool): the router's impact cap refuses HER deposit only.
         vm.prank(mallory);
         vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.NoRoute.selector, address(weth), address(usdg)));
-        daily.createPlan(address(nvda), 10e6, address(0), 0, 50 ether, 0);
+        daily.createPlan(address(nvda), 10e6, address(0), 0, 50 ether, 0, false);
         // 12 WETH (~1.2% impact) converts — she eats her own impact, nobody else's plan is touched.
         vm.prank(mallory);
-        uint256 malloryId = daily.createPlan(address(nvda), 10e6, address(0), 0, 12 ether, 0);
+        uint256 malloryId = daily.createPlan(address(nvda), 10e6, address(0), 0, 12 ether, 0, false);
         assertLt(_plan(malloryId).usdgIdle, 36_000e6 * 99 / 100, "whale pays > 1% impact herself");
         assertEq(_plan(bobId).usdgIdle, bobUsdg, "bob unaffected");
 
@@ -53,18 +53,18 @@ contract AuditM01UsdgOnly is AuditBase {
     function test_depositMinOutIsDepositorsChoice() public {
         vm.prank(bob);
         vm.expectRevert(); // InsufficientOutput: 1 WETH cannot yield 3000 USDG after fee + impact
-        daily.createPlan(address(nvda), 300e6, address(0), 0, 1 ether, 3_000e6);
+        daily.createPlan(address(nvda), 300e6, address(0), 0, 1 ether, 3_000e6, false);
         vm.prank(bob);
-        uint256 id = daily.createPlan(address(nvda), 300e6, address(0), 0, 1 ether, 2_990e6);
+        uint256 id = daily.createPlan(address(nvda), 300e6, address(0), 0, 1 ether, 2_990e6, false);
         assertGt(_plan(id).usdgIdle, 2_990e6);
     }
 
     /// Epochs never swap WETH: exactly one swap (the buy) per page.
     function test_epochDoesOneSwapOnly() public {
         vm.prank(alice);
-        daily.createPlan{value: 1 ether}(address(nvda), 100e6, address(0), 0, 0, 0);
+        daily.createPlan{value: 1 ether}(address(nvda), 100e6, address(0), 0, 0, 0, false);
         vm.prank(bob);
-        daily.createPlan(address(nvda), 100e6, address(0), 1_000e6, 0, 0);
+        daily.createPlan(address(nvda), 100e6, address(0), 1_000e6, 0, 0, false);
         _nextEpoch();
         uint256 wethReservesBefore = weth.balanceOf(address(wethUsdg));
         assertTrue(_advance(keeper));

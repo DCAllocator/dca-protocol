@@ -21,6 +21,20 @@ export const isZero = (a?: Address) => !a || a === ZERO;
 export const LOG_LOOKBACK = BigInt(process.env.NEXT_PUBLIC_LOG_LOOKBACK ?? "200000");
 export const BPS = 10_000n;
 export const USDG_DECIMALS = 6;
+export const SECONDS_PER_YEAR = 365 * 86_400;
+
+/**
+ * Product copy for the boost feature (idle USDG lent on Morpho Blue while a plan waits to buy).
+ * `off` is the label of the action that switches it back off — kept in one place so it is a one-line rename.
+ */
+export const BOOST = {
+  name: "Boost",
+  on: "Boost",
+  off: "Unboost",
+  chip: "Boosted",
+  title: "Earn while you wait",
+  tip: "Idle USDG in this plan is lent on Morpho Blue and earns the market's supply rate until each buy. It is pulled back automatically at every buy and whenever you withdraw. Lending carries its own risks: the market can run short of liquidity or take on bad debt.",
+} as const;
 
 /** The three production frequencies, in display order (this is what the marketing site shows). */
 export const PRODUCTION_VAULT_KINDS = ["daily", "weekly", "monthly"] as const;

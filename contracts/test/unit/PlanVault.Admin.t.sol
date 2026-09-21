@@ -184,7 +184,7 @@ contract PlanVaultAdminTest is BaseTest {
         // applies to new plans and amount changes
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IPlanVault.BelowMinimum.selector, 20e6, 25e6));
-        daily.createPlan(address(nvda), 20e6, address(0), 100e6, 0, 0);
+        daily.createPlan(address(nvda), 20e6, address(0), 100e6, 0, 0, false);
     }
 
     function test_setDustSweepMin() public {

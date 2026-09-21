@@ -4,8 +4,8 @@ import { useMemo } from "react";
 import { useAccount, useBalance, useReadContract, useReadContracts, usePublicClient } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
 import type { Address } from "viem";
-import { VaultDirectoryAbi, StockRegistryAbi, PlanVaultAbi, ERC20Abi, ClaimHelperAbi, AggregatorRouterAbi } from "@/abi";
-import { ADDRESSES, isZero, TEST_VAULT, VAULT_KINDS, type VaultKind } from "@/lib/config";
+import { VaultDirectoryAbi, StockRegistryAbi, PlanVaultAbi, ERC20Abi, ClaimHelperAbi, AggregatorRouterAbi, MorphoBlueStrategyAbi } from "@/abi";
+import { ADDRESSES, isZero, TEST_VAULT, VAULT_KINDS, SECONDS_PER_YEAR, type VaultKind } from "@/lib/config";
 import { valueOf } from "@/lib/format";
 
 export type Directory = {
@@ -114,7 +114,14 @@ export type VaultInfo = {
   /** Smallest USDG credit a deposit (or plan creation) must produce — ETH deposits after conversion. */
   minDeposit?: bigint;
   paused?: boolean;
+  /** ERC-4626 strategy boosted plans lend through (MorphoBlueStrategy); zero address = boost unavailable. */
+  boostStrategy?: Address;
+  /** USDG the vault has lent out for boosted plans, yield included. */
+  boostAssets?: bigint;
 };
+
+/** Whether plans on this vault can be boosted (a strategy is wired up). */
+export const boostAvailable = (info?: VaultInfo) => !!info && !isZero(info.boostStrategy);
 
 /** Static-ish vault parameters + live aggregates for every shown vault. */
 export function useVaults(vaults?: VaultMap) {
@@ -131,6 +138,8 @@ export function useVaults(vaults?: VaultMap) {
     "minAmountPerEpoch",
     "minDeposit",
     "paused",
+    "boostStrategy",
+    "boostAssets",
   ] as const;
   const contracts = vaults
     ? VAULT_KINDS.flatMap((k) => fns.map((functionName) => ({ address: vaults[k], abi: PlanVaultAbi, functionName }) as const))
@@ -156,6 +165,8 @@ export function useVaults(vaults?: VaultMap) {
         minAmountPerEpoch: get(9) as bigint | undefined,
         minDeposit: get(10) as bigint | undefined,
         paused: get(11) as boolean | undefined,
+        boostStrategy: get(12) as Address | undefined,
+        boostAssets: get(13) as bigint | undefined,
       };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -207,11 +218,25 @@ export type Position = {
   stock: Address;
   recipient: Address;
   amountPerEpoch: bigint;
+  /** USDG held by the vault for this plan (0 for a boosted plan, bar small residuals). */
   usdgIdle: bigint;
   stockAccrued: bigint;
   lastEpochId: number;
   paused: boolean;
+  /** Idle USDG is lent through the vault's boost strategy (Morpho Blue). */
+  boosted: boolean;
+  /** USDG currently lent out for this plan, yield included. */
+  boostValue: bigint;
+  /** Cost basis of `boostValue`; the difference is yield not yet realised. */
+  boostPrincipal: bigint;
+  /** Yield already realised by spends / withdrawals (cumulative). */
+  boostEarned: bigint;
 };
+
+/** Everything the plan can spend or withdraw: vault-held USDG plus the boosted balance. */
+export const planBalance = (p: Position) => p.usdgIdle + p.boostValue;
+/** Lifetime boost earnings: realised so far plus whatever the position is currently up (never negative). */
+export const boostEarnings = (p: Position) => p.boostEarned + (p.boostValue > p.boostPrincipal ? p.boostValue - p.boostPrincipal : 0n);
 
 /** All of the user's plans across every shown vault via ClaimHelper. */
 export function usePositions(vaults?: VaultMap) {
@@ -228,6 +253,34 @@ export function usePositions(vaults?: VaultMap) {
 
 export const kindOf = (vaults: VaultMap | undefined, a: Address): VaultKind | undefined =>
   vaults ? (VAULT_KINDS.find((k) => vaults[k].toLowerCase() === a.toLowerCase()) as VaultKind | undefined) : undefined;
+
+/**
+ * Live supply APY of every boost strategy in use, straight from the Morpho Blue market: the strategy exposes the
+ * market's per-second supply rate (`borrowRate × utilisation × (1 − fee)`, from the market's IRM), and
+ * APY = e^(rate × 1 year) − 1. Keyed by strategy address (lower-case). Refreshes every 30 s — the rate
+ * moves with the market. Strategies that do not expose the view (another ERC-4626) resolve to undefined.
+ */
+export function useBoostApys(infos?: VaultInfo[]) {
+  const strategies = useMemo(
+    () => Array.from(new Set((infos ?? []).map((v) => v.boostStrategy).filter((a): a is Address => !!a && !isZero(a)).map((a) => a.toLowerCase() as Address))),
+    [infos],
+  );
+  const q = useReadContracts({
+    contracts: strategies.map((address) => ({ address, abi: MorphoBlueStrategyAbi, functionName: "supplyRatePerSecond" }) as const),
+    query: { enabled: strategies.length > 0, refetchInterval: 30_000 },
+  });
+  return useMemo(() => {
+    const out: Record<string, number | undefined> = {};
+    strategies.forEach((a, i) => {
+      const rate = q.data?.[i]?.result as bigint | undefined;
+      out[a] = rate === undefined ? undefined : apyFromRate(rate);
+    });
+    return { apys: out, apyOf: (strategy?: Address) => (strategy ? out[strategy.toLowerCase()] : undefined), isLoading: q.isLoading };
+  }, [strategies, q.data, q.isLoading]);
+}
+
+/** Per-second WAD rate → APY fraction (0.0494 = 4.94%), continuously compounded like Morpho's own UI. */
+export const apyFromRate = (ratePerSecond: bigint): number => Math.expm1((Number(ratePerSecond) / 1e18) * SECONDS_PER_YEAR);
 
 /** Router quote via eth_call simulation (quote() is state-changing because adapters simulate swaps). */
 export function useQuote(router?: Address, tokenIn?: Address, tokenOut?: Address, amountIn?: bigint) {
@@ -318,9 +371,9 @@ export function useStockHoldings(vaults?: VaultMap, stocks?: Stock[]) {
 }
 
 /**
- * Total value locked = USDG waiting to buy + stock on hand (at router price). Vaults hold USDG only —
- * ETH is converted the moment it is deposited — so there is no ETH component.
- * `ready` flips once every vault aggregate and every needed price has answered.
+ * Total value locked = USDG waiting to buy (on the vaults, plus what is lent out on Morpho for boosted plans)
+ * + stock on hand (at router price). Vaults hold USDG only — ETH is converted the moment it is deposited — so
+ * there is no ETH component. `ready` flips once every vault aggregate and every needed price has answered.
  */
 export function useTvl(dir?: Directory, vaults?: VaultMap, infos?: VaultInfo[], stocks?: Stock[]) {
   const holdings = useStockHoldings(vaults, stocks);
@@ -329,6 +382,7 @@ export function useTvl(dir?: Directory, vaults?: VaultMap, infos?: VaultInfo[], 
 
   return useMemo(() => {
     const usdg = (infos ?? []).reduce((a, v) => a + (v.totalUsdgIdle ?? 0n), 0n);
+    const boosted = (infos ?? []).reduce((a, v) => a + (v.boostAssets ?? 0n), 0n);
     let stockUsd: bigint | undefined = 0n;
     const perStockUsd: Record<string, bigint | undefined> = {};
     for (const s of stocks ?? []) {
@@ -339,10 +393,10 @@ export function useTvl(dir?: Directory, vaults?: VaultMap, infos?: VaultInfo[], 
       if (v === undefined) stockUsd = undefined;
       else if (stockUsd !== undefined) stockUsd += v;
     }
-    const infosReady = !!infos && infos.length > 0 && infos.every((v) => v.totalUsdgIdle !== undefined);
+    const infosReady = !!infos && infos.length > 0 && infos.every((v) => v.totalUsdgIdle !== undefined && v.boostAssets !== undefined);
     const ready = infosReady && !holdings.isLoading && !pricesLoading;
-    const total = stockUsd === undefined ? undefined : usdg + stockUsd;
-    return { usdg, stockUsd, perStockUsd, total, ready, prices, holdings: holdings.perStock, perVault: holdings.perVault };
+    const total = stockUsd === undefined ? undefined : usdg + boosted + stockUsd;
+    return { usdg, boosted, stockUsd, perStockUsd, total, ready, prices, holdings: holdings.perStock, perVault: holdings.perVault };
   }, [infos, stocks, prices, pricesLoading, holdings]);
 }
 
