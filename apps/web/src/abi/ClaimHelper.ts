@@ -1,6 +1,30 @@
 export const ClaimHelperAbi = [
   {
     "type": "function",
+    "name": "boostValueOf",
+    "inputs": [
+      {
+        "name": "vault",
+        "type": "address",
+        "internalType": "contract IPlanVault"
+      },
+      {
+        "name": "planId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "claimable",
     "inputs": [
       {
@@ -93,6 +117,26 @@ export const ClaimHelperAbi = [
             "name": "paused",
             "type": "bool",
             "internalType": "bool"
+          },
+          {
+            "name": "boosted",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "boostValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "boostPrincipal",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "boostEarned",
+            "type": "uint128",
+            "internalType": "uint128"
           }
         ]
       }

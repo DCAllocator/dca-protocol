@@ -103,7 +103,17 @@ Verified end to end on an isolated anvil + `DeployLocal` stack: ETH-funded creat
 | Transaction ordering | **Weak** | **Moderate** | Atomic unprivileged sandwich closed; block-level sandwich remains with operational mitigations; contract-level guard is a V2 item (§3) |
 | Testing & verification | Moderate | **Satisfactory** | 244 tests (was 201): real-router + CPMM regression suite for every finding, fill-aware mock, invariant handler with partial fills and route outages, strict invariants, CI profile green |
 
-## 7. Appendix — tooling output
+## 7. Changes since this audit — **v0.3 Boost (unaudited)**
+
+Added after the v0.2 review; **not covered by this report** and should be in scope of the next one.
+
+- **Feature.** Per-plan opt-in lending of idle USDG on Morpho Blue between buys (`Plan.boosted`, `createPlan(..., bool boost)`, `setPlanBoost`), with per-plan share / cost-basis / realised-yield accounting (`boostShares`, `boostPrincipal`, `boostEarned`) and a live APY quoted from the market's IRM. README "Boost", SECURITY.md §11.
+- **New code.** `src/boost/MorphoBlueStrategy.sol` (OZ ERC-4626 over one Morpho Blue market, depositor-gated, liquidity-bounded `maxWithdraw`), `src/libraries/BoostLib.sol` (**linked external library**, delegatecalled on vault storage — `PlanVault` would otherwise exceed EIP-170: 25.6 KB inline vs 23.6 KB linked), `src/libraries/MorphoLib.sol` (Morpho share maths + interest projection, reimplemented), `src/interfaces/IMorpho.sol`. `ClaimHelper` exposes `boostValueOf` and boost fields.
+- **Vault changes.** `_collect` values boosted plans against one pool snapshot; the page's boosted spend is pulled in one strategy withdrawal before the swap, and a failed pull drops the boosted fills instead of reverting (`BoostWithdrawFailed`); a skipped swap re-lends the pulled USDG. `withdrawIdle` / `prunePlan` / `rescueERC20` account for boosted balances and strategy shares. `setBoostStrategy` migrates positions atomically.
+- **Tests.** 303 (was 244): `MorphoBlueStrategy.t.sol` (16), `PlanVault.Boost.t.sol` (36 incl. a value-conservation fuzz), invariant handler extended with boost toggles, time warps, liquidity crunches and bad debt; two new invariants (`boostPoolConsistent`, `boostFundsAreLent`). Green at CI depth. No fork test against a live Morpho deployment yet.
+- **Known trade-offs.** Vault EIP-170 headroom is now ~1 KB; boosted withdrawals/spends depend on Morpho market liquidity; bad debt is socialised; a mock (`test/mocks/MockMorpho.sol`) stands in for Morpho in all tests.
+
+## 8. Appendix — tooling output
 
 - `forge test`: 244 pass / 0 fail (default profile); CI profile (`fuzz.runs = 2048`, `invariant.runs = 256`, `depth = 64`): 244 pass / 0 fail.
 - `forge coverage --ir-minimum` (src, all tests): 97.9 % lines, 96.5 % statements, 87.7 % branches; `PlanVault` 99.3 % lines.

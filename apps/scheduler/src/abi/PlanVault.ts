@@ -50,6 +50,32 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
+    "name": "boostAssets",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "boostStrategy",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "claim",
     "inputs": [
       {
@@ -112,6 +138,11 @@ export const PlanVaultAbi = [
         "name": "minUsdgOut",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "boost",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "outputs": [
@@ -411,6 +442,11 @@ export const PlanVaultAbi = [
             "internalType": "bool"
           },
           {
+            "name": "boosted",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
             "name": "stock",
             "type": "address",
             "internalType": "address"
@@ -422,6 +458,21 @@ export const PlanVaultAbi = [
           },
           {
             "name": "stockAccrued",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "boostShares",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "boostPrincipal",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "boostEarned",
             "type": "uint128",
             "internalType": "uint128"
           }
@@ -757,6 +808,19 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
+    "name": "setBoostStrategy",
+    "inputs": [
+      {
+        "name": "strategy",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setDustSweepMin",
     "inputs": [
       {
@@ -921,6 +985,24 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
+    "name": "setPlanBoost",
+    "inputs": [
+      {
+        "name": "planId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "enabled",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setPlanPaused",
     "inputs": [
       {
@@ -1011,6 +1093,19 @@ export const PlanVaultAbi = [
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "totalBoostShares",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1202,6 +1297,112 @@ export const PlanVaultAbi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "BoostDeposited",
+    "inputs": [
+      {
+        "name": "planId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "usdgIn",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "shares",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "BoostStrategySet",
+    "inputs": [
+      {
+        "name": "strategy",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "migratedUsdg",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "BoostWithdrawFailed",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "epochId",
+        "type": "uint32",
+        "indexed": true,
+        "internalType": "uint32"
+      },
+      {
+        "name": "usdgRequested",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "reason",
+        "type": "bytes",
+        "indexed": false,
+        "internalType": "bytes"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "BoostWithdrawn",
+    "inputs": [
+      {
+        "name": "planId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "usdgOut",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "shares",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "earned",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
@@ -1652,6 +1853,25 @@ export const PlanVaultAbi = [
   },
   {
     "type": "event",
+    "name": "PlanBoostSet",
+    "inputs": [
+      {
+        "name": "planId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "boosted",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "PlanCreated",
     "inputs": [
       {
@@ -1914,6 +2134,27 @@ export const PlanVaultAbi = [
         "internalType": "uint256"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "BoostAssetMismatch",
+    "inputs": [
+      {
+        "name": "asset",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "BoostInUse",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BoostUnavailable",
+    "inputs": []
   },
   {
     "type": "error",

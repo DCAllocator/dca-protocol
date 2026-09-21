@@ -22,7 +22,7 @@ contract AuditL04HopRefund is AuditBase {
         wethNvda = _constPool(address(weth), address(nvda), 3000, _sqrtPrice(address(weth), 1e18, address(nvda), 6e18));
         zap = new Zap(address(weth), address(usdg), address(router));
         vm.prank(alice);
-        daily.createPlan(address(nvda), 3_000e6, address(0), 3_000e6, 0, 0);
+        daily.createPlan(address(nvda), 3_000e6, address(0), 3_000e6, 0, 0, false);
         _nextEpoch();
         // hop 2 delivers only 99.5% of a full fill: the pool consumes 99.5% of the WETH and refunds the rest
         (uint256 hop1Out,) = router.quote(address(usdg), address(weth), 3_000e6 - 22.5e6);

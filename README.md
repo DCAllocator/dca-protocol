@@ -2,7 +2,7 @@
 
 Scheduled, on-chain purchases of **Robinhood Stock Tokens** on **Robinhood Chain** (chain id 4663, Arbitrum Orbit).
 
-A user opens a **plan** inside a frequency **vault** (Daily / Weekly / Monthly): one Stock Token, a USDG amount per epoch (≥ 10 USDG), funded with USDG and/or ETH/WETH (ETH/WETH is converted to USDG at deposit time — vaults hold USDG only). Every epoch the vault takes the purchase fee, pools everyone's notional, routes one swap USDG → stock through the best **owner-approved** route on Uniswap V3 / Uniswap V4 / Ramses V3, and credits each plan pro-rata. Holders of ≥ 10,000 `$DCA` get stock sent straight to their wallet (0 claim fee); everyone else accrues on-vault and `claim`s (0.25%). ≥ 50,000 `$DCA` halves the purchase fee.
+A user opens a **plan** inside a frequency **vault** (Daily / Weekly / Monthly): one Stock Token, a USDG amount per epoch (≥ 10 USDG), funded with USDG and/or ETH/WETH (ETH/WETH is converted to USDG at deposit time — vaults hold USDG only). Every epoch the vault takes the purchase fee, pools everyone's notional, routes one swap USDG → stock through the best **owner-approved** route on Uniswap V3 / Uniswap V4 / Ramses V3, and credits each plan pro-rata. Holders of ≥ 10,000 `$DCA` get stock sent straight to their wallet (0 claim fee); everyone else accrues on-vault and `claim`s (0.25%). ≥ 50,000 `$DCA` halves the purchase fee. A plan can be **boosted**: its idle USDG is lent on **Morpho Blue** between buys and earns the market's supply rate, pulled back automatically at every buy and withdrawal (see [Boost](#boost)).
 
 > Stock Tokens are **economic exposure, not shareholder rights**. Not offered to US persons. The contracts are permissionless; the UI is geo-blocked (US / UK / CA / AU / sanctioned). Unaudited software.
 
@@ -12,6 +12,7 @@ A user opens a **plan** inside a frequency **vault** (Daily / Weekly / Monthly):
 
 - [Architecture](#architecture)
 - [Fees](#fees)
+- [Boost](#boost)
 - [Epochs and scheduling](#epochs-and-scheduling)
 - [Routing](#routing)
 - [Querying balances](#querying-balances)
@@ -57,7 +58,9 @@ A user opens a **plan** inside a frequency **vault** (Daily / Weekly / Monthly):
 
 **Keeper** (`src/keeper/EpochKeeper.sol`) — job list `(vault, stock)`, operator-only `runDue()` / `run()` / `performUpkeep()` (register your bots and the Chainlink Automation forwarder with `setOperator`), public `checkUpkeep`. One failing job never blocks the others.
 
-**Periphery** — `Zap` (ETH/WETH ⇄ USDG, deposit ETH as USDG into a plan), `ClaimHelper` (read-only aggregation: positions, claimables, fee previews), `TwapOracle` (mean-tick helper for keepers).
+**Boost** (`src/boost/`, `src/libraries/BoostLib.sol`) — each vault has an owner-set ERC-4626 `boostStrategy`; `MorphoBlueStrategy` is an ERC-4626 over one Morpho Blue market (deposits restricted to the vaults, withdrawals bounded by the market's liquidity, `supplyRatePerSecond()` for the live APY). Boosted plans' idle USDG lives in that one strategy position, split by vault-internal shares. The pool mutations live in `BoostLib`, a **linked external library** (delegatecall on the vault's storage) — that is what keeps `PlanVault` under the EIP-170 limit.
+
+**Periphery** — `Zap` (ETH/WETH ⇄ USDG, deposit ETH as USDG into a plan), `ClaimHelper` (read-only aggregation: positions with boosted balances and earnings, claimables, fee previews), `TwapOracle` (mean-tick helper for keepers).
 
 **`$DCA`** — read as a **spot balance at execution / claim time** (never at plan creation). `dca == address(0)` disables perks. `MockDCA` exists for tests and local stacks only; the production script refuses to deploy it.
 
@@ -75,6 +78,7 @@ A user opens a **plan** inside a frequency **vault** (Daily / Weekly / Monthly):
 | **USDG decimals detected at deploy** (`usdgDecimals`). `amountPerEpoch` is in USDG units. | Works with 6- or 18-decimal USDG. |
 | **No on-chain factory.** `VaultDirectory` records addresses; `contracts/script/Deploy.s.sol` deploys. | Three ~23 KB vault initcodes can't fit under EIP-170 inside a factory. |
 | **Deposits are open** (anyone may fund any plan, ≥ `minDeposit`). | Enables `Zap.depositEthAsUsdg`; it can only add value. |
+| **Boost is opt-in, per plan, and a strategy failure never blocks an epoch.** If the strategy cannot pay a page's boosted spend, the boosted plans of that page sit it out (`BoostWithdrawFailed`) and everyone else fills. | Lending liquidity is outside the protocol's control; it must never turn into a DoS on unboosted users. |
 
 ---
 
@@ -98,7 +102,25 @@ All fees are in **bps** (`uint16`), hard-capped at **90 bps** in `FeeMath.MAX_FE
 
 Other tolerances (not fees): `swapSlippageBps` (minOut = quote × (1 − 0.50%), also the floor for any route override), `keeperTipBps` (share of purchase fees paid to whoever calls `advanceEpoch`, default 0, max 50%). Minimums: `minAmountPerEpoch` / `minDeposit` (10 USDG). Dust: `dustSweepMinUsdg` (1 USDG) — `usdgDust` is forwarded to `feeRecipient` during `advanceEpoch` once it reaches this; `wethDust` whenever non-zero; `sweepDust()` (owner / feeManager) forces it.
 
-Fee math is exact integer arithmetic, rounds down in the user's favour, and is fuzzed (`test/unit/FeeMath.t.sol`).
+Fee math is exact integer arithmetic, rounds down in the user's favour, and is fuzzed (`test/unit/FeeMath.t.sol`). There is **no fee on boost yield**; the withdraw fee applies to boosted balances like any other idle USDG.
+
+---
+
+## Boost
+
+A plan's USDG normally waits on the vault for days or weeks before it is spent. A **boosted** plan lends that idle USDG through the vault's `boostStrategy` — `MorphoBlueStrategy`, an ERC-4626 over one Morpho Blue market — and earns the market's supply rate until each buy. Off by default; `createPlan(..., boost=true)` or `setPlanBoost(planId, true)` on an existing plan (retroactive, moves the whole idle balance); `setPlanBoost(planId, false)` pulls everything back into `usdgIdle`, yield included (works while paused).
+
+**Accounting.** The vault holds ONE strategy position and splits it between boosted plans with internal shares (`Plan.boostShares`, `totalBoostShares`; `boostAssets()` = `strategy.convertToAssets(strategy.balanceOf(vault))`). A plan's boosted balance is `boostShares × (boostAssets + 1) / (totalBoostShares + 1)` (`ClaimHelper.boostValueOf`), its spendable balance `usdgIdle + boosted`. Spends and withdrawals take `usdgIdle` first, then burn shares rounded up against the plan; a plan drained to its full value gives up every share (no dust). `boostPrincipal` is the plan's cost basis, reduced pro rata on every burn; the part of a withdrawal above it is booked into `boostEarned` (`BoostWithdrawn(planId, out, shares, earned)`), so lifetime earnings = `boostEarned + max(0, boosted − boostPrincipal)`. Deposits into a boosted plan are lent straight away; the unspent residual of a partial fill is returned as plain `usdgIdle` (spent first next epoch; `setPlanBoost(true)` again sweeps it into the pool).
+
+**Epochs.** `_collect` values every boosted plan against one pool snapshot per page; the page's boosted spend is pulled from the strategy in **one** withdrawal before the swap. If that withdrawal reverts (fully utilised market), the page's boosted fills are dropped — those plans are neither charged nor marked filled and simply try again next epoch — and the unboosted plans are filled as usual (`BoostWithdrawFailed(stock, epochId, usdg, reason)`; the scheduler logs it). If the page's *swap* is skipped instead, the USDG already pulled goes straight back to the strategy in the same transaction.
+
+**Admin.** `setBoostStrategy(strategy)` (owner) sets or migrates the strategy: the asset must be USDG; with positions open the whole pool is redeemed from the old strategy and deposited into the new one in the same call (internal shares untouched); clearing it with positions open reverts `BoostInUse`. Any ERC-4626 with the same asset works (a MetaMorpho vault, or a plain holding vault to pause yield). The strategy's shares are never `rescueERC20`-able. `MorphoBlueStrategy` itself is `Ownable2Step`: `setDepositor(vault, bool)` gates deposits; `skim()` lends stray loan tokens to all holders.
+
+**APY.** `MorphoBlueStrategy.supplyRatePerSecond()` = `borrowRate × utilisation × (1 − marketFee)` from the market's IRM at the current block; the app shows `e^(rate × 365 d) − 1` and refreshes it every 30 s.
+
+**Risks** (SECURITY.md §11): boosted USDG is a Morpho Blue supply position — a fully borrowed market means boosted withdrawals (and boosted spends, see above) wait for liquidity; bad debt on the market is socialised across its suppliers, so a plan's boosted balance can fall below its principal (`boostEarned` never goes negative; losses show as `boosted < boostPrincipal`).
+
+Deploy: `MORPHO` + `MORPHO_MARKET_ID` in `contracts/.env` (see `config/addresses.rh.json → morpho`); empty ships without boost and `setBoostStrategy` wires it later. The local stack deploys a `MockMorpho` market (real share maths and interest accrual, phantom borrower at 90 % utilisation, ~5 % supply APY) behind a real `MorphoBlueStrategy` on every vault, with the seeded NVDA test plan boosted.
 
 ---
 
@@ -227,8 +249,9 @@ The frontend picks the stock up automatically from `registry.approvedStocks()`. 
 contracts/                Foundry project (Forge / Anvil)
   config/                  addresses.rh.json (TODOs for every external address), fees.json
   src/
-    interfaces/            IPlanVault, IStockRegistry, IWETH, IEpochAdvanceable (V2 hook), IUniswapV3, IUniswapV4
-    libraries/             FeeMath, EpochLib
+    interfaces/            IPlanVault, IStockRegistry, IWETH, IMorpho (+ IIrm), IEpochAdvanceable (V2 hook), IUniswapV3, IUniswapV4
+    libraries/             FeeMath, EpochLib, BoostLib (linked external lib: the vault's boost pool), MorphoLib (Morpho share maths)
+    boost/                 MorphoBlueStrategy (ERC-4626 over one Morpho Blue market)
     oracles/               TwapOracle
     router/                IAggregatorRouter, AggregatorRouter, adapters/{ISwapAdapter,UniV3,UniV4,RamsesV3}
     registries/            StockRegistry
@@ -237,7 +260,8 @@ contracts/                Foundry project (Forge / Anvil)
     periphery/             Zap, ClaimHelper
     keeper/                EpochKeeper
   test/
-    unit/ fuzz/ invariant/ fork/ mocks/   (mocks/TestVault.sol = short-epoch vault for local stacks only)
+    unit/ fuzz/ invariant/ fork/ audit/ mocks/   (mocks/TestVault.sol = short-epoch vault for local stacks only;
+                                              mocks/MockMorpho.sol = Morpho Blue lender surface with real accrual)
   script/                  Deploy.s.sol (prod), DeployLocal.s.sol (anvil stack), Quote.s.sol (keeper helper)
 apps/web/                 Next.js app (/ marketing, /app dashboard)
 apps/scheduler/           epoch scheduler bot (viem): pnpm scheduler
@@ -254,8 +278,8 @@ Requires Foundry (nightly ≥ 1.6 used here; `via_ir = true`, solc 0.8.28) and N
 
 ```bash
 cd contracts
-forge build --sizes            # vaults ~22.3 KB runtime (EIP-170 margin ~2.3 KB)
-forge test                     # 244 tests: unit, fuzz, invariant, audit regression (fork suite self-skips without RH_RPC)
+forge build --sizes            # vaults ~23.6 KB runtime (EIP-170 margin ~1 KB — BoostLib is a linked library for that reason)
+forge test                     # 303 tests: unit, fuzz, invariant, audit regression (fork suite self-skips without RH_RPC)
 forge test --match-path "test/audit/*" -vv   # regression suite for the v0.1 audit findings (real router + CPMM pool)
 forge coverage --ir-minimum --no-match-coverage "(script|test)/"
 ```
@@ -286,7 +310,9 @@ All six already hold 10,000 ETH from anvil's genesis.
 
 ```bash
 cast send $USDG "approve(address,uint256)" $TEST_VAULT 1000000000 --rpc-url http://127.0.0.1:8545 --unlocked --from $TEST1
-cast send $TEST_VAULT "createPlan(address,uint96,bool,address,uint256,uint256,uint256)" $NVDA 10000000 false 0x0000000000000000000000000000000000000000 1000000000 0 0 --rpc-url http://127.0.0.1:8545 --unlocked --from $TEST1
+# createPlan(stock, amountPerEpoch, recipient, usdgAmount, wethAmount, minUsdgOut, boost)
+cast send $TEST_VAULT "createPlan(address,uint96,address,uint256,uint256,uint256,bool)" $NVDA 10000000 0x0000000000000000000000000000000000000000 1000000000 0 0 true --rpc-url http://127.0.0.1:8545 --unlocked --from $TEST1
+cast send $TEST_VAULT "setPlanBoost(uint256,bool)" $PLAN_ID false --rpc-url http://127.0.0.1:8545 --unlocked --from $TEST1   # unboost
 ```
 
 Note that anvil evaluates `eth_call` at the **last mined block's** timestamp, so on an idle chain nothing ever looks due; the scheduler handles this by mining a block (0-value self-transfer) when a boundary has passed since the last block.
@@ -294,13 +320,13 @@ Note that anvil evaluates `eth_call` at the **last mined block's** timestamp, so
 **Robinhood Chain:**
 
 ```bash
-cp contracts/.env.example contracts/.env   # fill USDG, WETH, DCA, DEX factories, OWNER, FEE_RECIPIENT, KEEPERS, STOCKS, V3_POOLS
+cp contracts/.env.example contracts/.env   # fill USDG, WETH, DCA, DEX factories, OWNER, FEE_RECIPIENT, KEEPERS, STOCKS, V3_POOLS, MORPHO + MORPHO_MARKET_ID (optional)
 pnpm protocol:deploy
 # → contracts/deployments/4663.json
 # then, from the OWNER multisig: acceptOwnership() on registry, router, adapters, vaults, keeper, directory
 ```
 
-`pnpm protocol:deploy` (`scripts/deploy.sh`) sources `contracts/.env`, confirms before broadcasting, then runs `forge script script/Deploy.s.sol --broadcast --verify`. The production script applies `contracts/config/fees.json`, wires the keeper to every vault, creates a job per approved stock, and never deploys a mock `$DCA` (`DCA` empty ⇒ perks disabled; on 4663 you must set `ALLOW_NO_DCA=true` to confirm that).
+`pnpm protocol:deploy` (`scripts/deploy.sh`) sources `contracts/.env`, confirms before broadcasting, then runs `forge script script/Deploy.s.sol --broadcast --verify`. The production script applies `contracts/config/fees.json`, wires the keeper to every vault, creates a job per approved stock, deploys `MorphoBlueStrategy` over `MORPHO_MARKET_ID` and sets it on the three vaults when `MORPHO` is set, and never deploys a mock `$DCA` (`DCA` empty ⇒ perks disabled; on 4663 you must set `ALLOW_NO_DCA=true` to confirm that). `BoostLib` is a linked library: `forge script` deploys and links it automatically (it is in the broadcast; pass it to `--libraries` when verifying by hand).
 
 **Fork test** (needs `contracts/config/addresses.rh.json` filled): `cd contracts && RH_RPC=… forge test --match-path test/fork/RobinhoodFork.t.sol -vvv`.
 
@@ -319,15 +345,15 @@ pnpm dev                       # http://localhost:3000 (or: pnpm --filter @dca/w
 
 - `/` — marketing site: sticky nav, hero with a live product preview, stats strip, how it works, vault comparison, benefits, `$DCA` perks, live fee table, FAQ, final CTA.
 - `/app` — sidebar shell (logo, **Create new plan** CTA, My plans, Activity; *Protocol*: Overview, DCA Token, Docs; *Vaults*: next-buy countdowns), wallet button top-right, centred content column. Pages:
-  - **Overview** — total value locked (USDG + ETH + stock on hand, all at router prices) with a composition bar, stock value bought with a sparkline built from `EpochPageExecuted` logs, and the vaults table (next buy, waiting to buy, stock on hand, bought to date). Fees are deliberately not shown here.
-  - **Create** — four steps: stock → frequency (Daily / Weekly / Monthly, no vault or fee language) → amount per buy (slider + input) → upfront funding (slider 0…balance, USDG or ETH toggle; ETH is zapped to USDG by `createPlan`). Approve + create run as one click. The purchase/claim fee appears only in the small print of the summary.
-  - **My plans** — one table with inline **Deposit** (USDG or ETH), **Withdraw**, **Claim** and a `⋯` menu with Pause/Resume and **Remove**. Remove runs `withdrawIdle → claim → prunePlan` as a guided sequence (the vault has no multicall, so up to three signatures). `prunePlan` keeps the plan record, so removed plans are hidden client-side from the last `PlanIndexed` event; a later deposit re-indexes and un-hides them.
+  - **Overview** — total value locked (USDG on the vaults + USDG boosted on Morpho + stock on hand, all at router prices) with a composition bar, stock value bought with a sparkline built from `EpochPageExecuted` logs, and the vaults table (next buy, waiting to buy incl. boosted, boost APY, stock on hand, bought to date). Fees are deliberately not shown here.
+  - **Create** — four steps: stock → frequency (Daily / Weekly / Monthly, no vault or fee language) → amount per buy (slider + input) → upfront funding (slider 0…balance, USDG or ETH toggle; ETH is zapped to USDG by `createPlan`). The summary carries the **Earn while you wait** switch (off by default) with the live Morpho APY; on, `createPlan` is sent with `boost = true`. Approve + create run as one click. The purchase/claim fee appears only in the small print of the summary.
+  - **My plans** — one table with inline **Deposit** (USDG or ETH), **Withdraw**, **Claim**, **Boost** / **Unboost** and a `⋯` menu with Pause/Resume and **Remove**. Balance = vault-held USDG + boosted balance; boosted rows show lifetime boost earnings (`ClaimHelper` fields). Withdraw covers the boosted balance (the vault's `type(uint256).max` sentinel is used for "all"). Remove runs `setPlanBoost(false) → withdrawIdle → claim → prunePlan` as a guided sequence (the vault has no multicall, so up to four signatures). `prunePlan` keeps the plan record, so removed plans are hidden client-side from the last `PlanIndexed` event; a later deposit re-indexes and un-hides them. Every write pads the gas estimate (×1.25 + 100k): a Morpho-touching call estimated right after an accrual is cheaper than its real execution a block later.
   - **Activity** — "My buys" (`PlanFilled`) and "All buys" (`EpochPageExecuted`) with frequency filters.
   - **DCA Token** — price / market cap (router quote × `totalSupply`; "—" without a `$DCA`/USDG route), protocol volume, USDG fees accrued from logs, holder perks with the connected wallet's status, live fee schedule. The tokenomics allocation block is a placeholder.
-  - **Docs** — placeholder documentation (`#dca` is the target of the "Find out more" links).
+  - **Docs** — placeholder documentation (`#dca` is the target of the "Find out more" links; `#boost` explains Boost and its risks).
 - Visual system: the `$PIE` dark register (Inter, lime `#ccff00`, 12/10/8/6px radii). One ladder of warm greys with a step of contrast per layer — `surface-0` `#0c0c0b` frame (sidebar, key stat tile) → `surface-1` `#121211` canvas → `surface-2` `#1a1a18` cards/tables → `surface-3` `#232220` inputs, hover rows, tiles → `surface-4` `#2f2e2a` fills. Tokens and utilities (`card`, `stat-strip`, `tile`, `tbl` + `sort-btn`, `toolbar`, `btn-*`, `chip-*`, `chip-dev`, `range`, `menu`) live in `src/app/globals.css`; primitives in `src/components/ui.tsx` (`PageHeader`, `Card`, `StatCard`, `SearchInput`, `SortTh`, `Slider`, `AmountInput`, `Segmented`, `Modal`, `Menu`, `Sparkline`, `StockAvatar`).
 - Stock logos: `public/tickers/<TICKER>.svg` (shared with `$PIE`) via `StockAvatar`; a missing file falls back to the ticker's letters on a lime disc. Company names for search come from `src/lib/tickers.ts`.
-- Everything is discovered from `VaultDirectory` (`NEXT_PUBLIC_DIRECTORY`); `ClaimHelper` powers the plan list; prices come from `AggregatorRouter.quote` simulated for one whole token (`usePrices`).
+- Everything is discovered from `VaultDirectory` (`NEXT_PUBLIC_DIRECTORY`); `ClaimHelper` powers the plan list; prices come from `AggregatorRouter.quote` simulated for one whole token (`usePrices`). The boost APY is read from each vault's `boostStrategy()` → `MorphoBlueStrategy.supplyRatePerSecond()` (`useBoostApys`, `apy = e^(rate·365d) − 1`, refreshed every 30 s); product copy for the feature (names of the Boost / Unboost actions, the card title, the tooltip) is `BOOST` in `src/lib/config.ts`.
 - **Local dev without a wallet extension:** on chain 31337 the header shows **Use test wallet**, a wagmi `mock` connector for anvil's unlocked `test1/2/3` accounts (see `src/lib/wagmi.ts`). Transactions are signed by anvil itself. Never enabled on other chains.
 - **Test vault (dev flag):** `pnpm dev:test-vault` (= `NEXT_PUBLIC_SHOW_TEST_VAULT=1 next dev`; `SHOW_TEST_VAULT=1 pnpm dev` also works via `next.config.ts`) adds the local 2-minute `TestVault` as a fourth frequency, tagged `dev`. `VAULT_KINDS` in `src/lib/config.ts` becomes `[daily, weekly, monthly, test]`, `useDirectory()` merges `NEXT_PUBLIC_TEST_VAULT` into the vault map, and every app page follows; the marketing components use `PRODUCTION_VAULT_KINDS` and never show it. Requires chain 31337 — the flag is ignored elsewhere. To run a flagged and an unflagged dev server side by side from one checkout, give the second one its own build dir: `NEXT_DIST_DIR=.next-test-vault pnpm dev:test-vault --port 3001`.
 - Geo-block: `src/middleware.ts` redirects `/app/*` to `/restricted` for `NEXT_PUBLIC_BLOCKED_COUNTRIES` (default US, GB, CA, AU, CU, IR, KP, SY) using the CDN country header (`x-vercel-ip-country` / `cf-ipcountry`). A first-visit disclaimer gate covers the rest. Contracts stay permissionless.
@@ -343,6 +369,7 @@ Read [SECURITY.md](SECURITY.md) for the threat model. Headlines:
 - **Keeper liveness.** No operator, no purchases (there is no permissionless fallback). Missed epochs are skipped, not caught up.
 - **`$DCA` flash-buy.** Perks read spot balances at execution; someone can buy right before an epoch. Accepted for V1; a checkpointed snapshot is the V2 fix.
 - **ETH deposits.** ETH/WETH is converted to USDG at deposit with the depositor's `minUsdgOut`; the ETH/USDG price risk is taken at deposit time, never at epoch.
+- **Boost (Morpho Blue).** Boosted USDG is a lending position: a fully utilised market delays boosted withdrawals and spends until liquidity returns (unboosted plans are unaffected), and bad debt on the market is shared by its suppliers. The strategy contract and the market choice are owner decisions. See SECURITY.md §11.
 - **Stock Token depeg.** The token can trade away from the underlying's NYSE/Nasdaq price; the vault buys at the on-chain price.
 - **Admin.** Owner can pause, change fees (≤ 0.90%), thresholds, minimums, router, approved routes, keepers and operators. Use a multisig; ownership is 2-step.
 

@@ -17,6 +17,7 @@ const contracts = [
   ["AggregatorRouter", "AggregatorRouter.sol/AggregatorRouter.json"],
   ["Zap", "Zap.sol/Zap.json"],
   ["EpochKeeper", "EpochKeeper.sol/EpochKeeper.json"],
+  ["MorphoBlueStrategy", "MorphoBlueStrategy.sol/MorphoBlueStrategy.json"],
 ];
 
 // Minimal ERC-20 surface used by the app.

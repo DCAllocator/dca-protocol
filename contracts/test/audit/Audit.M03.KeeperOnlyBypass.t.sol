@@ -15,9 +15,9 @@ contract AuditM03KeeperOnlyBypass is AuditBase {
         super.setUp();
         _usdgNvdaPool();
         vm.prank(alice);
-        daily.createPlan(address(nvda), 100e6, address(0), 1_000e6, 0, 0);
+        daily.createPlan(address(nvda), 100e6, address(0), 1_000e6, 0, 0, false);
         vm.prank(bob);
-        daily.createPlan(address(nvda), 100e6, address(0), 1_000e6, 0, 0);
+        daily.createPlan(address(nvda), 100e6, address(0), 1_000e6, 0, 0, false);
         _nextEpoch();
     }
 

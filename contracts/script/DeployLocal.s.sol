@@ -9,6 +9,9 @@ import {MockERC20} from "../test/mocks/MockERC20.sol";
 import {MockWETH} from "../test/mocks/MockWETH.sol";
 import {MockV3Factory} from "../test/mocks/MockV3.sol";
 import {MockDCA} from "../test/mocks/MockDCA.sol";
+import {MockMorpho, MockIrm} from "../test/mocks/MockMorpho.sol";
+import {MorphoBlueStrategy} from "../src/boost/MorphoBlueStrategy.sol";
+import {Id, MarketParams} from "../src/interfaces/IMorpho.sol";
 import {StockRegistry} from "../src/registries/StockRegistry.sol";
 import {AggregatorRouter} from "../src/router/AggregatorRouter.sol";
 import {UniV3Adapter} from "../src/router/adapters/UniV3Adapter.sol";
@@ -36,6 +39,11 @@ import {Route} from "../src/router/IAggregatorRouter.sol";
 ///         Besides Daily / Weekly / Monthly, a fourth `TestVault` with a `TEST_EPOCH_MINUTES`-minute epoch
 ///         (default 2) is deployed and given keeper jobs, plus three deployer-owned plans, so the scheduler
 ///         has an epoch to advance every couple of minutes instead of once a day. Local stacks only.
+///
+///         Boost: a mock Morpho Blue (`MockMorpho`, real share maths and interest accrual) with a USDG market
+///         seeded by the deployer and 90% utilised by a phantom borrower, so the market pays ~5% supply APY,
+///         behind a real `MorphoBlueStrategy` that every vault has as its `boostStrategy`. The seeded NVDA test
+///         plan is boosted so the scheduler exercises the boosted fill path every couple of minutes.
 ///
 ///         Stocks mirror the full Robinhood Stock Token lineup (see apps/web/src/lib/tickers.ts). `SYMBOLS`
 ///         are "liquid": each gets a seeded USDG pool and keeper jobs so plans actually execute. `OTHER_SYMBOLS`
@@ -305,6 +313,29 @@ contract DeployLocal is Script {
             keeper.addJob(address(testVault), stocks[s]);
         }
 
+        // Boost: mock Morpho market + real strategy, every vault wired to it.
+        MockIrm irm = new MockIrm(uint256(0.055e18) / 365 days); // 5.5% borrow APR => ~5% supply APY at 90% util
+        MockMorpho morpho = new MockMorpho(treasury);
+        MarketParams memory market = MarketParams({
+            loanToken: address(usdg),
+            collateralToken: address(weth),
+            oracle: address(0),
+            irm: address(irm),
+            lltv: 0.86e18
+        });
+        Id marketId = morpho.createMarket(market);
+        usdg.mint(deployer, 10_000_000e6);
+        usdg.approve(address(morpho), 10_000_000e6);
+        morpho.supply(market, 10_000_000e6, 0, deployer, "");
+        morpho.mockBorrow(marketId, 9_000_000e6, deployer); // phantom debt: the loan tokens come back to us
+        MorphoBlueStrategy boostStrategy = new MorphoBlueStrategy(address(morpho), market, deployer);
+        PlanVault[4] memory boostVaults =
+            [PlanVault(daily), PlanVault(weekly), PlanVault(monthly), PlanVault(testVault)];
+        for (uint256 v; v < 4; ++v) {
+            boostStrategy.setDepositor(address(boostVaults[v]), true);
+            boostVaults[v].setBoostStrategy(address(boostStrategy));
+        }
+
         Zap zap = new Zap(address(weth), address(usdg), address(router));
         ClaimHelper helper = new ClaimHelper();
         VaultDirectory directory = new VaultDirectory(deployer);
@@ -332,11 +363,12 @@ contract DeployLocal is Script {
         // Seed the test vault with three deployer-owned plans (NVDA / AAPL / TSLA, the first three liquid
         // symbols) so `isEpochDue` is true from the very first boundary and the scheduler has real work.
         // 500k USDG each: at 100 USDG per 2-minute epoch that is ~7 days of fills before the biggest runs dry.
+        // The NVDA plan is boosted (its 500k sits on the mock Morpho market and is pulled per fill).
         usdg.mint(deployer, 1_500_000e6);
         usdg.approve(address(testVault), 1_500_000e6);
         uint96[3] memory seedPerEpoch = [uint96(100e6), uint96(50e6), uint96(25e6)];
         for (uint256 i; i < 3 && i < stocks.length; ++i) {
-            testVault.createPlan(stocks[i], seedPerEpoch[i], address(0), 500_000e6, 0, 0);
+            testVault.createPlan(stocks[i], seedPerEpoch[i], address(0), 500_000e6, 0, 0, i == 0);
         }
         vm.stopBroadcast();
 
@@ -356,6 +388,10 @@ contract DeployLocal is Script {
         j.serialize("keeper", address(keeper));
         j.serialize("directory", address(directory));
         j.serialize("zap", address(zap));
+        j.serialize("morpho", address(morpho));
+        j.serialize("morphoIrm", address(irm));
+        j.serialize("morphoMarketId", Id.unwrap(marketId));
+        j.serialize("boostStrategy", address(boostStrategy));
         j.serialize("stocks", stocks);
         j.serialize("claimHelper", address(helper));
         j.serialize("deployer", deployer);
@@ -376,6 +412,8 @@ contract DeployLocal is Script {
         console2.log("bot      ", bot);
         console2.log("testVault", address(testVault));
         console2.log("testEpoch (s)", uint256(testEpochLength));
+        console2.log("morpho   ", address(morpho));
+        console2.log("boost    ", address(boostStrategy));
     }
 
     function _approveBoth(AggregatorRouter router, uint8 protocol, address pool, address a, address b, uint24 fee)

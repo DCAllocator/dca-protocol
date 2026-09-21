@@ -4,14 +4,30 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { formatEther, formatUnits, parseEther, parseUnits } from "viem";
 import { useAccount, useReadContract } from "wagmi";
-import { useDirectory, usePositions, useStocks, useVaults, useUser, useQuote, usePrices, kindOf, vaultList, type Position, type VaultInfo } from "@/hooks/useProtocol";
+import {
+  useDirectory,
+  usePositions,
+  useStocks,
+  useVaults,
+  useUser,
+  useQuote,
+  usePrices,
+  useBoostApys,
+  boostAvailable,
+  planBalance,
+  boostEarnings,
+  kindOf,
+  vaultList,
+  type Position,
+  type VaultInfo,
+} from "@/hooks/useProtocol";
 import { useTx, useTxSequence, type TxStep } from "@/hooks/useTx";
 import { usePlanIndex, planKey } from "@/hooks/useLogs";
 import { PlanVaultAbi, ERC20Abi } from "@/abi";
-import { PageHeader, Card, Notice, Spinner, StockAvatar, Dot, Empty, Modal, Menu, Slider, AmountInput, Segmented, KV, Countdown, SearchInput, SortTh } from "@/components/ui";
+import { PageHeader, Card, Notice, Spinner, StockAvatar, Dot, Empty, Modal, Menu, Slider, AmountInput, Segmented, KV, Countdown, SearchInput, SortTh, Icon } from "@/components/ui";
 import { ConnectButton } from "@/components/ConnectButton";
-import { fmtUsd, fmtUnits, fmtBps, feeOf, valueOf } from "@/lib/format";
-import { VAULT_META, VAULT_KINDS, MAX_UINT256, USDG_DECIMALS, type VaultKind } from "@/lib/config";
+import { fmtUsd, fmtUnits, fmtBps, fmtPct, feeOf, valueOf } from "@/lib/format";
+import { VAULT_META, VAULT_KINDS, MAX_UINT256, USDG_DECIMALS, BOOST, type VaultKind } from "@/lib/config";
 import { tickerName } from "@/lib/tickers";
 
 const keyOf = (p: Position) => planKey(p.vault, p.planId);
@@ -26,7 +42,8 @@ export default function Plans() {
   const { stocks, byAddress } = useStocks(dir?.registry);
   const { positions: all, isLoading, refetch } = usePositions(vaults);
   const index = usePlanIndex(vaults ? vaultList(vaults) : undefined);
-  const { byKind } = useVaults(vaults);
+  const { infos, byKind, refetch: refetchVaults } = useVaults(vaults);
+  const { apyOf } = useBoostApys(infos);
   const user = useUser(dir);
   const priceTokens = useMemo(() => stocks.map((s) => ({ address: s.address, decimals: s.decimals })), [stocks]);
   const { prices } = usePrices(dir?.router, dir?.usdg, priceTokens);
@@ -39,6 +56,7 @@ export default function Plans() {
 
   const refresh = () => {
     refetch();
+    refetchVaults();
     index.refetch();
     user.refetch();
   };
@@ -52,7 +70,7 @@ export default function Plans() {
   const positions = useMemo(
     () =>
       all.filter((p) => {
-        const empty = p.usdgIdle === 0n && p.stockAccrued === 0n;
+        const empty = planBalance(p) === 0n && p.stockAccrued === 0n;
         const unindexed = index.data?.[keyOf(p)] === false;
         return !(empty && (unindexed || hidden.has(keyOf(p))));
       }),
@@ -75,7 +93,7 @@ export default function Plans() {
           name: tickerName(symbol),
           decimals,
           stockUsd: p.stockAccrued === 0n ? 0n : valueOf(p.stockAccrued, prices[p.stock.toLowerCase()], decimals),
-          active: !p.paused && p.usdgIdle > 0n,
+          active: !p.paused && planBalance(p) > 0n,
         };
       }),
     [positions, vaults, byAddress, byKind, prices],
@@ -98,7 +116,7 @@ export default function Plans() {
         case "per":
           return Number(r.p.amountPerEpoch);
         case "balance":
-          return Number(r.p.usdgIdle);
+          return Number(planBalance(r.p));
         case "stock":
           return r.stockUsd === undefined ? Number(r.p.stockAccrued) : Number(r.stockUsd);
         case "next":
@@ -121,7 +139,10 @@ export default function Plans() {
 
   if (!configured) return <Notice kind="warn">App is not configured.</Notice>;
 
-  const waiting = rows.reduce((a, r) => a + r.p.usdgIdle, 0n);
+  const waiting = rows.reduce((a, r) => a + planBalance(r.p), 0n);
+  const boosted = rows.reduce((a, r) => a + (r.p.boosted ? r.p.boostValue : 0n), 0n);
+  const earned = rows.reduce((a, r) => a + boostEarnings(r.p), 0n);
+  const boostedCount = rows.filter((r) => r.p.boosted).length;
   const activeCount = rows.filter((r) => r.active).length;
   const stockUsd = rows.reduce<bigint | undefined>((a, r) => (a === undefined || r.stockUsd === undefined ? undefined : a + r.stockUsd), 0n);
   const soonest = rows.filter((r) => r.active && r.info?.nextEpochStart !== undefined).sort((a, b) => Number(a.info!.nextEpochStart! - b.info!.nextEpochStart!))[0];
@@ -144,6 +165,16 @@ export default function Plans() {
           <div className="stat-cell stat-cell-key">
             <span className="stat-label">USD Balance</span>
             <span className="stat-num">{fmtUsd(waiting)}</span>
+            {(boostedCount > 0 || earned > 0n) && (
+              <span className="text-[12px] text-ink-2">
+                {boostedCount > 0 && (
+                  <>
+                    <span className="text-good">{fmtUsd(boosted)}</span> boosted ·{" "}
+                  </>
+                )}
+                <span className="text-good">+{fmtUsd(earned)}</span> earned{boostedCount === 0 ? ` from ${BOOST.name.toLowerCase()}` : ""}
+              </span>
+            )}
           </div>
           <div className="stat-cell">
             <span className="stat-label">Purchased Stock Value</span>
@@ -233,6 +264,7 @@ export default function Plans() {
                     p={r.p}
                     kind={r.kind}
                     info={r.info}
+                    apy={apyOf(r.info?.boostStrategy)}
                     symbol={r.symbol}
                     name={r.name}
                     stockDecimals={r.decimals}
@@ -277,6 +309,7 @@ function PlanRow({
   p,
   kind,
   info,
+  apy,
   symbol,
   name,
   stockDecimals,
@@ -287,6 +320,7 @@ function PlanRow({
   p: Position;
   kind?: VaultKind;
   info?: VaultInfo;
+  apy?: number;
   symbol: string;
   name: string;
   stockDecimals: number;
@@ -295,9 +329,15 @@ function PlanRow({
   onChange: () => void;
 }) {
   const tx = useTx(onChange);
-  const funded = p.usdgIdle > 0n;
+  const balance = planBalance(p);
+  const funded = balance > 0n;
+  const earned = boostEarnings(p);
+  const canBoost = boostAvailable(info);
   const status = p.paused ? (["Paused", "warn"] as const) : funded ? (["Active", "good"] as const) : (["Needs funds", "muted"] as const);
-  const call = (functionName: "setPlanPaused" | "claim", args: readonly unknown[]) => tx.write({ address: p.vault, abi: PlanVaultAbi, functionName, args } as never);
+  const call = (functionName: "setPlanPaused" | "claim" | "setPlanBoost", args: readonly unknown[]) =>
+    tx.write({ address: p.vault, abi: PlanVaultAbi, functionName, args } as never);
+  // One click each way: boost lends the idle balance on Morpho, unboost pulls it back (yield included).
+  const toggleBoost = () => call("setPlanBoost", [p.planId, !p.boosted]);
 
   return (
     <tr>
@@ -318,7 +358,21 @@ function PlanRow({
         {fmtUsd(p.amountPerEpoch)}
         {kind && <span className="block text-[11.5px] text-ink-2">per {VAULT_META[kind].per}</span>}
       </td>
-      <td className="num text-right">{fmtUsd(p.usdgIdle)}</td>
+      <td className="num text-right">
+        {fmtUsd(balance)}
+        {(p.boosted || earned > 0n) && (
+          <span
+            className={`mt-0.5 flex items-center justify-end gap-1 text-[11.5px] ${p.boosted ? "text-good" : "text-ink-2"}`}
+            title={
+              p.boosted
+                ? `${BOOST.chip}: lifetime earnings from lending on Morpho Blue${apy !== undefined ? ` (now ${fmtPct(apy, true)} APY)` : ""}`
+                : "Earned while this plan was boosted"
+            }
+          >
+            {p.boosted && <Icon name="bolt" size={11} className="text-lime" />}+{fmtUsd(earned)} earned
+          </span>
+        )}
+      </td>
       <td className="num text-right">
         {fmtUnits(p.stockAccrued, stockDecimals, 4)} <span className="text-[11.5px] text-ink-2">{symbol}</span>
         {p.stockAccrued > 0n && <span className="block text-[11.5px] text-ink-2">{fmtUsd(stockUsd)}</span>}
@@ -333,16 +387,33 @@ function PlanRow({
         </span>
       </td>
       <td className="stick-r text-right">
-        <span className="inline-flex items-center justify-end gap-1">
-          <button type="button" className="btn-secondary btn-xs" onClick={() => onDialog("deposit")}>
+        <span className="inline-flex items-center justify-end gap-0.5">
+          <button type="button" className="btn-secondary btn-xs px-2.5" onClick={() => onDialog("deposit")}>
             Deposit
           </button>
-          <button type="button" className="btn-ghost btn-xs" disabled={!funded} onClick={() => onDialog("withdraw")}>
+          <button type="button" className="btn-ghost btn-xs px-2.5" disabled={!funded} onClick={() => onDialog("withdraw")}>
             Withdraw
           </button>
-          <button type="button" className="btn-ghost btn-xs" disabled={p.stockAccrued === 0n || tx.pending} onClick={() => call("claim", [p.planId, MAX_UINT256])}>
+          <button type="button" className="btn-ghost btn-xs px-2.5" disabled={p.stockAccrued === 0n || tx.pending} onClick={() => call("claim", [p.planId, MAX_UINT256])}>
             {tx.pending ? <Spinner /> : "Claim"}
           </button>
+          {p.boosted ? (
+            <button type="button" className="btn-ghost btn-xs px-2.5" disabled={tx.pending} onClick={toggleBoost} title={`Pull the boosted balance back into the plan (${fmtUsd(p.boostValue)}, earnings included)`}>
+              {tx.pending ? <Spinner /> : BOOST.off}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn-secondary btn-xs gap-1 border-lime/40 px-2.5 text-lime hover:border-lime hover:bg-lime/10"
+              disabled={!canBoost || tx.pending}
+              onClick={toggleBoost}
+              title={canBoost ? `Lend the idle balance on Morpho Blue at ${fmtPct(apy, true)} APY until each buy` : "Boost is not available on this frequency yet"}
+            >
+              {tx.pending ? <Spinner /> : <Icon name="bolt" size={12} />}
+              {BOOST.on}
+              {canBoost && apy !== undefined && <span className="hidden font-normal text-ink-2 2xl:inline">{fmtPct(apy)}</span>}
+            </button>
+          )}
           <Menu
             items={[
               { label: p.paused ? "Resume plan" : "Pause plan", onClick: () => call("setPlanPaused", [p.planId, !p.paused]), disabled: tx.pending },
@@ -493,9 +564,11 @@ function DepositForm({ dialog, info, usdg, weth, router, balances, onClose, onCh
 
 function WithdrawForm({ dialog, info, onClose, onChange }: Parameters<typeof PlanDialog>[0]) {
   const p = dialog.plan;
+  const available = planBalance(p);
   const [amount, setAmount] = useState("");
   const wei = safeParse(amount, USDG_DECIMALS) ?? 0n;
-  const usdgOut = wei > p.usdgIdle ? p.usdgIdle : wei;
+  const all = wei >= available;
+  const usdgOut = all ? available : wei;
   const tx = useTx(() => {
     onChange();
     onClose();
@@ -505,12 +578,12 @@ function WithdrawForm({ dialog, info, onClose, onChange }: Parameters<typeof Pla
 
   return (
     <div className="space-y-4">
-      <AmountInput value={amount} onChange={setAmount} unit="USDG" large onMax={() => setAmount(formatUnits(p.usdgIdle, USDG_DECIMALS))} />
+      <AmountInput value={amount} onChange={setAmount} unit="USDG" large onMax={() => setAmount(formatUnits(available, USDG_DECIMALS))} />
       <div>
-        <Slider value={Number(amount) || 0} min={0} max={Number(formatUnits(p.usdgIdle, USDG_DECIMALS))} step={1} onChange={(v) => setAmount(String(v))} ariaLabel="Withdraw amount" />
+        <Slider value={Number(amount) || 0} min={0} max={Number(formatUnits(available, USDG_DECIMALS))} step={1} onChange={(v) => setAmount(String(v))} ariaLabel="Withdraw amount" />
         <div className="flex justify-between text-[11px] text-ink-3">
           <span>0</span>
-          <span>In plan: {fmtUsd(p.usdgIdle)}</span>
+          <span>In plan: {fmtUsd(available)}</span>
         </div>
       </div>
       <div className="rounded-lg bg-surface-2 px-3">
@@ -521,13 +594,17 @@ function WithdrawForm({ dialog, info, onClose, onChange }: Parameters<typeof Pla
         type="button"
         className="btn-primary h-10 w-full"
         disabled={!ok}
-        onClick={() => tx.write({ address: p.vault, abi: PlanVaultAbi, functionName: "withdrawIdle", args: [p.planId, usdgOut] })}
+        // "All" uses the vault's sentinel so a boosted balance that grew a hair since this render still clears out.
+        onClick={() => tx.write({ address: p.vault, abi: PlanVaultAbi, functionName: "withdrawIdle", args: [p.planId, all ? MAX_UINT256 : usdgOut] })}
       >
         {tx.pending ? <Spinner /> : "Withdraw"}
       </button>
       <p className="text-[11px] text-ink-3">
         A {fmtBps(feeBps)} fee applies to withdrawn funds. Withdrawals are paid in USDG (ETH deposits were converted when they came in). Stock you have already
         bought stays claimable.
+        {p.boosted && p.boostValue > 0n
+          ? ` ${fmtUsd(p.boostValue)} of this plan is lent on Morpho Blue and is pulled back as part of the withdrawal (earnings included); if the market is short of liquidity the withdrawal fails and nothing moves.`
+          : ""}
       </p>
     </div>
   );
@@ -539,14 +616,17 @@ function RemoveForm({ dialog, symbol, stockDecimals, info, onClose, onRemoved }:
     onRemoved();
     onClose();
   });
+  const balance = planBalance(p);
   const steps = useMemo(() => {
     const out: TxStep[] = [];
-    if (p.usdgIdle > 0n)
-      out.push({ label: "Withdraw funds", params: { address: p.vault, abi: PlanVaultAbi, functionName: "withdrawIdle", args: [p.planId, p.usdgIdle] } });
+    // A boosted plan is unboosted first (its Morpho position is pulled back into the plan), then emptied.
+    if (p.boosted) out.push({ label: BOOST.off, params: { address: p.vault, abi: PlanVaultAbi, functionName: "setPlanBoost", args: [p.planId, false] } });
+    if (balance > 0n)
+      out.push({ label: "Withdraw funds", params: { address: p.vault, abi: PlanVaultAbi, functionName: "withdrawIdle", args: [p.planId, MAX_UINT256] } });
     if (p.stockAccrued > 0n) out.push({ label: `Claim ${symbol}`, params: { address: p.vault, abi: PlanVaultAbi, functionName: "claim", args: [p.planId, MAX_UINT256] } });
     out.push({ label: "Delete plan", params: { address: p.vault, abi: PlanVaultAbi, functionName: "prunePlan", args: [p.planId] } });
     return out;
-  }, [p, symbol]);
+  }, [p, balance, symbol]);
   const wdFee = info?.fees?.withdrawFeeBps ?? 0;
   const claimFee = info?.fees?.claimFeeBps ?? 0;
   const epochBusy = seq.error?.includes("EpochInProgress");
@@ -564,7 +644,8 @@ function RemoveForm({ dialog, symbol, stockDecimals, info, onClose, onRemoved }:
               </span>
               <span className="text-ink">{s.label}</span>
               <span className="ml-auto num text-[12px] text-ink-3">
-                {s.label === "Withdraw funds" && fmtUsd(p.usdgIdle - feeOf(p.usdgIdle, wdFee))}
+                {s.label === BOOST.off && `${fmtUsd(p.boostValue)} back from Morpho`}
+                {s.label === "Withdraw funds" && `≈ ${fmtUsd(balance - feeOf(balance, wdFee))}`}
                 {s.label.startsWith("Claim") && `${fmtUnits(p.stockAccrued - feeOf(p.stockAccrued, claimFee), stockDecimals, 4)} ${symbol}`}
               </span>
             </li>

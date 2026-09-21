@@ -56,7 +56,7 @@ contract AuditL01ExactAccounting is BaseTest {
         router.setFill(address(weth), address(usdg), 9_999);
         uint256 wBefore = weth.balanceOf(alice);
         vm.prank(alice);
-        uint256 a = daily.createPlan(address(nvda), 100e6, address(0), 0, 1 ether, 0);
+        uint256 a = daily.createPlan(address(nvda), 100e6, address(0), 0, 1 ether, 0, false);
         assertEq(weth.balanceOf(alice), wBefore - 0.9999 ether, "unfilled wei refunded");
         assertEq(weth.balanceOf(address(daily)), 0);
         assertEq(daily.wethDust(), 0);

@@ -18,16 +18,16 @@ contract AuditL05IndexSpam is AuditBase {
     function test_freePlansCannotEnterTheIndex() public {
         vm.prank(mallory);
         vm.expectRevert(abi.encodeWithSelector(IPlanVault.BelowMinimum.selector, 0, 10e6));
-        daily.createPlan(address(nvda), 10e6, address(0), 0, 0, 0);
+        daily.createPlan(address(nvda), 10e6, address(0), 0, 0, 0, false);
         vm.prank(mallory);
         vm.expectRevert(abi.encodeWithSelector(IPlanVault.BelowMinimum.selector, 9.999999e6, 10e6));
-        daily.createPlan(address(nvda), 10e6, address(0), 9.999999e6, 0, 0);
+        daily.createPlan(address(nvda), 10e6, address(0), 9.999999e6, 0, 0, false);
         assertEq(daily.stockPlanCount(address(nvda)), 0);
     }
 
     function test_reindexNeedsMinimumDeposit_andCostsWithdrawFee() public {
         vm.prank(mallory);
-        uint256 id = daily.createPlan(address(nvda), 10e6, address(0), 10e6, 0, 0);
+        uint256 id = daily.createPlan(address(nvda), 10e6, address(0), 10e6, 0, 0, false);
         vm.prank(mallory);
         daily.withdrawIdle(id, type(uint256).max); // 25 bps fee per cycle
         daily.prunePlan(id);
@@ -53,10 +53,10 @@ contract AuditL05IndexSpam is AuditBase {
 
     function _gasFor(uint256 emptied) internal returns (uint256 gasUsed) {
         vm.prank(alice);
-        daily.createPlan(address(nvda), 100e6, address(0), 1_000e6, 0, 0);
+        daily.createPlan(address(nvda), 100e6, address(0), 1_000e6, 0, 0, false);
         for (uint256 i; i < emptied; ++i) {
             vm.prank(mallory);
-            uint256 id = daily.createPlan(address(nvda), 10e6, address(0), 10e6, 0, 0);
+            uint256 id = daily.createPlan(address(nvda), 10e6, address(0), 10e6, 0, 0, false);
             vm.prank(mallory);
             daily.withdrawIdle(id, type(uint256).max);
         }

@@ -13,6 +13,7 @@ export default function Docs() {
             {[
               ["#what", "What is DCA?"],
               ["#plans", "Plans"],
+              ["#boost", "Boost"],
               ["#dca", "$DCA holders"],
               ["#fees", "Fees"],
               ["#risks", "Risks"],
@@ -47,6 +48,30 @@ export default function Docs() {
               <li>Each buy is at least $10, and a plan needs at least $10 to start or to top up.</li>
               <li>Stock you buy is held for you on the vault until you claim it — or is sent straight to your wallet if you hold $DCA.</li>
               <li>If a scheduled buy is ever missed it is skipped, never doubled up. You are charged at most once per period.</li>
+            </ul>
+          </Section>
+
+          <Section id="boost" title="Boost — earn while you wait">
+            <p>
+              A plan usually holds USDG for days or weeks before it is spent. <b>Boost</b> lends that idle USDG on{" "}
+              <a href="https://morpho.org" target="_blank" rel="noreferrer" className="text-lime hover:underline">
+                Morpho Blue
+              </a>{" "}
+              in the meantime, so it earns the market&apos;s supply rate until each buy. The rate shown in the app is quoted live from the Morpho market
+              and moves with borrowing demand.
+            </p>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>Switch it on when you create a plan (&ldquo;Earn while you wait&rdquo;), or press <b>Boost</b> on any existing plan. Off by default.</li>
+              <li>Every buy pulls exactly what it needs back from Morpho in the same transaction; the rest keeps earning. Withdrawals do the same.</li>
+              <li>Your earnings are tracked per plan and shown next to the balance. There is no extra fee on boosted funds.</li>
+              <li>
+                <b>Unboost</b> pulls everything back into the plan at any time (earnings included), also while the protocol is paused.
+              </li>
+              <li>
+                Lending has its own risks: if the market is fully borrowed there may be no liquidity to withdraw until borrowers repay (that buy or
+                withdrawal simply waits — other plans are unaffected), and bad debt on the market is shared by all its lenders. Boosted USDG is
+                not covered by any insurance.
+              </li>
             </ul>
           </Section>
 

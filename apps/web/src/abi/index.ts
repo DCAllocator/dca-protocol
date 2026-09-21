@@ -5,4 +5,5 @@ export { ClaimHelperAbi } from "./ClaimHelper";
 export { AggregatorRouterAbi } from "./AggregatorRouter";
 export { ZapAbi } from "./Zap";
 export { EpochKeeperAbi } from "./EpochKeeper";
+export { MorphoBlueStrategyAbi } from "./MorphoBlueStrategy";
 export { ERC20Abi } from "./ERC20";

@@ -14,6 +14,7 @@ const contracts = [
   ["PlanVault", "PlanVault.sol/PlanVault.json"],
   ["StockRegistry", "StockRegistry.sol/StockRegistry.json"],
   ["AggregatorRouter", "AggregatorRouter.sol/AggregatorRouter.json"],
+  ["MorphoBlueStrategy", "MorphoBlueStrategy.sol/MorphoBlueStrategy.json"],
 ];
 
 const index = [];

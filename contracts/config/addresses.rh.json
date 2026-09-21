@@ -173,6 +173,12 @@
       "feeTiers": [100, 500, 3000, 10000]
     }
   },
+  "morpho": {
+    "blue": "0x0000000000000000000000000000000000000000",
+    "blue_TODO": "Morpho Blue singleton on Robinhood Chain. address(0) = boost disabled (the vaults' boostStrategy stays unset; wire it later with setBoostStrategy).",
+    "usdgMarketId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "usdgMarketId_TODO": "bytes32 id of the Morpho Blue market whose loanToken is USDG. Its collateral / oracle / IRM / LLTV are a risk decision: it is the market boosted plans lend into. Deploy.s.sol reads MORPHO + MORPHO_MARKET_ID from the env."
+  },
   "protocol": {
     "feeRecipient": "0x0000000000000000000000000000000000000000",
     "feeRecipient_TODO": "Treasury / future buyback wallet",

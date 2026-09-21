@@ -110,7 +110,19 @@ Owner cannot steal user funds directly (no sweep of USDG/WETH/stocks, fees ≤ 0
 
 Pause blocks new plans, deposits and epochs; **claims and idle withdrawals are never pausable**, so users can always exit. There is deliberately no permissionless fallback for epochs: if every operator is down, epochs are missed (never caught up) until an operator returns. Run at least two independent operators (a bot plus Chainlink Automation).
 
-### 10. Out of scope / not protected
+### 11. Boost — Morpho Blue lending of idle USDG (new, unaudited)
+
+Boosted plans' idle USDG sits in `boostStrategy` (`MorphoBlueStrategy`, an ERC-4626 over one Morpho Blue market) as a supply position. New surface:
+
+- **Liquidity.** A fully borrowed market cannot pay withdrawals. `withdrawIdle` / `setPlanBoost(false)` on a boosted plan then revert (`ERC4626ExceededMaxWithdraw`) until borrowers repay or new suppliers arrive; plain plans are unaffected. At epoch time the vault pulls the page's boosted spend in one `try` — on failure the boosted fills are dropped (`BoostWithdrawFailed`, plans not charged, not marked filled) and the page still executes for everyone else. **An illiquid market can never brick an epoch.** Tested: `test_fill_illiquidMarket_*`, invariant handler `liquidity(drain)`.
+- **Bad debt.** Morpho socialises realised bad debt across suppliers: `boostAssets()` drops, every boosted plan's balance falls pro rata, `boostEarned` never decreases and losses show as `boosted < boostPrincipal`. The protocol does not backstop this. Tested: `test_badDebt_*`, handler `loss()`.
+- **Strategy / market choice (admin).** `setBoostStrategy` is owner-only, 2-step ownership; the asset must be USDG; migrations move the whole position atomically; clearing with positions open is impossible (`BoostInUse`). A malicious or broken strategy is the same trust class as a malicious router: the owner can point vaults at it. The Morpho market (collateral, oracle, IRM, LLTV) is chosen at deploy (`MORPHO_MARKET_ID`) — pick a blue-chip, curated market; its parameters are immutable on Morpho.
+- **Accounting.** Vault-internal shares with a virtual (1, 1) offset; withdrawals burn shares rounded up against the plan; `sum(plan.boostShares) == totalBoostShares`, `!boosted ⇒ boostShares == 0`, `usdg.balanceOf(vault) == totalUsdgIdle + usdgDust` (boosted funds never sit on the vault), `usdg.balanceOf(strategy) == 0` (the strategy never holds loan tokens between transactions) — all in `VaultInvariants` at CI depth. Rounding dust (≤ 1 wei per full drain) stays in the strategy in favour of remaining holders.
+- **Reentrancy / delegatecall.** Every boost entry point is `nonReentrant`; `BoostLib` is a linked library (immutable address baked into the vault bytecode) executed by `delegatecall` on the vault's own storage — no upgradeability, no external storage.
+- **Gas estimation.** Calls that touch the strategy accrue Morpho interest for the elapsed seconds; an estimate taken in a block where the market was just touched is cheaper than the real execution. The app pads every estimate (×1.25 + 100k); bots should do the same.
+- **Not yet covered.** No fork test against a live Morpho Blue deployment yet (the mock reproduces Morpho's share maths and accrual; `test/fork/` is the place for it once Robinhood Chain has a market).
+
+### 12. Out of scope / not protected
 
 - Loss of value from the underlying stock or from USDG.
 - Front-end compromise (the UI is not the protocol; contracts are permissionless and verifiable).

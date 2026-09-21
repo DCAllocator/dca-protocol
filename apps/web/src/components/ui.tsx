@@ -196,6 +196,44 @@ export function Segmented<T extends string>({ options, value, onChange }: { opti
   );
 }
 
+/** On/off switch (iOS style). Lime when on; the whole control is the button. */
+export function Toggle({ checked, onChange, disabled = false, ariaLabel }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; ariaLabel?: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+        checked ? "border-lime bg-lime" : "border-line-strong bg-surface-4"
+      }`}
+    >
+      <span
+        className={`absolute top-1/2 h-5 w-5 -translate-y-1/2 rounded-full shadow transition-[left] ${checked ? "left-[calc(100%-1.4rem)] bg-lime-ink" : "left-[3px] bg-ink"}`}
+      />
+    </button>
+  );
+}
+
+/** Small ⓘ that reveals `text` on hover / focus. */
+export function Tip({ text, className = "" }: { text: string; className?: string }) {
+  return (
+    <span className={`group relative inline-flex ${className}`}>
+      <button type="button" tabIndex={0} aria-label={text} className="inline-flex text-ink-3 hover:text-ink focus:text-ink">
+        <Icon name="info" size={15} />
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-20 w-64 -translate-x-1/2 rounded-lg border border-line-strong bg-surface-3 px-3 py-2 text-left text-[12px] leading-relaxed font-normal text-ink-2 opacity-0 shadow-[0_12px_32px_rgba(0,0,0,0.5)] transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+      >
+        {text}
+      </span>
+    </span>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Overlays                                                             */
 /* ------------------------------------------------------------------ */
@@ -471,7 +509,7 @@ export function Empty({ children }: { children: ReactNode }) {
 /* Icons (16px, stroke)                                                 */
 /* ------------------------------------------------------------------ */
 
-export type IconName = "plus" | "plans" | "activity" | "overview" | "token" | "docs" | "x" | "dots" | "menu" | "arrow" | "external" | "check" | "chevron";
+export type IconName = "plus" | "plans" | "activity" | "overview" | "token" | "docs" | "x" | "dots" | "menu" | "arrow" | "external" | "check" | "chevron" | "info" | "bolt";
 
 export function Icon({ name, size = 16, className = "" }: { name: IconName; size?: number; className?: string }) {
   const p: Record<IconName, ReactNode> = {
@@ -526,6 +564,13 @@ export function Icon({ name, size = 16, className = "" }: { name: IconName; size
     ),
     check: <path d="M3 8.5l3 3 7-7" />,
     chevron: <path d="M4 6l4 4 4-4" />,
+    info: (
+      <>
+        <circle cx="8" cy="8" r="6" />
+        <path d="M8 7.2v4M8 5v.2" />
+      </>
+    ),
+    bolt: <path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z" fill="currentColor" stroke="none" />,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>

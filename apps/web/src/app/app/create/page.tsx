@@ -4,14 +4,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { formatEther, formatUnits, parseEther, parseUnits } from "viem";
 import { useAccount, useReadContract } from "wagmi";
-import { useDirectory, useStocks, useVaults, useUser, useQuote, usePrices, type Stock, type PriceMap } from "@/hooks/useProtocol";
+import { useDirectory, useStocks, useVaults, useUser, useQuote, usePrices, useBoostApys, boostAvailable, type Stock, type PriceMap } from "@/hooks/useProtocol";
 import { useTxSequence, type TxStep } from "@/hooks/useTx";
 import { PlanVaultAbi, ERC20Abi } from "@/abi";
 import { PageHeader, Card, Notice, Spinner, StockAvatar, Slider, AmountInput, Segmented, KV, Countdown, Icon } from "@/components/ui";
+import { BoostCard } from "@/components/app/BoostCard";
 import { ConnectButton } from "@/components/ConnectButton";
-import { fmtUsd, fmtUnits, fmtBps, tsToShort, valueOf, feeOf } from "@/lib/format";
+import { fmtUsd, fmtUnits, fmtBps, fmtPct, tsToShort, valueOf, feeOf } from "@/lib/format";
 import { tickerName } from "@/lib/tickers";
-import { VAULT_KINDS, VAULT_META, ZERO, DOCS_PATH, USDG_DECIMALS, cadenceOf, buysPerMonthOf, type VaultKind } from "@/lib/config";
+import { VAULT_KINDS, VAULT_META, ZERO, DOCS_PATH, USDG_DECIMALS, BOOST, cadenceOf, buysPerMonthOf, type VaultKind } from "@/lib/config";
 
 type Pay = "USDG" | "ETH";
 
@@ -25,16 +26,21 @@ export default function CreatePlan() {
   const { address } = useAccount();
   const { dir, vaults, configured } = useDirectory();
   const { stocks } = useStocks(dir?.registry);
-  const { byKind, refetch: refetchVaults } = useVaults(vaults);
+  const { infos, byKind, refetch: refetchVaults } = useVaults(vaults);
 
   const [stock, setStock] = useState<string>("");
   const [kind, setKind] = useState<VaultKind>("weekly");
   const [perBuy, setPerBuy] = useState("100");
   const [pay, setPay] = useState<Pay>("USDG");
   const [upfront, setUpfront] = useState("");
+  // Boost is opt-in: idle USDG lent on Morpho Blue between buys. Off by default.
+  const [boost, setBoost] = useState(false);
 
   const vault = vaults?.[kind];
   const info = byKind[kind];
+  const canBoost = boostAvailable(info);
+  const { apyOf } = useBoostApys(infos);
+  const boostApy = apyOf(info?.boostStrategy);
   const user = useUser(dir, vault);
   const stockObj = stocks.find((s) => s.address === stock) ?? stocks[0];
   const stockAddr = stockObj?.address;
@@ -93,7 +99,7 @@ export default function CreatePlan() {
   useEffect(() => {
     if (seq.done || seq.error) seq.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stock, kind, perBuy, pay, upfront]);
+  }, [stock, kind, perBuy, pay, upfront, boost]);
 
   const walletBal = pay === "USDG" ? usdgBal : ethBal;
   const insufficient = upfrontWei !== undefined && upfrontWei > walletBal;
@@ -118,7 +124,13 @@ export default function CreatePlan() {
     if (needsApproval) steps.push({ label: "Approve USDG", params: { address: dir.usdg, abi: ERC20Abi, functionName: "approve", args: [vault, usdgAmount] } });
     steps.push({
       label: "Start plan",
-      params: { address: vault, abi: PlanVaultAbi, functionName: "createPlan", args: [stockAddr, perBuyWei, ZERO, usdgAmount, 0n, minOut], value },
+      params: {
+        address: vault,
+        abi: PlanVaultAbi,
+        functionName: "createPlan",
+        args: [stockAddr, perBuyWei, ZERO, usdgAmount, 0n, minOut, boost && canBoost],
+        value,
+      },
     });
     await seq.run(steps);
   };
@@ -313,6 +325,11 @@ export default function CreatePlan() {
                   {pay === "ETH" && upfrontWei && upfrontWei > 0n && <KV k="As USDG" v={zapQuote.data ? `≈ ${fmtUsd(zapQuote.data.amountOut)}` : "…"} />}
                   <KV k="First buy" v={<Countdown target={info?.nextEpochStart} />} />
                   {info?.nextEpochStart && <div className="-mt-1 text-right text-[11px] text-ink-3">{tsToShort(info.nextEpochStart)}</div>}
+                  <KV k={BOOST.name} v={boost && canBoost ? `On · ${fmtPct(boostApy, true)} APY` : "Off"} mono={false} />
+                </div>
+
+                <div className="mt-4">
+                  <BoostCard checked={boost} onChange={setBoost} apy={boostApy} available={canBoost} disabled={seq.running} />
                 </div>
 
                 <div className="mt-4 flex items-start gap-3 rounded-xl border border-lime/20 bg-lime/5 p-4">
@@ -356,6 +373,9 @@ export default function CreatePlan() {
                   A purchase fee of {fmtBps(feeBps)} is taken on each buy before the swap
                   {info?.fees ? `; claiming stock costs ${fmtBps(info.fees.claimFeeBps)} (free for $DCA holders)` : ""}. Buys route through on-chain
                   liquidity with a {fmtBps(info?.fees?.swapSlippageBps)} slippage tolerance. Stock Tokens are economic exposure, not shareholder rights.
+                  {boost && canBoost
+                    ? " Boosted funds are lent on Morpho Blue between buys; the rate is variable and lending carries market liquidity and bad-debt risk. No extra fee."
+                    : ""}
                 </p>
               </>
             )}

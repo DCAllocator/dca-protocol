@@ -16,7 +16,7 @@ contract PlanVaultPlansTest is BaseTest {
         vm.expectEmit(true, true, true, true);
         emit IPlanVault.PlanCreated(1, alice, address(nvda), 200e6, alice);
         vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, address(0), 1_000e6, 0, 0);
+        uint256 id = daily.createPlan(address(nvda), 200e6, address(0), 1_000e6, 0, 0, false);
         assertEq(id, 1);
         Plan memory p = daily.getPlan(id);
         assertEq(p.owner, alice);
@@ -42,7 +42,7 @@ contract PlanVaultPlansTest is BaseTest {
         vm.prank(alice);
         vm.expectEmit(true, false, false, true);
         emit IPlanVault.WethZapped(1, 1 ether, 3_000e6, 0);
-        uint256 id = daily.createPlan{value: 1 ether}(address(nvda), 200e6, address(0), 0, 0, 0);
+        uint256 id = daily.createPlan{value: 1 ether}(address(nvda), 200e6, address(0), 0, 0, 0, false);
         Plan memory p = daily.getPlan(id);
         assertEq(p.usdgIdle, 3_000e6, "1 ETH zapped to 3000 USDG");
         assertEq(weth.balanceOf(address(daily)), 0, "vault never holds WETH");
@@ -51,7 +51,7 @@ contract PlanVaultPlansTest is BaseTest {
 
     function test_createPlan_withWethAndUsdg() public {
         vm.prank(alice);
-        uint256 id = daily.createPlan(address(nvda), 200e6, bob, 500e6, 2 ether, 0);
+        uint256 id = daily.createPlan(address(nvda), 200e6, bob, 500e6, 2 ether, 0, false);
         Plan memory p = daily.getPlan(id);
         assertEq(p.recipient, bob);
         assertEq(p.usdgIdle, 500e6 + 6_000e6);
@@ -61,14 +61,14 @@ contract PlanVaultPlansTest is BaseTest {
     function test_createPlan_minOutRespected() public {
         vm.prank(alice);
         vm.expectRevert(); // MockRouter InsufficientOutput
-        daily.createPlan(address(nvda), 200e6, address(0), 0, 1 ether, 3_001e6);
+        daily.createPlan(address(nvda), 200e6, address(0), 0, 1 ether, 3_001e6, false);
     }
 
     function test_createPlan_revertsUnapprovedStock() public {
         MockERC20 rogue = new MockERC20("Rogue", "RG", 18);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IPlanVault.StockNotPurchasable.selector, address(rogue)));
-        daily.createPlan(address(rogue), 200e6, address(0), 1_000e6, 0, 0);
+        daily.createPlan(address(rogue), 200e6, address(0), 1_000e6, 0, 0, false);
     }
 
     function test_createPlan_revertsFeeOnTransferStock() public {
@@ -76,32 +76,32 @@ contract PlanVaultPlansTest is BaseTest {
         registry.setFeeOnTransfer(address(nvda), true);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IPlanVault.StockNotPurchasable.selector, address(nvda)));
-        daily.createPlan(address(nvda), 200e6, address(0), 1_000e6, 0, 0);
+        daily.createPlan(address(nvda), 200e6, address(0), 1_000e6, 0, 0, false);
     }
 
     function test_createPlan_revertsBelowMinAmountPerEpoch() public {
         assertEq(daily.minAmountPerEpoch(), 10e6);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IPlanVault.BelowMinimum.selector, 0, 10e6));
-        daily.createPlan(address(nvda), 0, address(0), 1_000e6, 0, 0);
+        daily.createPlan(address(nvda), 0, address(0), 1_000e6, 0, 0, false);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IPlanVault.BelowMinimum.selector, 10e6 - 1, 10e6));
-        daily.createPlan(address(nvda), 10e6 - 1, address(0), 1_000e6, 0, 0);
+        daily.createPlan(address(nvda), 10e6 - 1, address(0), 1_000e6, 0, 0, false);
         vm.prank(alice);
-        daily.createPlan(address(nvda), 10e6, address(0), 1_000e6, 0, 0);
+        daily.createPlan(address(nvda), 10e6, address(0), 1_000e6, 0, 0, false);
     }
 
     function test_createPlan_revertsBelowMinDeposit() public {
         assertEq(daily.minDeposit(), 10e6);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IPlanVault.BelowMinimum.selector, 0, 10e6));
-        daily.createPlan(address(nvda), 200e6, address(0), 0, 0, 0);
+        daily.createPlan(address(nvda), 200e6, address(0), 0, 0, 0, false);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IPlanVault.BelowMinimum.selector, 10e6 - 1, 10e6));
-        daily.createPlan(address(nvda), 200e6, address(0), 10e6 - 1, 0, 0);
+        daily.createPlan(address(nvda), 200e6, address(0), 10e6 - 1, 0, 0, false);
         // legs add up: 6 USDG + ETH worth 6 USDG (0.002 ETH) clears the 10 USDG minimum
         vm.prank(alice);
-        daily.createPlan{value: 0.002 ether}(address(nvda), 200e6, address(0), 6e6, 0, 0);
+        daily.createPlan{value: 0.002 ether}(address(nvda), 200e6, address(0), 6e6, 0, 0, false);
         assertEq(daily.stockPlanCount(address(nvda)), 1, "only funded plans are indexed");
     }
 
@@ -110,7 +110,7 @@ contract PlanVaultPlansTest is BaseTest {
         daily.pause();
         vm.prank(alice);
         vm.expectRevert(Pausable.EnforcedPause.selector);
-        daily.createPlan(address(nvda), 200e6, address(0), 1_000e6, 0, 0);
+        daily.createPlan(address(nvda), 200e6, address(0), 1_000e6, 0, 0, false);
     }
 
     function test_manyPlansPerUser() public {

@@ -33,7 +33,7 @@ contract AuditH02Sandwich is AuditBase {
             address u = makeAddr(string(abi.encodePacked("user", i)));
             _fund(u);
             vm.prank(u);
-            daily.createPlan(address(nvda), 1_000e6, address(0), 10_000e6, 0, 0);
+            daily.createPlan(address(nvda), 1_000e6, address(0), 10_000e6, 0, 0, false);
         }
         _nextEpoch();
     }

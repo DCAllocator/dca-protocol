@@ -27,6 +27,9 @@ interface IPlanVault {
     error ValueOutOfRange(uint256 value, uint256 max);
     error BelowMinimum(uint256 value, uint256 min);
     error OverrideMinOutTooLow(uint256 minOut, uint256 required);
+    error BoostUnavailable();
+    error BoostInUse();
+    error BoostAssetMismatch(address asset);
 
     // ------------------------------------------------------------------
     // Events
@@ -37,6 +40,16 @@ interface IPlanVault {
     event PlanAmountSet(uint256 indexed planId, uint96 amountPerEpoch);
     event PlanRecipientSet(uint256 indexed planId, address recipient);
     event PlanPausedSet(uint256 indexed planId, bool paused);
+    event PlanBoostSet(uint256 indexed planId, bool boosted);
+    /// @notice USDG of a boosted plan lent out through the boost strategy; `shares` are vault-internal pool shares.
+    event BoostDeposited(uint256 indexed planId, uint256 usdgIn, uint256 shares);
+    /// @notice Boosted USDG pulled back for a spend, a withdrawal or an unboost. `earned` is the yield realised
+    ///         by this withdrawal (the part of `usdgOut` above the plan's pro-rata cost basis).
+    event BoostWithdrawn(uint256 indexed planId, uint256 usdgOut, uint256 shares, uint256 earned);
+    /// @notice The strategy could not pay out this page's boosted spend (e.g. the market is fully utilised):
+    ///         boosted plans sit this page out, everyone else is filled as usual.
+    event BoostWithdrawFailed(address indexed stock, uint32 indexed epochId, uint256 usdgRequested, bytes reason);
+    event BoostStrategySet(address strategy, uint256 migratedUsdg);
     event PlanIndexed(uint256 indexed planId, address indexed stock, bool indexed active);
     event Deposited(uint256 indexed planId, address indexed token, address from, uint256 amount, uint256 fee);
     /// @notice WETH/ETH deposit converted to USDG. `wethRefunded` is any unfilled remainder returned to the depositor.
@@ -89,7 +102,8 @@ interface IPlanVault {
         address recipient,
         uint256 usdgAmount,
         uint256 wethAmount,
-        uint256 minUsdgOut
+        uint256 minUsdgOut,
+        bool boost
     ) external payable returns (uint256 planId);
     function depositUSDG(uint256 planId, uint256 amount) external;
     function depositWETH(uint256 planId, uint256 amount, uint256 minUsdgOut) external;
@@ -98,6 +112,7 @@ interface IPlanVault {
     function claim(uint256 planId, uint256 amount) external;
     function claimAll(address stock) external;
     function setPlanPaused(uint256 planId, bool paused) external;
+    function setPlanBoost(uint256 planId, bool enabled) external;
     function setPlanAmount(uint256 planId, uint96 amountPerEpoch) external;
     function setPlanRecipient(uint256 planId, address recipient) external;
     function prunePlan(uint256 planId) external;
@@ -139,6 +154,10 @@ interface IPlanVault {
     function dustSweepMinUsdg() external view returns (uint256);
     function maxPlansPerTx() external view returns (uint16);
     function totalUsdgIdle() external view returns (uint256);
+    function boostStrategy() external view returns (address);
+    function setBoostStrategy(address strategy) external;
+    function totalBoostShares() external view returns (uint256);
+    function boostAssets() external view returns (uint256);
     function totalStockAccrued(address stock) external view returns (uint256);
     function userStockAccrued(address user, address stock) external view returns (uint256);
     function dustPot(address stock) external view returns (uint256);
