@@ -91,15 +91,17 @@ library BoostLib {
         emit IPlanVault.PlanBoostSet(planId, enabled);
     }
 
-    /// @notice `withdrawIdle` for a boosted plan: `usdgIdle` first, then the strategy (type(uint256).max = all).
-    ///         Debits the plan and returns the USDG now in the vault for the caller to pay out, plus the part
-    ///         that came out of `usdgIdle` (so the vault can adjust `totalUsdgIdle`).
+    /// @notice `withdrawIdle` for any plan: `usdgIdle` first, then (boosted plans) the strategy
+    ///         (type(uint256).max = all). Debits the plan and returns the USDG now in the vault for the caller to
+    ///         pay out, plus the part that came out of `usdgIdle` (so the vault can adjust `totalUsdgIdle`).
+    ///         Plans without boost shares never touch the strategy.
     function withdrawIdle(Pool storage pool, Plan storage p, uint256 planId, uint256 amount)
         external
         returns (uint256 total, uint256 fromIdle)
     {
         uint256 idle = p.usdgIdle;
-        uint256 available = idle + valueOf(p.boostShares, poolAssets(pool), pool.totalShares);
+        uint256 shares = p.boostShares;
+        uint256 available = idle + (shares == 0 ? 0 : valueOf(shares, poolAssets(pool), pool.totalShares));
         if (amount == type(uint256).max) amount = available;
         if (amount == 0) revert IPlanVault.ZeroAmount();
         if (amount > available) revert IPlanVault.InsufficientIdle(amount, available);
@@ -121,15 +123,6 @@ library BoostLib {
         uint256 snapShares
     ) external {
         _burn(pool, p, planId, assets, snapAssets, snapShares);
-    }
-
-    /// @notice Put a page's boosted spend back into the strategy after the page was skipped (nobody was charged;
-    ///         the plans' internal shares were never burned). Exact, per-call approval.
-    function redeposit(Pool storage pool, uint256 assets) external {
-        IERC4626 s = pool.strategy;
-        pool.asset.forceApprove(address(s), assets);
-        s.deposit(assets, address(this));
-        pool.asset.forceApprove(address(s), 0);
     }
 
     /// @notice Pull one epoch page's boosted spend from the strategy. Returns false (and emits) instead of

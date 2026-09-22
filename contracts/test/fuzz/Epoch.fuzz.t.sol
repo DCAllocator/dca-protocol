@@ -26,8 +26,10 @@ contract EpochFuzzTest is BaseTest {
         feeBps = uint16(bound(feeBps, 0, 90));
         FeeConfig memory f = daily.fees();
         f.purchaseFeeBps = feeBps;
-        vm.prank(owner);
+        vm.startPrank(owner);
         daily.setFees(f);
+        daily.setMaxPageNotional(address(0), 0); // the property is about ONE page holding every plan
+        vm.stopPrank();
 
         address[] memory users = new address[](n);
         uint256[] memory ids = new uint256[](n);

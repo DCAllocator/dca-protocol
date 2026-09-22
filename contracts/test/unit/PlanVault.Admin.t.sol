@@ -146,12 +146,12 @@ contract PlanVaultAdminTest is BaseTest {
         FeeConfig memory f = daily.fees();
         f.swapSlippageBps = 60;
         vm.prank(mgr);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, mgr));
+        vm.expectRevert(IPlanVault.NotOwner.selector);
         daily.setFees(f);
         f = daily.fees();
         f.keeperTipBps = 100;
         vm.prank(mgr);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, mgr));
+        vm.expectRevert(IPlanVault.NotOwner.selector);
         daily.setFees(f);
         f = daily.fees();
         f.purchaseFeeBps = 10;

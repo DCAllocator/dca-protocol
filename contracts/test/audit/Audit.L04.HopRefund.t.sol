@@ -31,11 +31,11 @@ contract AuditL04HopRefund is AuditBase {
         wethNvda.setMaxOut(full * 995 / 1000);
     }
 
-    function test_partialSecondHop_pageIsSkippedAndNobodyIsCharged() public {
+    function test_partialSecondHop_pageRevertsAndNobodyIsCharged() public {
         uint256 tBefore = weth.balanceOf(treasury);
-        vm.expectEmit(true, true, false, false);
-        emit IPlanVault.EpochPageSkipped(address(nvda), daily.currentEpochId(), 0, 1, "");
-        assertTrue(_advance(keeper));
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.NoRoute.selector, address(usdg), address(nvda)));
+        daily.advanceEpoch(address(nvda), 0, "");
         assertEq(_plan(1).usdgIdle, 3_000e6, "nothing charged");
         assertEq(_plan(1).stockAccrued, 0);
         assertEq(weth.balanceOf(treasury), tBefore, "nothing forwarded to the treasury");

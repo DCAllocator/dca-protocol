@@ -81,6 +81,7 @@ abstract contract AuditBase is Test {
 
         epochKeeper = new EpochKeeper(address(usdg), owner);
         vm.startPrank(owner);
+        daily.setPriceGuard(300, false, address(0), 0); // guard off here; Audit3.H01 turns it on with a feed
         daily.setKeeper(keeper, true);
         daily.setKeeper(address(epochKeeper), true);
         epochKeeper.setOperator(keeper, true);

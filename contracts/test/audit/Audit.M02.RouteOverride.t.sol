@@ -68,10 +68,8 @@ contract AuditM02RouteOverride is AuditBase {
     function test_noAutoQuote_overrideIsCappedLikeTheAutoRoute() public {
         fairPool.setImpact(200); // 2% > 150 bps cap -> auto route says NoRoute
         vm.prank(keeper);
-        vm.expectEmit(true, true, false, false);
-        emit IPlanVault.EpochPageSkipped(address(nvda), 1, 0, 1, "");
-        daily.advanceEpoch(address(nvda), 1, ""); // auto: skipped, page consumed for this epoch
-        _nextEpoch();
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.NoRoute.selector, address(usdg), address(nvda)));
+        daily.advanceEpoch(address(nvda), 1, ""); // auto: reverts, page not consumed
 
         Route[] memory path = new Route[](1);
         path[0] = _route(address(usdg), address(nvda), 500, address(fairPool));

@@ -72,6 +72,7 @@ contract GasBenchTest is Test {
             purchaseFeeBps: 0
         });
         vault = new TestVault(vp, EPOCH);
+        vault.setPriceGuard(300, false, address(0), 0); // price guard has its own suite
         keeper = new EpochKeeper(address(usdg), owner);
         keeper.setOperator(bot, true);
         vault.setKeeper(address(keeper), true);

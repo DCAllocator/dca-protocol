@@ -104,6 +104,11 @@ abstract contract BaseTest is Test {
         daily.setKeeper(keeper, true);
         weekly.setKeeper(keeper, true);
         monthly.setKeeper(keeper, true);
+        // The Chainlink price guard (audit v0.3 H-01) is fail-closed by default; it has its own suite
+        // (PlanVault.PriceGuard.t.sol, audit/v0.3/Audit3.H01). Everything else runs with it off.
+        daily.setPriceGuard(300, false, address(0), 0);
+        weekly.setPriceGuard(300, false, address(0), 0);
+        monthly.setPriceGuard(300, false, address(0), 0);
         vm.stopPrank();
 
         _deployMorpho();

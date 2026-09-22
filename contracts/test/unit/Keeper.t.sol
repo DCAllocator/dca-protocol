@@ -165,16 +165,19 @@ contract KeeperTest is BaseTest {
         assertEq(weekly.lastExecutedEpoch(address(nvda)), 0);
     }
 
-    function test_zeroOutputPoolIsSkippedNotFailed() public {
+    function test_zeroOutputPoolIsJobFailed_retriedLater() public {
         uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
-        router.setRate(address(usdg), address(nvda), 0, 1); // pool returns nothing -> page skipped, job "ran"
+        router.setRate(address(usdg), address(nvda), 0, 1); // pool returns nothing -> the page reverts
         _nextEpoch(daily);
         vm.prank(bot);
         vm.expectEmit(true, true, false, true);
-        emit EpochKeeper.JobRun(address(daily), address(nvda), true);
-        assertEq(k.runDue(), 1);
+        emit EpochKeeper.JobFailed(address(daily), address(nvda), abi.encodeWithSelector(IPlanVault.QuoteTooSmall.selector));
+        assertEq(k.runDue(), 0);
         assertEq(daily.getPlan(id).usdgIdle, 1_000e6, "nobody charged");
-        assertEq(daily.lastExecutedEpoch(address(nvda)), 1);
+        assertEq(daily.lastExecutedEpoch(address(nvda)), 0, "still due");
+        router.setRate(address(usdg), address(nvda), NVDA_PER_USDG_NUM, NVDA_PER_USDG_DEN);
+        vm.prank(bot);
+        assertEq(k.runDue(), 1, "retry fills");
     }
 
     function test_pagination_multipleRuns() public {
