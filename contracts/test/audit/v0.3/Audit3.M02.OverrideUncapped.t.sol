@@ -89,17 +89,17 @@ contract Audit3_M02_OverrideUncapped is AuditBase {
         vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.NoRoute.selector, address(weth), address(nvda)));
         daily.advanceEpoch(address(nvda), 0, abi.encode(path, uint256(1)));
 
-        // auto path: the page is skipped, nobody is charged, nothing leaves
-        vm.expectEmit(true, true, false, false);
-        emit IPlanVault.EpochPageSkipped(address(nvda), daily.currentEpochId(), 0, 3, "");
-        _advance(keeper);
+        // auto path: the page reverts, nobody is charged, nothing leaves
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.NoRoute.selector, address(usdg), address(nvda)));
+        daily.advanceEpoch(address(nvda), 0, "");
         assertEq(daily.totalUsdgIdle(), 3 * 50_000e6, "nobody charged");
         assertEq(_totalAccrued(), 0);
         assertEq(weth.balanceOf(treasury), treasuryWethBefore, "nothing forwarded to the treasury");
         assertEq(daily.wethDust(), 0);
     }
 
-    function test_autoRoute_smallPartialSecondHop_isSkippedNotLeaked() public {
+    function test_autoRoute_smallPartialSecondHop_isRefusedNotLeaked() public {
         _wethUsdgPool();
         MockV3Pool wn =
             _constPool(address(weth), address(nvda), 500, _sqrtPrice(address(nvda), 6e18, address(weth), 1e18));
@@ -112,7 +112,9 @@ contract Audit3_M02_OverrideUncapped is AuditBase {
         router.quoteWithImpact(address(usdg), address(nvda), amountIn);
 
         uint256 treasuryWethBefore = weth.balanceOf(treasury);
-        _advance(keeper);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.NoRoute.selector, address(usdg), address(nvda)));
+        daily.advanceEpoch(address(nvda), 0, "");
         assertEq(weth.balanceOf(treasury), treasuryWethBefore, "nothing forwarded to the treasury");
         assertEq(daily.totalUsdgIdle(), 3 * 50_000e6, "nobody charged");
     }

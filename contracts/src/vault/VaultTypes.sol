@@ -13,7 +13,6 @@ struct Plan {
     uint32 lastEpochId; // last epoch this plan was filled in
     bool paused; // paused plans skip spend but keep balances
     bool boosted; // idle USDG is parked in the vault's boostStrategy (Morpho Blue) instead of sitting in usdgIdle
-    bool claimFeeFree; // owner held the auto-distribute $DCA tier at the last fill: claims of the accrued stock are fee-free
     // slot 2
     address stock; // registry-approved Stock Token
     // slot 3
@@ -31,6 +30,24 @@ struct Plan {
 struct DustState {
     uint256 usdg; // unspent purchase notional that could not be split exactly, plus skimmed USDG
     uint256 weth; // WETH that reached the vault outside a deposit (never expected; swept whenever non-zero)
+}
+
+/// @notice Reference price feed of one Stock Token: a Chainlink AggregatorV3 quoting USD per RAW token (on
+///         Robinhood Chain the feeds already apply the ERC-8056 multiplier). `feed == address(0)` = none.
+struct PriceFeed {
+    address feed;
+    uint32 maxStaleness; // seconds since the feed's `updatedAt` after which it is refused
+    uint8 feedDecimals;
+    uint8 stockDecimals;
+}
+
+/// @notice The epoch-purchase price guard (audit v0.3 H-01; see PriceGuardLib). Feeds live in a separate
+///         `stock => PriceFeed` mapping on the vault.
+struct PriceGuard {
+    uint16 maxDeviationBps; // a page's minOut must be >= reference output x (1 - this). Default 300.
+    bool requireFeed; // refuse purchases of stocks that have no feed. Default true (fail closed).
+    address sequencerFeed; // optional Chainlink L2 sequencer uptime feed; address(0) = not checked
+    uint32 sequencerGrace; // seconds the sequencer must have been up before feeds are trusted again
 }
 
 /// @notice Every fee / tolerance knob on a vault, in bps.

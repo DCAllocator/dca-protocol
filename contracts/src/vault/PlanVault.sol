@@ -12,6 +12,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {BoostLib} from "../libraries/BoostLib.sol";
 import {VaultAdminLib} from "../libraries/VaultAdminLib.sol";
+import {PriceGuardLib} from "../libraries/PriceGuardLib.sol";
 
 import {IPlanVault} from "../interfaces/IPlanVault.sol";
 import {IStockRegistry} from "../interfaces/IStockRegistry.sol";
@@ -20,7 +21,7 @@ import {IDCA} from "../token/IDCA.sol";
 import {IAggregatorRouter, Route} from "../router/IAggregatorRouter.sol";
 import {FeeMath} from "../libraries/FeeMath.sol";
 import {EpochLib} from "../libraries/EpochLib.sol";
-import {Plan, FeeConfig, VaultParams, DustState} from "./VaultTypes.sol";
+import {Plan, FeeConfig, VaultParams, DustState, PriceGuard, PriceFeed} from "./VaultTypes.sol";
 
 /// @title PlanVault
 /// @notice Shared implementation of a DCA frequency vault. Daily / Weekly / Monthly are thin subclasses
@@ -52,8 +53,10 @@ import {Plan, FeeConfig, VaultParams, DustState} from "./VaultTypes.sol";
 ///
 ///      Epoch execution is paginated: `advanceEpoch(stock, limit, ...)` processes plans
 ///      [nextPlanIndex, nextPlanIndex + limit) of `stockPlans[stock]` with ONE aggregate USDG->stock swap per
-///      page. If that swap cannot be quoted or executed the page is SKIPPED (no plan is charged, the cursor
-///      still advances, `EpochPageSkipped` is emitted) — a single plan's state can never revert an epoch.
+///      page. If that swap cannot be quoted or executed (no route within the impact cap for this page size, a
+///      price-guard deviation, a partial fill) the call REVERTS and the cursor does not move: the operator retries
+///      later or with a smaller `limit`. No single plan's state can make a page unfillable (minimums, full-fill
+///      routing); only page size and market conditions can, and both are the operator's to change.
 ///      The epoch is "pending" until the cursor reaches the end of the plan list, at which point it is marked
 ///      executed. Only the CURRENT epoch is ever executed: if the keeper misses an epoch it is skipped, never
 ///      caught up (users are charged at most one spend per epoch, never several at once).
@@ -94,15 +97,22 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     uint256 public minDeposit;
     /// @notice `usdgDust` is forwarded to `feeRecipient` during advanceEpoch once it reaches this. Default 1 USDG.
     uint256 public dustSweepMinUsdg;
+    /// @notice Largest USDG notional one page may buy (vault default; 0 = unlimited). A page stops before it would
+    ///         exceed the cap, so `limit` is a maximum plan count and the cap sizes pages to what the pools absorb
+    ///         (on-chain TWAP sizing). Default 100,000 USDG.
+    uint256 public maxPageNotional;
+    /// @notice Per-stock override of `maxPageNotional` (0 = use the default). Set from the pools' depth.
+    mapping(address => uint256) public maxPageNotionalOf;
     mapping(address => bool) public isKeeper;
 
     /// @dev The boost pool: strategy + internal share supply (see BoostLib).
     BoostLib.Pool internal _boost;
+    /// @notice The epoch-purchase price guard (see PriceGuardLib): max deviation from the Chainlink reference,
+    ///         whether stocks without a feed may be bought, optional L2 sequencer uptime feed + grace.
+    PriceGuard public priceGuard;
+    /// @notice Chainlink reference feed per stock (USD per raw token), with its staleness window and decimals.
+    mapping(address => PriceFeed) public priceFeed;
 
-    /// @dev Quote and swap run in the same transaction on the same pool state, so the tolerance only covers
-    ///      rounding; audit v0.3 L-04 lowered both caps and made them owner-only.
-    uint16 internal constant MAX_KEEPER_TIP_BPS = 1_000;
-    uint16 internal constant MAX_SWAP_SLIPPAGE_BPS = 100;
     uint16 internal constant MAX_PLANS_PER_TX_CAP = 1_000;
 
     // ------------------------------------------------------------------
@@ -207,9 +217,15 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         minAmountPerEpoch = 10 * unit;
         minDeposit = 10 * unit;
         dustSweepMinUsdg = unit;
+        maxPageNotional = 100_000 * unit;
         emit MinimumsSet(minAmountPerEpoch, minDeposit);
         emit DustSweepMinSet(dustSweepMinUsdg);
+        emit MaxPageNotionalSet(address(0), maxPageNotional);
         emit KeeperOnlySet(true);
+        // Fail closed: until the owner sets a feed for a stock (or turns `requireFeed` off) no epoch buys it.
+        priceGuard.maxDeviationBps = 300;
+        priceGuard.requireFeed = true;
+        emit PriceGuardSet(300, true, address(0), 0);
 
         _setRouter(p.router);
     }
@@ -320,18 +336,9 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     ///         back from the strategy (subject to the market's liquidity). `type(uint256).max` = all. Withdraw
     ///         fee applies. Works while paused.
     function withdrawIdle(uint256 planId, uint256 usdgAmount) external nonReentrant onlyPlanOwner(planId) {
-        Plan storage p = _plans[planId];
+        // usdgIdle first, then (for boosted plans) the strategy; the library does the checks and debits the plan.
         uint256 fromIdle;
-        if (p.boosted) {
-            // usdgIdle first, then the strategy; the library does the checks and debits the plan.
-            (usdgAmount, fromIdle) = BoostLib.withdrawIdle(_boost, p, planId, usdgAmount);
-        } else {
-            if (usdgAmount == type(uint256).max) usdgAmount = p.usdgIdle;
-            if (usdgAmount == 0) revert ZeroAmount();
-            if (usdgAmount > p.usdgIdle) revert InsufficientIdle(usdgAmount, p.usdgIdle);
-            p.usdgIdle -= usdgAmount.toUint128();
-            fromIdle = usdgAmount;
-        }
+        (usdgAmount, fromIdle) = BoostLib.withdrawIdle(_boost, _plans[planId], planId, usdgAmount);
         totalUsdgIdle -= fromIdle;
 
         (uint256 net, uint256 fee) = FeeMath.split(usdgAmount, _fees.withdrawFeeBps);
@@ -411,9 +418,9 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     ///                      the router's price-impact cap (`quotePath` enforces it), and `minOut` may not be below
     ///                      the auto-route's floor (quote * (1 - swapSlippageBps)) nor below the same floor computed
     ///                      on the override path's own quote: an override picks a path, never a worse price or a
-    ///                      larger impact. Override failures revert (the page is not consumed); auto-route failures
-    ///                      skip the page. Note: like the auto-route, the floor is the pool's current price; see
-    ///                      AUDIT.md H-01 for the external reference that is still to be added.
+    ///                      larger impact. Every failure to quote or execute reverts and leaves the page unconsumed
+    ///                      (retry later or with a smaller `limit`). Both paths are floored at the stock's Chainlink
+    ///                      reference price (PriceGuardLib).
     /// @return completed True once the cursor reached the end of the plan list (epoch marked executed).
     function advanceEpoch(address stock, uint256 limit, bytes calldata routeOverride)
         external
@@ -446,21 +453,12 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
             _dropBoostedFills(ctx, fills);
         }
         if (ctx.totalNet > 0) {
-            (bool ok, bytes memory reason) = _buyStock(ctx, routeOverride);
-            if (ok) {
-                _commitSpend(ctx, fills);
-                _payFees(ctx);
-                uint256 pot = ctx.bought + dustPot[stock];
-                uint256 distributed = _distribute(ctx, fills, pot, ctx.totalNet - ctx.spent);
-                dustPot[stock] = pot - distributed;
-            } else {
-                emit EpochPageSkipped(stock, ctx.epochId, ctx.start, ctx.end, reason);
-                // Nobody is charged, so the boosted USDG already pulled goes straight back to the strategy.
-                if (ctx.boostOut > 0) BoostLib.redeposit(_boost, ctx.boostOut);
-                ctx.totalNet = 0;
-                ctx.totalFee = 0;
-                ctx.filled = 0;
-            }
+            _buyStock(ctx, routeOverride); // reverts if the page cannot be bought: nothing is consumed
+            _commitSpend(ctx, fills);
+            _payFees(ctx);
+            uint256 pot = ctx.bought + dustPot[stock];
+            uint256 distributed = _distribute(ctx, fills, pot, ctx.totalNet - ctx.spent);
+            dustPot[stock] = pot - distributed;
         }
         _sweepDust(false);
         completed = _finalizePage(ctx, len);
@@ -489,12 +487,16 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
 
     /// @dev Phase 1: pick eligible plans on this page and tally spend / fee / net in memory. No storage writes.
     ///      Boosted balances are valued against one pool snapshot for the whole page; a spend takes `usdgIdle`
-    ///      first and the boosted balance for the rest.
-    function _collect(Ctx memory ctx, Fill[] memory fills) internal view {
+    ///      first and the boosted balance for the rest. The page stops (ctx.end shrinks) before its notional
+    ///      would exceed the stock's page cap, so a page is never larger than the pools absorb; a single plan
+    ///      above the cap sits the epoch out (`PlanTooLarge`) instead of blocking everyone behind it.
+    function _collect(Ctx memory ctx, Fill[] memory fills) internal {
         uint256[] storage ids = _stockPlans[ctx.stock];
         uint16 baseBps = _fees.purchaseFeeBps;
         ctx.poolShares = _boost.totalShares;
         if (ctx.poolShares > 0) ctx.poolAssets = BoostLib.poolAssets(_boost);
+        uint256 cap = maxPageNotionalOf[ctx.stock];
+        if (cap == 0) cap = maxPageNotional;
         uint256 n;
         for (uint256 i = ctx.start; i < ctx.end; ++i) {
             uint256 planId = ids[i];
@@ -505,6 +507,16 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
             if (p.boosted) avail += BoostLib.valueOf(p.boostShares, ctx.poolAssets, ctx.poolShares);
             if (avail == 0) continue;
             uint256 spend = avail < p.amountPerEpoch ? avail : p.amountPerEpoch;
+            if (cap != 0) {
+                if (spend > cap) {
+                    emit PlanTooLarge(planId, spend, cap);
+                    continue;
+                }
+                if (ctx.totalSpend + spend > cap) {
+                    ctx.end = i; // this page ends here; the next one starts at plan i
+                    break;
+                }
+            }
             (bool halve, bool autoDist) = _perks(p.owner);
             (uint256 net, uint256 fee) = FeeMath.split(spend, halve ? FeeMath.halve(baseBps) : baseBps);
             Fill memory f = fills[n];
@@ -528,49 +540,45 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         ctx.filled = uint32(n);
     }
 
-    /// @dev Phase 2: single USDG->stock swap. Auto-route failures are reported (page skipped); override failures
-    ///      revert. Measures real balance deltas: `ctx.bought`, `ctx.spent`, and any WETH the router forwarded
-    ///      back from a partial second hop (booked as `wethDust`).
-    function _buyStock(Ctx memory ctx, bytes calldata routeOverride) internal returns (bool ok, bytes memory reason) {
+    /// @dev Phase 2: single USDG->stock swap. Any failure to quote or execute REVERTS — the router's own error
+    ///      (`NoRoute`, `PriceImpactTooHigh`, `PartialFill`, `InsufficientOutput`) or the vault's (`PriceDeviates`,
+    ///      `QuoteTooSmall`) bubbles up so the operator can react (retry later, smaller `limit`). Measures real
+    ///      balance deltas: `ctx.bought`, `ctx.spent`, and any WETH that reached the vault (booked as dust).
+    function _buyStock(Ctx memory ctx, bytes calldata routeOverride) internal {
         address stock = ctx.stock;
         uint256 amountIn = ctx.totalNet;
-        (bool haveQuote, uint256 quoted, Route[] memory path, bytes memory quoteErr) =
-            _tryQuote(address(_usdg), stock, amountIn);
-        uint256 minOut = FeeMath.applySlippage(quoted, _fees.swapSlippageBps);
-
-        bool isOverride = routeOverride.length != 0;
-        if (isOverride) {
+        uint256 minOut;
+        Route[] memory path;
+        if (routeOverride.length != 0) {
             uint256 overrideMinOut;
             (path, overrideMinOut) = abi.decode(routeOverride, (Route[], uint256));
             if (overrideMinOut == 0) revert ZeroAmount();
-            // floor = max(auto floor, the override path's own floor); reverts if the path is unapproved / dead
+            // floor = max(auto floor if the auto-route has a quote, the override path's own floor); quotePath
+            // reverts if the path is unapproved, cannot fill in full or exceeds the impact cap
+            try _router.quote(address(_usdg), stock, amountIn) returns (uint256 quoted, Route[] memory) {
+                minOut = FeeMath.applySlippage(quoted, _fees.swapSlippageBps);
+            } catch {}
             uint256 pathFloor = FeeMath.applySlippage(_router.quotePath(path, amountIn), _fees.swapSlippageBps);
             if (pathFloor > minOut) minOut = pathFloor;
             if (overrideMinOut < minOut) revert OverrideMinOutTooLow(overrideMinOut, minOut);
             minOut = overrideMinOut;
         } else {
-            if (!haveQuote) return (false, quoteErr);
-            if (minOut == 0) return (false, bytes("quote too small"));
+            uint256 quoted;
+            (quoted, path) = _router.quote(address(_usdg), stock, amountIn); // reverts NoRoute for this page size
+            minOut = FeeMath.applySlippage(quoted, _fees.swapSlippageBps);
+            if (minOut == 0) revert QuoteTooSmall();
         }
+        // External price floor (audit v0.3 H-01): whatever the pool says, the swap may not deliver less than the
+        // Chainlink reference less `maxDeviationBps`.
+        PriceGuardLib.check(priceGuard, priceFeed, stock, amountIn, minOut, usdgDecimals);
 
         uint256 usdgBefore = _usdg.balanceOf(address(this));
         uint256 stockBefore = IERC20(stock).balanceOf(address(this));
         uint256 wethBefore = _weth.balanceOf(address(this));
         // Exact, per-call approval: the router can only ever pull this page's input (audit v0.3 M-03).
         _usdg.forceApprove(address(_router), amountIn);
-        bool swapped;
-        if (isOverride) {
-            _router.swapWithRoute(address(_usdg), stock, amountIn, minOut, address(this), path);
-            swapped = true;
-        } else {
-            try _router.swapWithRoute(address(_usdg), stock, amountIn, minOut, address(this), path) {
-                swapped = true;
-            } catch (bytes memory err) {
-                reason = err;
-            }
-        }
+        _router.swapWithRoute(address(_usdg), stock, amountIn, minOut, address(this), path);
         _usdg.forceApprove(address(_router), 0);
-        if (!swapped) return (false, reason);
 
         ctx.bought = IERC20(stock).balanceOf(address(this)) - stockBefore;
         if (ctx.bought == 0) revert SwapReturnedZero();
@@ -578,7 +586,6 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         if (ctx.spent > amountIn) revert Overspent(amountIn, ctx.spent);
         uint256 wethIn = _weth.balanceOf(address(this)) - wethBefore;
         if (wethIn > 0) _dust.weth += wethIn;
-        ok = true;
     }
 
     /// @dev Phase 3: debit idle USDG (and burn the boost shares behind any boosted spend, priced at the page's
@@ -591,9 +598,6 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
             p.usdgIdle -= f.spend - f.fromBoost;
             if (f.fromBoost > 0) BoostLib.burn(_boost, p, f.planId, f.fromBoost, ctx.poolAssets, ctx.poolShares);
             p.lastEpochId = ctx.epochId;
-            // The claim-fee tier is fixed at fill time (same slot as lastEpochId, so this is free): a $DCA
-            // balance held only for the duration of a claim no longer waives the fee (audit v0.3 L-01).
-            p.claimFeeFree = f.autoDist;
         }
         totalUsdgIdle -= ctx.totalSpend - ctx.boostOut;
     }
@@ -673,18 +677,7 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     /// @dev Forward dust to the treasury. USDG only once it reaches `dustSweepMinUsdg` (or `force`); WETH whenever
     ///      there is any (it only appears in the rare partial-hop case).
     function _sweepDust(bool force) internal {
-        uint256 u = _dust.usdg;
-        if (u > 0 && (force || u >= dustSweepMinUsdg)) {
-            _dust.usdg = 0;
-            _usdg.safeTransfer(feeRecipient, u);
-            emit DustSwept(address(_usdg), feeRecipient, u);
-        }
-        uint256 w = _dust.weth;
-        if (w > 0) {
-            _dust.weth = 0;
-            _weth.safeTransfer(feeRecipient, w);
-            emit DustSwept(address(_weth), feeRecipient, w);
-        }
+        VaultAdminLib.sweepDust(_dust, _usdg, _weth, feeRecipient, force ? 0 : dustSweepMinUsdg);
     }
 
     // ==================================================================
@@ -696,20 +689,7 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     ///         can move the fees, not the price tolerance of every epoch buy (audit v0.3 L-04).
     /// @dev Owner or feeManager. Emits the full config so indexers never need to diff.
     function setFees(FeeConfig calldata f) external onlyFeeManager {
-        FeeMath.validate(f.purchaseFeeBps);
-        FeeMath.validate(f.depositFeeBps);
-        FeeMath.validate(f.withdrawFeeBps);
-        FeeMath.validate(f.claimFeeBps);
-        if (
-            msg.sender != owner()
-                && (f.swapSlippageBps != _fees.swapSlippageBps || f.keeperTipBps != _fees.keeperTipBps)
-        ) revert OwnableUnauthorizedAccount(msg.sender);
-        if (f.keeperTipBps > MAX_KEEPER_TIP_BPS) revert ValueOutOfRange(f.keeperTipBps, MAX_KEEPER_TIP_BPS);
-        if (f.swapSlippageBps > MAX_SWAP_SLIPPAGE_BPS) {
-            revert ValueOutOfRange(f.swapSlippageBps, MAX_SWAP_SLIPPAGE_BPS);
-        }
-        _fees = f;
-        emit FeeConfigSet(f);
+        VaultAdminLib.setFees(_fees, f, msg.sender == owner());
     }
 
     /// @notice Set both $DCA thresholds (raw token units, both > 0).
@@ -741,6 +721,16 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         emit MaxPlansPerTxSet(n);
     }
 
+    /// @inheritdoc IPlanVault
+    /// @notice Page notional cap in USDG: `stock == address(0)` sets the vault default (0 = unlimited), otherwise a
+    ///         per-stock override (0 = use the default). Size it to what the stock's approved pools absorb inside
+    ///         the router's impact cap (see script/RouteBench.s.sol).
+    function setMaxPageNotional(address stock, uint256 amount) external onlyOwner {
+        if (stock == address(0)) maxPageNotional = amount;
+        else maxPageNotionalOf[stock] = amount;
+        emit MaxPageNotionalSet(stock, amount);
+    }
+
     /// @notice Swap the router. The vault holds no standing approvals (it approves exactly one swap's input per
     ///         call), so there is nothing to revoke; the new router must share the vault's WETH.
     function setRouter(address newRouter) external onlyOwner {
@@ -752,6 +742,22 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     ///         one in this call (internal shares are untouched); clearing the strategy then reverts `BoostInUse`.
     function setBoostStrategy(address strategy) external onlyOwner nonReentrant {
         BoostLib.setStrategy(_boost, _usdg, strategy);
+    }
+
+    /// @inheritdoc IPlanVault
+    /// @notice Set (or clear with `feed == address(0)`) the Chainlink reference feed of `stock` (USD per raw token).
+    function setPriceFeed(address stock, address feed, uint32 maxStaleness) external onlyOwner {
+        PriceGuardLib.setFeed(priceFeed, stock, feed, maxStaleness);
+    }
+
+    /// @inheritdoc IPlanVault
+    /// @notice Tune the price guard: max deviation (bps, <= 1000), whether stocks without a feed may be bought,
+    ///         and an optional L2 sequencer uptime feed with its grace period.
+    function setPriceGuard(uint16 maxDeviationBps, bool requireFeed, address sequencerFeed, uint32 sequencerGrace)
+        external
+        onlyOwner
+    {
+        PriceGuardLib.setConfig(priceGuard, maxDeviationBps, requireFeed, sequencerFeed, sequencerGrace);
     }
 
     function setFeeRecipient(address recipient) external onlyOwner {
@@ -968,7 +974,8 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         if (amount == 0) revert ZeroAmount();
         if (amount > p.stockAccrued) revert InsufficientAccrued(amount, p.stockAccrued);
 
-        uint16 bps = p.claimFeeFree ? 0 : _fees.claimFeeBps;
+        // Spot $DCA balance at claim time, by decision (audit v0.3 L-01 accepted: the perk is meant to be live).
+        uint16 bps = isAutoDistribute(p.owner) ? 0 : _fees.claimFeeBps;
         (uint256 net, uint256 fee) = FeeMath.split(amount, bps);
 
         address stock = p.stock;
@@ -1011,17 +1018,6 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         if (address(_dca) == address(0)) return (false, false);
         uint256 bal = _dca.balanceOf(user);
         return (bal >= feeHalveThreshold, bal >= autoDistributeThreshold);
-    }
-
-    function _tryQuote(address tokenIn, address tokenOut, uint256 amountIn)
-        internal
-        returns (bool ok, uint256 out, Route[] memory path, bytes memory err)
-    {
-        try _router.quote(tokenIn, tokenOut, amountIn) returns (uint256 amountOut, Route[] memory p) {
-            return (true, amountOut, p, "");
-        } catch (bytes memory reason) {
-            return (false, 0, path, reason);
-        }
     }
 
     /// @dev Non-reverting ERC-20 transfer. Returns false on revert / false return so a blocked recipient

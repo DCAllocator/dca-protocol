@@ -12,6 +12,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Vm} from "forge-std/Vm.sol";
+import {IAggregatorRouter} from "../../src/router/IAggregatorRouter.sol";
 
 /// @dev Boosted plans: idle USDG lent through the MorphoBlueStrategy, per-plan share / earnings accounting,
 ///      and every interaction with deposits, withdrawals, epochs and admin.
@@ -486,20 +487,22 @@ contract PlanVaultBoostTest is BaseTest {
         _checkInvariants(daily);
     }
 
-    function test_pageSkipped_boostedFundsGoBackToPool() public {
+    function test_pageUnfillable_boostedFundsUntouched() public {
         uint256 id = _createBoostedPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         uint256 plain = _createUsdgPlan(daily, bob, address(nvda), 100e6, 1_000e6);
-        router.removePair(address(usdg), address(nvda)); // no route: page is skipped
+        router.removePair(address(usdg), address(nvda)); // no route: the page reverts, nothing moves
         _nextEpoch(daily);
         uint256 valueBefore = _boostValue(daily, id);
         uint256 sharesBefore = daily.getPlan(id).boostShares;
-        assertTrue(_advance(daily, address(nvda)));
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.NoRoute.selector, address(usdg), address(nvda)));
+        daily.advanceEpoch(address(nvda), 0, "");
         Plan memory p = daily.getPlan(id);
         assertEq(p.boostShares, sharesBefore, "nothing burned");
         assertEq(p.lastEpochId, 0);
-        assertApproxEqAbs(_boostValue(daily, id), valueBefore, 2, "re-lent, minus rounding dust at most");
+        assertEq(_boostValue(daily, id), valueBefore, "still lent: the revert undid the strategy withdrawal");
         assertEq(daily.getPlan(plain).usdgIdle, 1_000e6);
-        assertEq(usdg.balanceOf(address(daily)), 1_000e6, "the pulled USDG went straight back to the strategy");
+        assertEq(usdg.balanceOf(address(daily)), 1_000e6);
         _checkInvariants(daily);
     }
 

@@ -6,7 +6,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 
 import {IPlanVault} from "../interfaces/IPlanVault.sol";
 import {IStockRegistry} from "../interfaces/IStockRegistry.sol";
-import {DustState} from "../vault/VaultTypes.sol";
+import {DustState, FeeConfig} from "../vault/VaultTypes.sol";
+import {FeeMath} from "./FeeMath.sol";
 
 /// @title VaultAdminLib
 /// @notice Rarely used owner / feeManager paths of PlanVault (`skim`, `rescueERC20`), linked as an EXTERNAL
@@ -44,6 +45,50 @@ library VaultAdminLib {
         }
         if (excess == 0) revert IPlanVault.ZeroAmount();
         emit IPlanVault.Skimmed(token, excess);
+    }
+
+    uint16 internal constant MAX_KEEPER_TIP_BPS = 1_000;
+    uint16 internal constant MAX_SWAP_SLIPPAGE_BPS = 100;
+
+    /// @notice Validate and store a fee configuration. Every fee <= 90 bps; the tolerances (swap slippage <= 100
+    ///         bps, keeper tip <= 10%) may only be changed by the owner (audit v0.3 L-04).
+    function setFees(FeeConfig storage cur, FeeConfig calldata f, bool isOwner) external {
+        FeeMath.validate(f.purchaseFeeBps);
+        FeeMath.validate(f.depositFeeBps);
+        FeeMath.validate(f.withdrawFeeBps);
+        FeeMath.validate(f.claimFeeBps);
+        if (!isOwner && (f.swapSlippageBps != cur.swapSlippageBps || f.keeperTipBps != cur.keeperTipBps)) {
+            revert IPlanVault.NotOwner();
+        }
+        if (f.keeperTipBps > MAX_KEEPER_TIP_BPS) revert IPlanVault.ValueOutOfRange(f.keeperTipBps, MAX_KEEPER_TIP_BPS);
+        if (f.swapSlippageBps > MAX_SWAP_SLIPPAGE_BPS) {
+            revert IPlanVault.ValueOutOfRange(f.swapSlippageBps, MAX_SWAP_SLIPPAGE_BPS);
+        }
+        cur.purchaseFeeBps = f.purchaseFeeBps;
+        cur.depositFeeBps = f.depositFeeBps;
+        cur.withdrawFeeBps = f.withdrawFeeBps;
+        cur.claimFeeBps = f.claimFeeBps;
+        cur.keeperTipBps = f.keeperTipBps;
+        cur.swapSlippageBps = f.swapSlippageBps;
+        emit IPlanVault.FeeConfigSet(f);
+    }
+
+    /// @notice Forward dust to `feeRecipient`: USDG once it reaches `minUsdg` (0 = always), WETH whenever non-zero.
+    function sweepDust(DustState storage dust, IERC20 usdg, IERC20 weth, address feeRecipient, uint256 minUsdg)
+        external
+    {
+        uint256 u = dust.usdg;
+        if (u > 0 && u >= minUsdg) {
+            dust.usdg = 0;
+            usdg.safeTransfer(feeRecipient, u);
+            emit IPlanVault.DustSwept(address(usdg), feeRecipient, u);
+        }
+        uint256 w = dust.weth;
+        if (w > 0) {
+            dust.weth = 0;
+            weth.safeTransfer(feeRecipient, w);
+            emit IPlanVault.DustSwept(address(weth), feeRecipient, w);
+        }
     }
 
     /// @notice Recover tokens that can never be user accounting: not USDG, not WETH, not the boost strategy's

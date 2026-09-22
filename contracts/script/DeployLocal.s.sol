@@ -10,6 +10,7 @@ import {MockWETH} from "../test/mocks/MockWETH.sol";
 import {MockV3Factory} from "../test/mocks/MockV3.sol";
 import {MockDCA} from "../test/mocks/MockDCA.sol";
 import {MockMorpho, MockIrm} from "../test/mocks/MockMorpho.sol";
+import {MockAggregatorV3} from "../test/mocks/MockChainlink.sol";
 import {MorphoBlueStrategy} from "../src/boost/MorphoBlueStrategy.sol";
 import {Id, MarketParams} from "../src/interfaces/IMorpho.sol";
 import {StockRegistry} from "../src/registries/StockRegistry.sol";
@@ -317,6 +318,20 @@ contract DeployLocal is Script {
         testVault.setKeeper(address(keeper), true);
         for (uint256 s; s < stocks.length; ++s) {
             keeper.addJob(address(testVault), stocks[s]);
+        }
+
+        // Price guard (audit v0.3 H-01): a mock Chainlink feed per liquid symbol at the seeded pool price, set on
+        // every vault with a long staleness window so the local stack keeps working across restarts.
+        {
+            PlanVault[4] memory guarded = [PlanVault(daily), PlanVault(weekly), PlanVault(monthly), PlanVault(testVault)];
+            for (uint256 i; i < stocks.length; ++i) {
+                // PRICES_USDG are 1e6-scaled USDG per token; the feed quotes USD with 8 decimals
+                MockAggregatorV3 feed = new MockAggregatorV3(8, int256(PRICES_USDG[i] * 100));
+                for (uint256 v; v < 4; ++v) {
+                    guarded[v].setPriceFeed(stocks[i], address(feed), 365 days);
+                }
+            }
+            // OTHER_SYMBOLS have no pool, no keeper job and no feed: the fail-closed default refuses them anyway.
         }
 
         // Boost: mock Morpho market + real strategy, every vault wired to it.

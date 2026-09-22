@@ -35,6 +35,7 @@ contract TestVaultTest is BaseTest {
         tv = new TestVault(p, EPOCH);
         k = new EpochKeeper(address(usdg), owner);
         vm.startPrank(owner);
+        tv.setPriceGuard(300, false, address(0), 0); // price guard has its own suite
         tv.setKeeper(address(k), true);
         k.addJob(address(tv), address(nvda));
         k.setOperator(bot, true);

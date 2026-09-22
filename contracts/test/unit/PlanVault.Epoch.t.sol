@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {BaseTest} from "../BaseTest.sol";
 import {IPlanVault} from "../../src/interfaces/IPlanVault.sol";
 import {Plan, FeeConfig} from "../../src/vault/VaultTypes.sol";
-import {Route} from "../../src/router/IAggregatorRouter.sol";
+import {IAggregatorRouter, Route} from "../../src/router/IAggregatorRouter.sol";
 import {PlanVault} from "../../src/vault/PlanVault.sol";
 import {BlockingToken} from "../mocks/BlockingToken.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -287,15 +287,6 @@ contract PlanVaultEpochTest is BaseTest {
         _advance(daily, address(blk));
         assertEq(daily.getPlan(id).stockAccrued, 1.9926e18, "accrued instead of bricking the epoch");
         assertEq(blk.balanceOf(alice), 0);
-        // The tier held AT FILL is what the claim honours: fee-free even after the $DCA is gone (v0.3 L-01).
-        assertTrue(daily.getPlan(id).claimFeeFree);
-        vm.prank(alice);
-        dca.transfer(bob, 100_000e18);
-        blk.setBlocked(alice, false);
-        vm.prank(alice);
-        daily.claim(id, type(uint256).max);
-        assertEq(blk.balanceOf(alice), 1.9926e18, "no claim fee");
-        assertEq(blk.balanceOf(treasury), 0);
     }
 
     // ------------------------------------------------------------------
@@ -328,22 +319,18 @@ contract PlanVaultEpochTest is BaseTest {
         assertEq(nvda.balanceOf(address(daily)), 0);
     }
 
-    /// audit v0.3 L-01: the claim-fee tier is fixed at fill time; a balance acquired afterwards (or only for the
-    /// duration of the claim) does not waive the fee.
-    function test_claim_feeTierIsLockedAtFill() public {
+    /// The claim-fee tier is the LIVE $DCA balance at claim time (audit v0.3 L-01 accepted by decision).
+    function test_claim_zeroFeeWhenThresholdCrossedAfterEpoch() public {
         uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         _nextEpoch(daily);
         _advance(daily, address(nvda));
         uint256 accrued = daily.getPlan(id).stockAccrued;
         assertGt(accrued, 0);
-        assertFalse(daily.getPlan(id).claimFeeFree);
         _giveDca(alice, 100_000); // buys $DCA between epoch and claim
-        assertTrue(daily.isAutoDistribute(alice), "the perk applies to the NEXT fill");
         vm.prank(alice);
         daily.claim(id, type(uint256).max);
-        uint256 fee = (accrued * 25) / 10_000;
-        assertEq(nvda.balanceOf(alice), accrued - fee, "25 bps claim fee still due");
-        assertEq(nvda.balanceOf(treasury), fee);
+        assertEq(nvda.balanceOf(alice), accrued, "0 claim fee");
+        assertEq(nvda.balanceOf(treasury), 0);
     }
 
     function test_claim_reverts() public {
@@ -521,54 +508,52 @@ contract PlanVaultEpochTest is BaseTest {
     }
 
     // ------------------------------------------------------------------
-    // Skip, never revert: a page whose purchase cannot happen charges nobody and still advances
+    // Revert, never skip: a page whose purchase cannot happen leaves the cursor in place so the operator retries
     // ------------------------------------------------------------------
 
-    function test_pageSkipped_noRoute() public {
+    function test_pageUnfillable_noRoute_revertsAndRetries() public {
         uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         router.removePair(address(usdg), address(nvda));
         _nextEpoch(daily);
-        vm.expectEmit(true, true, false, false);
-        emit IPlanVault.EpochPageSkipped(address(nvda), 1, 0, 1, "");
-        assertTrue(_advance(daily, address(nvda)), "epoch completes");
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.NoRoute.selector, address(usdg), address(nvda)));
+        daily.advanceEpoch(address(nvda), 0, "");
         Plan memory p = daily.getPlan(id);
         assertEq(p.usdgIdle, 1_000e6, "nothing charged");
-        assertEq(p.lastEpochId, 0, "not marked filled");
-        assertEq(usdg.balanceOf(treasury), 0, "no fee");
-        assertEq(daily.lastExecutedEpoch(address(nvda)), 1);
-        assertFalse(daily.isEpochDue(address(nvda)));
-        // route restored -> next epoch fills normally
+        assertEq(daily.nextPlanIndex(address(nvda), 1), 0, "cursor untouched");
+        assertTrue(daily.isEpochDue(address(nvda)), "still due: the operator retries");
+        // route restored within the same epoch -> the retry fills
         router.setRate(address(usdg), address(nvda), NVDA_PER_USDG_NUM, NVDA_PER_USDG_DEN);
-        _nextEpoch(daily);
-        _advance(daily, address(nvda));
-        assertEq(daily.getPlan(id).lastEpochId, 2);
+        assertTrue(_advance(daily, address(nvda)));
+        assertEq(daily.getPlan(id).lastEpochId, 1);
         assertEq(daily.getPlan(id).usdgIdle, 800e6);
     }
 
-    function test_pageSkipped_swapReverts() public {
+    function test_pageUnfillable_swapReverts_bubbles() public {
         uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         router.setRevertOnSwap(true);
         _nextEpoch(daily);
-        vm.expectEmit(true, true, false, false);
-        emit IPlanVault.EpochPageSkipped(address(nvda), 1, 0, 1, "");
-        assertTrue(_advance(daily, address(nvda)));
+        vm.prank(keeper);
+        vm.expectRevert("MockRouter: forced revert");
+        daily.advanceEpoch(address(nvda), 0, "");
         assertEq(daily.getPlan(id).usdgIdle, 1_000e6);
         assertEq(daily.totalUsdgIdle(), 1_000e6);
         assertEq(usdg.balanceOf(address(daily)), 1_000e6);
+        assertEq(usdg.allowance(address(daily), address(router)), 0, "no approval left behind");
     }
 
-    function test_pageSkipped_quoteTooSmall() public {
+    function test_pageUnfillable_quoteTooSmall_reverts() public {
         router.setRate(address(usdg), address(nvda), 0, 1); // pool returns 0 stock
         uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         _nextEpoch(daily);
-        vm.expectEmit(true, true, false, true);
-        emit IPlanVault.EpochPageSkipped(address(nvda), 1, 0, 1, bytes("quote too small"));
-        assertTrue(_advance(daily, address(nvda)));
+        vm.prank(keeper);
+        vm.expectRevert(IPlanVault.QuoteTooSmall.selector);
+        daily.advanceEpoch(address(nvda), 0, "");
         assertEq(daily.getPlan(id).usdgIdle, 1_000e6);
         assertEq(router.swapCount(), 0, "no swap attempted");
     }
 
-    function test_pageSkipped_otherPagesStillFill() public {
+    function test_pageUnfillable_earlierPagesStayFilled() public {
         _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         _createUsdgPlan(daily, bob, address(nvda), 200e6, 1_000e6);
         _nextEpoch(daily);
@@ -576,10 +561,95 @@ contract PlanVaultEpochTest is BaseTest {
         daily.advanceEpoch(address(nvda), 1, ""); // page 0 fills
         router.setRevertOnSwap(true);
         vm.prank(keeper);
-        assertTrue(daily.advanceEpoch(address(nvda), 1, "")); // page 1 skipped, epoch complete
+        vm.expectRevert("MockRouter: forced revert");
+        daily.advanceEpoch(address(nvda), 1, ""); // page 1 cannot fill: not consumed
         assertEq(daily.getPlan(1).lastEpochId, 1);
         assertEq(daily.getPlan(2).lastEpochId, 0);
-        assertEq(daily.getPlan(2).usdgIdle, 1_000e6);
+        assertEq(daily.nextPlanIndex(address(nvda), 1), 1, "cursor stays on page 1");
+        router.setRevertOnSwap(false);
+        vm.prank(keeper);
+        assertTrue(daily.advanceEpoch(address(nvda), 1, ""));
+        assertEq(daily.getPlan(2).lastEpochId, 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Page notional cap: pages are sized to the pools on-chain; an oversized plan never blocks the others
+    // ------------------------------------------------------------------
+
+    function test_pageCap_defaultsAndSetter() public {
+        assertEq(daily.maxPageNotional(), 100_000e6);
+        assertEq(daily.maxPageNotionalOf(address(nvda)), 0);
+        vm.startPrank(owner);
+        vm.expectEmit(true, false, false, true);
+        emit IPlanVault.MaxPageNotionalSet(address(nvda), 5_000e6);
+        daily.setMaxPageNotional(address(nvda), 5_000e6);
+        daily.setMaxPageNotional(address(0), 0); // unlimited default
+        vm.stopPrank();
+        assertEq(daily.maxPageNotionalOf(address(nvda)), 5_000e6);
+        assertEq(daily.maxPageNotional(), 0);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        daily.setMaxPageNotional(address(nvda), 1);
+    }
+
+    function test_pageCap_stopsThePageBeforeTheCap() public {
+        // five plans of 200 USDG; cap 500 USDG -> pages of 2, 2, 1 even with limit = 0 (max)
+        for (uint256 i; i < 5; ++i) {
+            address u = makeAddr(string(abi.encodePacked("c", i)));
+            _fund(u);
+            _createUsdgPlan(daily, u, address(nvda), 200e6, 1_000e6);
+        }
+        vm.prank(owner);
+        daily.setMaxPageNotional(address(nvda), 500e6);
+        _nextEpoch(daily);
+        vm.prank(keeper);
+        assertFalse(daily.advanceEpoch(address(nvda), 0, ""));
+        assertEq(daily.nextPlanIndex(address(nvda), 1), 2, "page 1 = 2 plans (400 USDG)");
+        assertEq(router.lastAmountIn(), 397e6, "2 x 198.5 net");
+        vm.prank(keeper);
+        assertFalse(daily.advanceEpoch(address(nvda), 0, ""));
+        assertEq(daily.nextPlanIndex(address(nvda), 1), 4);
+        vm.prank(keeper);
+        assertTrue(daily.advanceEpoch(address(nvda), 0, ""), "last page completes the epoch");
+        for (uint256 i = 1; i <= 5; ++i) {
+            assertEq(daily.getPlan(i).lastEpochId, 1, "everyone filled");
+        }
+    }
+
+    function test_pageCap_oversizedPlanSitsOut_othersFill() public {
+        uint256 whale = _createUsdgPlan(daily, alice, address(nvda), 900e6, 10_000e6);
+        uint256 small = _createUsdgPlan(daily, bob, address(nvda), 200e6, 1_000e6);
+        vm.prank(owner);
+        daily.setMaxPageNotional(address(nvda), 500e6);
+        _nextEpoch(daily);
+        vm.expectEmit(true, false, false, true);
+        emit IPlanVault.PlanTooLarge(whale, 900e6, 500e6);
+        assertTrue(_advance(daily, address(nvda)), "epoch completes in one page");
+        assertEq(daily.getPlan(whale).lastEpochId, 0, "whale sat out");
+        assertEq(daily.getPlan(whale).usdgIdle, 10_000e6);
+        assertEq(daily.getPlan(small).lastEpochId, 1, "bob filled");
+        // the whale lowers the amount and fills next epoch
+        vm.prank(alice);
+        daily.setPlanAmount(whale, 500e6);
+        _nextEpoch(daily);
+        assertFalse(_advance(daily, address(nvda)), "500 fits the cap, bob's 200 would exceed it: two pages");
+        assertEq(daily.getPlan(whale).lastEpochId, 2);
+        assertTrue(_advance(daily, address(nvda)));
+        assertEq(daily.getPlan(small).lastEpochId, 2);
+    }
+
+    function test_pageCap_perStockOverridesDefault() public {
+        _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        _createUsdgPlan(daily, bob, address(nvda), 200e6, 1_000e6);
+        _createUsdgPlan(daily, carol, address(aapl), 200e6, 1_000e6);
+        vm.startPrank(owner);
+        daily.setMaxPageNotional(address(0), 300e6); // default: one 200 USDG plan per page
+        daily.setMaxPageNotional(address(aapl), 0); // aapl uses the default
+        daily.setMaxPageNotional(address(nvda), 1_000e6); // nvda: both fit
+        vm.stopPrank();
+        _nextEpoch(daily);
+        assertTrue(_advance(daily, address(nvda)), "nvda: one page of two");
+        assertTrue(_advance(daily, address(aapl)), "aapl: one plan fits the default");
     }
 
     // ------------------------------------------------------------------
@@ -772,8 +842,9 @@ contract PlanVaultEpochTest is BaseTest {
         Route[] memory path = new Route[](1);
         path[0] = Route({protocol: 1, tokenIn: address(usdg), tokenOut: address(nvda), fee: 3000, extra: ""});
         vm.prank(keeper);
-        vm.expectRevert(); // mock has no pair -> NoRoute bubbles from the swap
+        vm.expectRevert(); // mock has no pair -> NoRoute bubbles from quotePath; the page is not consumed
         daily.advanceEpoch(address(nvda), 0, abi.encode(path, uint256(1)));
+        assertEq(daily.nextPlanIndex(address(nvda), 1), 0);
     }
 
     function test_routeOverride_zeroMinOutRejected() public {
@@ -849,6 +920,7 @@ contract PlanVaultEpochTest is BaseTest {
 import {DailyVault} from "../../src/vault/DailyVault.sol";
 import {VaultParams} from "../../src/vault/VaultTypes.sol";
 import {EpochLib} from "../../src/libraries/EpochLib.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 contract DailyNoDca is DailyVault {
     constructor(address o, address u, address w, address r, address rt, address fr)

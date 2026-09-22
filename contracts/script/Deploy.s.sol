@@ -44,6 +44,12 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 /// The strategy is seeded with `BOOST_SEED_USDG` whole USDG (default 100, paid by the deployer) whose shares are
 /// sent to 0x…dEaD so the share supply is never zero (audit v0.3 M-01). `BOOST_SEED_USDG=0` skips the seed.
 ///
+/// Price guard (audit v0.3 H-01): every epoch purchase is floored at the stock's Chainlink reference price less
+/// `PRICE_GUARD_BPS` (default 300). `PRICE_FEEDS="0xstock:0xfeed,..."` (Chainlink AggregatorV3, USD per raw token)
+/// with `FEED_MAX_STALENESS` seconds (default 90000 = 25 h) is set on every vault. The vaults fail closed
+/// (`REQUIRE_PRICE_FEED`, default true): with it on, every approved stock must have a feed or the script aborts.
+/// `SEQUENCER_FEED` / `SEQUENCER_GRACE` (default 3600) wire Chainlink's L2 sequencer uptime feed when available.
+///
 /// Post-deploy (multisig): call `acceptOwnership()` on registry, router, adapters, vaults, keeper, directory,
 /// boost strategy.
 contract Deploy is Script {
@@ -63,6 +69,14 @@ contract Deploy is Script {
         address morpho;
         bytes32 morphoMarketId;
         uint256 boostSeed;
+        string priceFeeds;
+        uint256 maxPageNotional;
+        string pageCaps;
+        uint32 feedMaxStaleness;
+        uint16 priceGuardBps;
+        bool requirePriceFeed;
+        address sequencerFeed;
+        uint32 sequencerGrace;
     }
 
     struct Out {
@@ -166,6 +180,11 @@ contract Deploy is Script {
             o.keeper.setOperator(e.keepers[k], true);
         }
 
+        // Price guard: Chainlink reference feeds per stock, fail closed unless explicitly opted out.
+        _setPriceFeeds(vaults, stocks, e);
+        // Page sizing: vault-wide cap plus per-stock overrides sized to the pools (script/RouteBench.s.sol).
+        _setPageCaps(vaults, e);
+
         // Boost (optional): one strategy over the configured Morpho Blue USDG market, shared by the vaults.
         if (e.morpho != address(0)) {
             MarketParams memory market = IMorpho(e.morpho).idToMarketParams(Id.wrap(e.morphoMarketId));
@@ -239,6 +258,15 @@ contract Deploy is Script {
         e.morpho = vm.envOr("MORPHO", address(0));
         e.morphoMarketId = vm.envOr("MORPHO_MARKET_ID", bytes32(0));
         e.boostSeed = vm.envOr("BOOST_SEED_USDG", uint256(100)) * 10 ** IERC20Metadata(e.usdg).decimals();
+        e.priceFeeds = vm.envOr("PRICE_FEEDS", string(""));
+        e.maxPageNotional =
+            vm.envOr("MAX_PAGE_NOTIONAL_USDG", uint256(100_000)) * 10 ** IERC20Metadata(e.usdg).decimals();
+        e.pageCaps = vm.envOr("PAGE_NOTIONAL_CAPS", string(""));
+        e.feedMaxStaleness = uint32(vm.envOr("FEED_MAX_STALENESS", uint256(90_000)));
+        e.priceGuardBps = uint16(vm.envOr("PRICE_GUARD_BPS", uint256(300)));
+        e.requirePriceFeed = vm.envOr("REQUIRE_PRICE_FEED", true);
+        e.sequencerFeed = vm.envOr("SEQUENCER_FEED", address(0));
+        e.sequencerGrace = uint32(vm.envOr("SEQUENCER_GRACE", uint256(3_600)));
         require(e.usdg != address(0) && e.weth != address(0), "USDG / WETH required");
         require(e.morpho == address(0) || e.morphoMarketId != bytes32(0), "MORPHO set: MORPHO_MARKET_ID required");
         require(e.feeRecipient != address(0), "FEE_RECIPIENT required");
@@ -276,6 +304,52 @@ contract Deploy is Script {
             string[] memory kv = vm.split(entries[i], ":");
             require(kv.length == 2, "STOCKS entry must be SYMBOL:address");
             registry.listStock(vm.parseAddress(kv[1]), kv[0], false, true);
+        }
+    }
+
+    /// @dev PRICE_FEEDS="0xstock:0xfeed,..." — set the same feeds on every vault, then the guard config. With
+    ///      `REQUIRE_PRICE_FEED` on, every approved stock must have a feed (otherwise no epoch could buy it).
+    function _setPriceFeeds(PlanVault[3] memory vaults, address[] memory stocks, Env memory e) internal {
+        if (bytes(e.priceFeeds).length != 0) {
+            string[] memory entries = vm.split(e.priceFeeds, ",");
+            for (uint256 i; i < entries.length; ++i) {
+                string[] memory kv = vm.split(entries[i], ":");
+                require(kv.length == 2, "PRICE_FEEDS entry must be stock:feed");
+                address stock = vm.parseAddress(kv[0]);
+                address feed = vm.parseAddress(kv[1]);
+                for (uint256 v; v < 3; ++v) {
+                    vaults[v].setPriceFeed(stock, feed, e.feedMaxStaleness);
+                }
+            }
+        }
+        if (e.requirePriceFeed) {
+            for (uint256 s; s < stocks.length; ++s) {
+                (address feed,,,) = vaults[0].priceFeed(stocks[s]);
+                require(feed != address(0), string.concat("PRICE_FEEDS: no feed for ", vm.toString(stocks[s])));
+            }
+        }
+        for (uint256 v; v < 3; ++v) {
+            vaults[v].setPriceGuard(e.priceGuardBps, e.requirePriceFeed, e.sequencerFeed, e.sequencerGrace);
+        }
+    }
+
+    /// @dev MAX_PAGE_NOTIONAL_USDG (whole USDG, vault default) and PAGE_NOTIONAL_CAPS="0xstock:wholeUsdg,..." for
+    ///      stocks whose pools are thinner (or deeper) than the default assumes.
+    function _setPageCaps(PlanVault[3] memory vaults, Env memory e) internal {
+        uint256 unit = 10 ** IERC20Metadata(e.usdg).decimals();
+        for (uint256 v; v < 3; ++v) {
+            vaults[v].setMaxPageNotional(address(0), e.maxPageNotional);
+        }
+        if (bytes(e.pageCaps).length == 0) return;
+        string[] memory entries = vm.split(e.pageCaps, ",");
+        for (uint256 i; i < entries.length; ++i) {
+            string[] memory kv = vm.split(entries[i], ":");
+            require(kv.length == 2, "PAGE_NOTIONAL_CAPS entry must be stock:usdg");
+            address stock = vm.parseAddress(kv[0]);
+            uint256 cap = vm.parseUint(kv[1]) * unit;
+            for (uint256 v; v < 3; ++v) {
+                vaults[v].setMaxPageNotional(stock, cap);
+            }
         }
     }
 

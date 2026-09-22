@@ -17,6 +17,8 @@ interface IPlanVault {
     error EpochNotDue(address stock, uint32 currentEpoch);
     error EpochInProgress(address stock);
     error NotKeeper();
+    /// @notice Owner-only change attempted by the feeManager (swap slippage / keeper tip).
+    error NotOwner();
     error SwapReturnedZero();
     error Overspent(uint256 expected, uint256 actual);
     error InsufficientIdle(uint256 requested, uint256 available);
@@ -27,6 +29,8 @@ interface IPlanVault {
     error ValueOutOfRange(uint256 value, uint256 max);
     error BelowMinimum(uint256 value, uint256 min);
     error OverrideMinOutTooLow(uint256 minOut, uint256 required);
+    /// @notice The page's quote is so small that its minOut rounds to zero.
+    error QuoteTooSmall();
     error BoostUnavailable();
     error BoostInUse();
     error BoostAssetMismatch(address asset);
@@ -36,6 +40,16 @@ interface IPlanVault {
     error NotSkimmable(address token);
     /// @notice A router must share the vault's WETH (sanity check on `setRouter`).
     error RouterMismatch(address router);
+    /// @notice The page's `minOut` is below the reference price floor (audit v0.3 H-01): retry when the pool is fair.
+    error PriceDeviates(address stock, uint256 minOut, uint256 floor);
+    /// @notice `requireFeed` is on and `stock` has no reference feed.
+    error PriceFeedMissing(address stock);
+    /// @notice The stock's feed is stale, zero or from the future.
+    error PriceFeedStale(address stock);
+    /// @notice The L2 sequencer is down or came back too recently (see `setPriceGuard`).
+    error SequencerDown();
+    /// @notice A feed that does not answer, answers zero, or a zero staleness window.
+    error InvalidFeed(address feed);
 
     // ------------------------------------------------------------------
     // Events
@@ -78,10 +92,6 @@ interface IPlanVault {
         uint256 stockOut,
         uint32 plansFilled
     );
-    /// @notice The page's purchase could not be quoted / executed; no plan was charged. The cursor still advances.
-    event EpochPageSkipped(
-        address indexed stock, uint32 indexed epochId, uint256 fromIndex, uint256 toIndex, bytes reason
-    );
     event EpochExecuted(address indexed stock, uint32 indexed epochId);
     event Claimed(
         uint256 indexed planId, address indexed stock, address indexed recipient, uint256 amount, uint256 fee
@@ -94,12 +104,18 @@ interface IPlanVault {
     event MinimumsSet(uint256 minAmountPerEpoch, uint256 minDeposit);
     event DustSweepMinSet(uint256 minUsdg);
     event MaxPlansPerTxSet(uint16 maxPlansPerTx);
+    /// @notice Page notional cap (USDG) for `stock`, or the vault-wide default when `stock == address(0)`.
+    event MaxPageNotionalSet(address indexed stock, uint256 amount);
+    /// @notice A plan's spend alone exceeds the page cap: it sat this epoch out (lower `amountPerEpoch`).
+    event PlanTooLarge(uint256 indexed planId, uint256 spend, uint256 cap);
     event RouterSet(address router);
     event FeeRecipientSet(address feeRecipient);
     event FeeManagerSet(address feeManager);
     event KeeperSet(address indexed keeper, bool allowed);
     event KeeperOnlySet(bool keeperOnly);
     event Rescued(address indexed token, address indexed to, uint256 amount);
+    event PriceFeedSet(address indexed stock, address feed, uint32 maxStaleness);
+    event PriceGuardSet(uint16 maxDeviationBps, bool requireFeed, address sequencerFeed, uint32 sequencerGrace);
 
     // ------------------------------------------------------------------
     // Plans
@@ -165,6 +181,20 @@ interface IPlanVault {
     function totalUsdgIdle() external view returns (uint256);
     function boostStrategy() external view returns (address);
     function setBoostStrategy(address strategy) external;
+    function setMaxPageNotional(address stock, uint256 amount) external;
+    function maxPageNotional() external view returns (uint256);
+    function maxPageNotionalOf(address stock) external view returns (uint256);
+    function setPriceFeed(address stock, address feed, uint32 maxStaleness) external;
+    function setPriceGuard(uint16 maxDeviationBps, bool requireFeed, address sequencerFeed, uint32 sequencerGrace)
+        external;
+    function priceFeed(address stock)
+        external
+        view
+        returns (address feed, uint32 maxStaleness, uint8 feedDecimals, uint8 stockDecimals);
+    function priceGuard()
+        external
+        view
+        returns (uint16 maxDeviationBps, bool requireFeed, address sequencerFeed, uint32 sequencerGrace);
     function totalBoostShares() external view returns (uint256);
     function boostAssets() external view returns (uint256);
     function totalStockAccrued(address stock) external view returns (uint256);

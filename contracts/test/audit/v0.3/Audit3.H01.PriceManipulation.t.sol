@@ -3,20 +3,30 @@ pragma solidity ^0.8.24;
 
 import {AuditBase} from "../AuditBase.sol";
 import {CPMMPool, Trader} from "../mocks/CPMMPool.sol";
+import {MockAggregatorV3} from "../../mocks/MockChainlink.sol";
 import {IPlanVault} from "../../../src/interfaces/IPlanVault.sol";
 
-/// @dev AUDIT v0.3 / H-01. Epoch purchases have no manipulation-resistant price reference. Every number the
-///      vault checks (router quote, minOut = quote x 0.995, impact vs slot0) is read in the executing block, so an
-///      attacker who pre-positions in an EARLIER block (no same-block ordering needed, no mempool needed) and
-///      unwinds after the fill takes value from every plan on the page. Epoch timing is public and predictable.
+/// @title AUDIT v0.3 / H-01 regression — epoch purchases are floored at the Chainlink reference price
+///
+/// Finding: every number the vault checked (router quote, minOut = quote x 0.995, impact vs slot0) was read in
+/// the executing block, so an attacker who pre-positioned in an EARLIER block (no ordering, no mempool needed)
+/// and unwound after the fill took value from every plan on the page; timing was public and predictable.
+/// Fix: PriceGuardLib — `minOut` must be >= Chainlink reference x (1 - maxDeviationBps), else `PriceDeviates`
+/// and the page is retried later. The attacker's push now costs them the round-trip fees for nothing.
 contract Audit3_H01_PriceManipulation is AuditBase {
     CPMMPool internal pool;
     Trader internal attacker;
+    MockAggregatorV3 internal feed;
     uint256[] internal ids;
     uint256 internal constant PER_EPOCH = 5_000e6;
 
     function setUp() public override {
         super.setUp();
+        feed = new MockAggregatorV3(8, 500e8);
+        vm.startPrank(owner);
+        daily.setPriceFeed(address(nvda), address(feed), 1 days);
+        daily.setPriceGuard(300, true, address(0), 0);
+        vm.stopPrank();
         // $2M USDG / 4,000 NVDA constant-product pool at 500 USDG per NVDA, 5 bps fee: a realistic mid-size pool
         // (a 15k page has ~0.8% impact here; in a $1M pool the same page is already OVER the 150 bps cap).
         pool = _cpmmPool(address(usdg), 2_000_000e6, address(nvda), 4_000e18, 500);
@@ -35,44 +45,90 @@ contract Audit3_H01_PriceManipulation is AuditBase {
         }
     }
 
-    /// Block N: attacker buys NVDA. Block N+1: operator runs the scheduled epoch (auto-route, no override).
-    /// Block N+2: attacker sells back. The page's own impact stays under the 150 bps cap because the cap is
-    /// measured against the ALREADY PUSHED spot price.
-    function test_crossBlockManipulation_takesValueFromEveryPlanOnThePage() public {
+    /// Block N: attacker buys NVDA. Block N+1: operator runs the scheduled epoch (auto-route, no override): the
+    /// pool-derived checks pass (the impact cap is measured against the ALREADY PUSHED spot), but the Chainlink
+    /// floor refuses the fill. Nobody is charged; the attacker unwinds at a loss (fees).
+    function test_crossBlockManipulation_isRefusedByTheReferenceFloor() public {
         _nextEpoch();
         uint256 amountIn = (3 * PER_EPOCH * (10_000 - 75)) / 10_000; // page net of the 75 bps purchase fee
 
-        // Baseline: the fair fill.
+        // Baseline: the fair fill passes the guard.
         uint256 snap = vm.snapshotState();
-        _advance(keeper);
+        assertTrue(_advance(keeper));
         uint256 fairOut = _totalAccrued();
+        assertGt(fairOut, 0);
         vm.revertToState(snap);
 
         bool buyNvda = address(usdg) == pool.token0();
         uint256 push = 600_000e6;
-
-        // Block N.
         uint256 nvdaHeld = attacker.trade(pool, buyNvda, push);
 
-        // Block N+1: the vault's own checks all pass.
         vm.roll(block.number + 1);
         vm.warp(block.timestamp + 12);
         (uint256 quoted,, uint256 impact) = router.quoteWithImpact(address(usdg), address(nvda), amountIn);
-        assertLe(impact, router.maxPriceImpactBps(), "impact cap passes against the pushed mid");
+        assertLe(impact, router.maxPriceImpactBps(), "the pool-derived cap is blind to the push");
         assertGt(quoted, 0);
-        _advance(keeper);
-        uint256 manipulatedOut = _totalAccrued();
+        vm.prank(keeper);
+        vm.expectPartialRevert(IPlanVault.PriceDeviates.selector);
+        daily.advanceEpoch(address(nvda), 0, "");
+        assertEq(_totalAccrued(), 0, "nobody bought at the pushed price");
+        assertEq(daily.totalUsdgIdle(), 3 * 50_000e6, "nobody charged");
+        assertEq(daily.nextPlanIndex(address(nvda), daily.currentEpochId()), 0, "page not consumed: retried later");
 
-        // Block N+2.
         vm.roll(block.number + 1);
         uint256 usdgBack = attacker.trade(pool, !buyNvda, nvdaHeld);
+        emit log_named_uint("attacker loss USDG (1e6)", push - usdgBack);
+        assertLt(usdgBack, push, "attacker pays the round-trip fees for nothing");
 
-        emit log_named_uint("fair NVDA (1e18)", fairOut);
-        emit log_named_uint("manipulated NVDA (1e18)", manipulatedOut);
-        emit log_named_uint("attacker profit USDG (1e6)", usdgBack - push);
+        // Once the pool is back near the reference, the operator's retry fills at fair value.
+        assertTrue(_advance(keeper));
+        assertGt(_totalAccrued() * 100, fairOut * 99);
+    }
 
-        assertGt(usdgBack, push, "attacker nets a profit");
-        assertLt(manipulatedOut * 100, fairOut * 70, "users receive < 70% of the fair fill");
+    /// A push that stays inside the tolerance still fills: the residual exposure per page is bounded by
+    /// maxDeviationBps (the page's own impact, the pool fee and swapSlippageBps all eat into that budget:
+    /// here a +0.5% push passes, a +2% push already trips the floor), never the whole page.
+    function test_pushInsideTheTolerance_fillsBounded() public {
+        _nextEpoch();
+        uint256 snap = vm.snapshotState();
+        _advance(keeper);
+        uint256 fairOut = _totalAccrued();
+        vm.revertToState(snap);
+        bool buyNvda = address(usdg) == pool.token0();
+        attacker.trade(pool, buyNvda, 5_000e6); // ~+0.5%
+        vm.roll(block.number + 1);
+        assertTrue(_advance(keeper));
+        assertGt(_totalAccrued() * 100, fairOut * 97, "bounded by the tolerance");
+        vm.revertToState(snap);
+        attacker.trade(pool, buyNvda, 20_000e6); // ~+2%: with the page's own impact that is already outside
+        vm.roll(block.number + 1);
+        vm.prank(keeper);
+        vm.expectPartialRevert(IPlanVault.PriceDeviates.selector);
+        daily.advanceEpoch(address(nvda), 0, "");
+    }
+
+    /// KNOWN: a stock without a feed is only protected while `requireFeed` is on. With the guard opted out
+    /// (or the feed cleared) the original attack works exactly as in the audit report. Keep `requireFeed`
+    /// on in production and give every approved stock a feed (Deploy.s.sol enforces it).
+    function test_KNOWN_unguardedStock_isStillExposed() public {
+        vm.startPrank(owner);
+        daily.setPriceFeed(address(nvda), address(0), 0);
+        daily.setPriceGuard(300, false, address(0), 0);
+        vm.stopPrank();
+        _nextEpoch();
+        uint256 snap = vm.snapshotState();
+        _advance(keeper);
+        uint256 fairOut = _totalAccrued();
+        vm.revertToState(snap);
+        bool buyNvda = address(usdg) == pool.token0();
+        uint256 nvdaHeld = attacker.trade(pool, buyNvda, 600_000e6);
+        vm.roll(block.number + 1);
+        _advance(keeper);
+        uint256 manipulatedOut = _totalAccrued();
+        vm.roll(block.number + 1);
+        uint256 usdgBack = attacker.trade(pool, !buyNvda, nvdaHeld);
+        assertGt(usdgBack, 600_000e6, "attacker nets a profit without the guard");
+        assertLt(manipulatedOut * 100, fairOut * 70);
     }
 
     /// The attacker's real cost is arbitrage during the hold. If one arbitrageur restores the price between the
@@ -126,9 +182,9 @@ contract Audit3_H01_PriceManipulation is AuditBase {
         }
     }
 
-    /// The same pre-positioning cannot be detected by the cap regardless of its size: the cap bounds the page's
-    /// slippage relative to the current pool state, never the distance of that state from a reference price.
-    function test_impactCapIsBlindToThePushSize() public {
+    /// The impact cap cannot detect pre-positioning of any size (it bounds the page's slippage relative to the
+    /// current pool state, never that state's distance from a reference); the feed floor refuses all of them.
+    function test_impactCapIsBlindButTheFloorIsNot() public {
         _nextEpoch();
         uint256 amountIn = (3 * PER_EPOCH * (10_000 - 75)) / 10_000;
         bool buyNvda = address(usdg) == pool.token0();
@@ -139,7 +195,9 @@ contract Audit3_H01_PriceManipulation is AuditBase {
             vm.roll(block.number + 1);
             (,, uint256 impact) = router.quoteWithImpact(address(usdg), address(nvda), amountIn);
             assertLe(impact, router.maxPriceImpactBps());
-            assertTrue(_advance(keeper), "page fills at whatever price the pool was left at");
+            vm.prank(keeper);
+            vm.expectPartialRevert(IPlanVault.PriceDeviates.selector);
+            daily.advanceEpoch(address(nvda), 0, "");
             vm.revertToState(snap);
         }
     }
