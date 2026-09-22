@@ -11,6 +11,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {BoostLib} from "../libraries/BoostLib.sol";
+import {VaultAdminLib} from "../libraries/VaultAdminLib.sol";
 
 import {IPlanVault} from "../interfaces/IPlanVault.sol";
 import {IStockRegistry} from "../interfaces/IStockRegistry.sol";
@@ -19,7 +20,7 @@ import {IDCA} from "../token/IDCA.sol";
 import {IAggregatorRouter, Route} from "../router/IAggregatorRouter.sol";
 import {FeeMath} from "../libraries/FeeMath.sol";
 import {EpochLib} from "../libraries/EpochLib.sol";
-import {Plan, FeeConfig, VaultParams} from "./VaultTypes.sol";
+import {Plan, FeeConfig, VaultParams, DustState} from "./VaultTypes.sol";
 
 /// @title PlanVault
 /// @notice Shared implementation of a DCA frequency vault. Daily / Weekly / Monthly are thin subclasses
@@ -37,7 +38,8 @@ import {Plan, FeeConfig, VaultParams} from "./VaultTypes.sol";
 ///      - Boost: a plan may opt in (`boosted`) to have its idle USDG lent out through `boostStrategy`, an
 ///        owner-set ERC-4626 vault (MorphoBlueStrategy = one Morpho Blue market). The vault keeps ONE strategy
 ///        position and splits it between boosted plans with internal shares (`boostShares`, `totalBoostShares`;
-///        see BoostLib, a linked external library that holds the pool mutations). A boosted plan's spendable
+///        see BoostLib, a linked external library that holds the pool mutations; VaultAdminLib holds the rarely
+///        used skim / rescue paths for the same size reason). A boosted plan's spendable
 ///        balance is `usdgIdle + boostValueOf(plan)`; spends and withdrawals take `usdgIdle` first, then pull
 ///        from the strategy. `boostPrincipal` (cost basis) and `boostEarned` (realised yield) track earnings
 ///        per plan. Epoch pages pull the page's boosted spend in one strategy withdrawal; if the strategy
@@ -97,8 +99,10 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     /// @dev The boost pool: strategy + internal share supply (see BoostLib).
     BoostLib.Pool internal _boost;
 
-    uint16 internal constant MAX_KEEPER_TIP_BPS = 5_000;
-    uint16 internal constant MAX_SWAP_SLIPPAGE_BPS = 500;
+    /// @dev Quote and swap run in the same transaction on the same pool state, so the tolerance only covers
+    ///      rounding; audit v0.3 L-04 lowered both caps and made them owner-only.
+    uint16 internal constant MAX_KEEPER_TIP_BPS = 1_000;
+    uint16 internal constant MAX_SWAP_SLIPPAGE_BPS = 100;
     uint16 internal constant MAX_PLANS_PER_TX_CAP = 1_000;
 
     // ------------------------------------------------------------------
@@ -118,8 +122,7 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     mapping(address => uint256) public totalStockAccrued;
     mapping(address => mapping(address => uint256)) public userStockAccrued;
     mapping(address => uint256) public dustPot;
-    uint256 public usdgDust;
-    uint256 public wethDust;
+    DustState internal _dust;
     uint256 public totalNotionalUsdg;
     uint256 public epochsCompleted;
 
@@ -404,10 +407,13 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     /// @param stock         Registry-approved Stock Token.
     /// @param limit         Max plans to process this call (0 or > maxPlansPerTx => maxPlansPerTx).
     /// @param routeOverride Empty for auto-routing. Owner/keepers may pass abi.encode(Route[] path, uint256 minOut)
-    ///                      to force the path. Every hop must be approved on the router, and `minOut` may not be
-    ///                      below the auto-route's floor (quote * (1 - swapSlippageBps)) nor below the same floor
-    ///                      computed on the override path's own quote: an override picks a path, never a worse price.
-    ///                      Override failures revert (the page is not consumed); auto-route failures skip the page.
+    ///                      to force the path. Every hop must be approved on the router, the path must be within
+    ///                      the router's price-impact cap (`quotePath` enforces it), and `minOut` may not be below
+    ///                      the auto-route's floor (quote * (1 - swapSlippageBps)) nor below the same floor computed
+    ///                      on the override path's own quote: an override picks a path, never a worse price or a
+    ///                      larger impact. Override failures revert (the page is not consumed); auto-route failures
+    ///                      skip the page. Note: like the auto-route, the floor is the pool's current price; see
+    ///                      AUDIT.md H-01 for the external reference that is still to be added.
     /// @return completed True once the cursor reached the end of the plan list (epoch marked executed).
     function advanceEpoch(address stock, uint256 limit, bytes calldata routeOverride)
         external
@@ -450,7 +456,7 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
             } else {
                 emit EpochPageSkipped(stock, ctx.epochId, ctx.start, ctx.end, reason);
                 // Nobody is charged, so the boosted USDG already pulled goes straight back to the strategy.
-                if (ctx.boostOut > 0) _boost.strategy.deposit(ctx.boostOut, address(this));
+                if (ctx.boostOut > 0) BoostLib.redeposit(_boost, ctx.boostOut);
                 ctx.totalNet = 0;
                 ctx.totalFee = 0;
                 ctx.filled = 0;
@@ -464,6 +470,17 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     /// @notice Forward accumulated dust to `feeRecipient` regardless of the threshold. Owner or feeManager.
     function sweepDust() external onlyFeeManager nonReentrant {
         _sweepDust(true);
+    }
+
+    /// @inheritdoc IPlanVault
+    /// @notice Reconcile a balance the vault did not book (a transfer made directly to it, an issuer
+    ///         distribution): the excess of a listed stock goes to that stock's `dustPot` (distributed to its
+    ///         plans at the next epoch), excess USDG / WETH to the dust sinks swept to `feeRecipient`. The
+    ///         invariants `balance == accounted + dust` hold again afterwards. Owner or feeManager.
+    ///         (audit v0.3 M-04: without this, such balances were unreachable — `rescueERC20` rightly refuses
+    ///         every token that can carry user accounting.)
+    function skim(address token) external onlyFeeManager nonReentrant {
+        VaultAdminLib.skim(token, _usdg, _weth, _registry, totalUsdgIdle, _dust, totalStockAccrued, dustPot);
     }
 
     // ------------------------------------------------------------------
@@ -539,21 +556,28 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         uint256 usdgBefore = _usdg.balanceOf(address(this));
         uint256 stockBefore = IERC20(stock).balanceOf(address(this));
         uint256 wethBefore = _weth.balanceOf(address(this));
+        // Exact, per-call approval: the router can only ever pull this page's input (audit v0.3 M-03).
+        _usdg.forceApprove(address(_router), amountIn);
+        bool swapped;
         if (isOverride) {
             _router.swapWithRoute(address(_usdg), stock, amountIn, minOut, address(this), path);
+            swapped = true;
         } else {
-            try _router.swapWithRoute(address(_usdg), stock, amountIn, minOut, address(this), path) {}
-            catch (bytes memory err) {
-                return (false, err);
+            try _router.swapWithRoute(address(_usdg), stock, amountIn, minOut, address(this), path) {
+                swapped = true;
+            } catch (bytes memory err) {
+                reason = err;
             }
         }
+        _usdg.forceApprove(address(_router), 0);
+        if (!swapped) return (false, reason);
 
         ctx.bought = IERC20(stock).balanceOf(address(this)) - stockBefore;
         if (ctx.bought == 0) revert SwapReturnedZero();
         ctx.spent = usdgBefore - _usdg.balanceOf(address(this));
         if (ctx.spent > amountIn) revert Overspent(amountIn, ctx.spent);
         uint256 wethIn = _weth.balanceOf(address(this)) - wethBefore;
-        if (wethIn > 0) wethDust += wethIn;
+        if (wethIn > 0) _dust.weth += wethIn;
         ok = true;
     }
 
@@ -567,6 +591,9 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
             p.usdgIdle -= f.spend - f.fromBoost;
             if (f.fromBoost > 0) BoostLib.burn(_boost, p, f.planId, f.fromBoost, ctx.poolAssets, ctx.poolShares);
             p.lastEpochId = ctx.epochId;
+            // The claim-fee tier is fixed at fill time (same slot as lastEpochId, so this is free): a $DCA
+            // balance held only for the duration of a claim no longer waives the fee (audit v0.3 L-01).
+            p.claimFeeFree = f.autoDist;
         }
         totalUsdgIdle -= ctx.totalSpend - ctx.boostOut;
     }
@@ -626,7 +653,7 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
             emit PlanFilled(f.planId, ctx.epochId, f.spend, f.fee, share, sent);
         }
         if (backTotal > 0) totalUsdgIdle += backTotal;
-        if (residual > backTotal) usdgDust += residual - backTotal;
+        if (residual > backTotal) _dust.usdg += residual - backTotal;
     }
 
     /// @dev Phase 6: cursor, stats and completion.
@@ -646,15 +673,15 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     /// @dev Forward dust to the treasury. USDG only once it reaches `dustSweepMinUsdg` (or `force`); WETH whenever
     ///      there is any (it only appears in the rare partial-hop case).
     function _sweepDust(bool force) internal {
-        uint256 u = usdgDust;
+        uint256 u = _dust.usdg;
         if (u > 0 && (force || u >= dustSweepMinUsdg)) {
-            usdgDust = 0;
+            _dust.usdg = 0;
             _usdg.safeTransfer(feeRecipient, u);
             emit DustSwept(address(_usdg), feeRecipient, u);
         }
-        uint256 w = wethDust;
+        uint256 w = _dust.weth;
         if (w > 0) {
-            wethDust = 0;
+            _dust.weth = 0;
             _weth.safeTransfer(feeRecipient, w);
             emit DustSwept(address(_weth), feeRecipient, w);
         }
@@ -664,13 +691,19 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     // Admin
     // ==================================================================
 
-    /// @notice Replace the whole fee configuration. Every fee is capped at 90 bps; tolerances have their own caps.
+    /// @notice Replace the whole fee configuration. Every fee is capped at 90 bps; tolerances have their own caps
+    ///         (swap slippage <= 100 bps, keeper tip <= 10%) and may only be changed by the owner: the feeManager
+    ///         can move the fees, not the price tolerance of every epoch buy (audit v0.3 L-04).
     /// @dev Owner or feeManager. Emits the full config so indexers never need to diff.
     function setFees(FeeConfig calldata f) external onlyFeeManager {
         FeeMath.validate(f.purchaseFeeBps);
         FeeMath.validate(f.depositFeeBps);
         FeeMath.validate(f.withdrawFeeBps);
         FeeMath.validate(f.claimFeeBps);
+        if (
+            msg.sender != owner()
+                && (f.swapSlippageBps != _fees.swapSlippageBps || f.keeperTipBps != _fees.keeperTipBps)
+        ) revert OwnableUnauthorizedAccount(msg.sender);
         if (f.keeperTipBps > MAX_KEEPER_TIP_BPS) revert ValueOutOfRange(f.keeperTipBps, MAX_KEEPER_TIP_BPS);
         if (f.swapSlippageBps > MAX_SWAP_SLIPPAGE_BPS) {
             revert ValueOutOfRange(f.swapSlippageBps, MAX_SWAP_SLIPPAGE_BPS);
@@ -708,7 +741,8 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         emit MaxPlansPerTxSet(n);
     }
 
-    /// @notice Swap the router. Approvals to the old router are revoked.
+    /// @notice Swap the router. The vault holds no standing approvals (it approves exactly one swap's input per
+    ///         call), so there is nothing to revoke; the new router must share the vault's WETH.
     function setRouter(address newRouter) external onlyOwner {
         _setRouter(newRouter);
     }
@@ -753,17 +787,9 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     }
 
     /// @notice Recover tokens that can never be user accounting: not USDG, not WETH, not the boost strategy's
-    ///         shares, never listed as a stock.
+    ///         shares, never listed as a stock (those are reconciled with `skim`).
     function rescueERC20(address token, address to, uint256 amount) external onlyOwner {
-        if (
-            token == address(_usdg) || token == address(_weth) || token == address(_boost.strategy)
-                || _registry.isKnown(token)
-        ) {
-            revert TokenNotRescuable(token);
-        }
-        if (to == address(0)) revert ZeroAddress();
-        IERC20(token).safeTransfer(to, amount);
-        emit Rescued(token, to, amount);
+        VaultAdminLib.rescue(token, to, amount, _usdg, _weth, address(_boost.strategy), _registry);
     }
 
     // ==================================================================
@@ -823,6 +849,16 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     /// @inheritdoc IPlanVault
     function fees() external view returns (FeeConfig memory) {
         return _fees;
+    }
+
+    /// @inheritdoc IPlanVault
+    function usdgDust() external view returns (uint256) {
+        return _dust.usdg;
+    }
+
+    /// @inheritdoc IPlanVault
+    function wethDust() external view returns (uint256) {
+        return _dust.weth;
     }
 
     /// @inheritdoc IPlanVault
@@ -898,7 +934,9 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         }
         uint256 usdgBefore = _usdg.balanceOf(address(this));
         uint256 wethBefore = _weth.balanceOf(address(this));
+        _weth.forceApprove(address(_router), net); // exact, per-call (audit v0.3 M-03)
         _router.swap(address(_weth), address(_usdg), net, minUsdgOut, address(this));
+        _weth.forceApprove(address(_router), 0);
         out = _usdg.balanceOf(address(this)) - usdgBefore;
         uint256 spent = wethBefore - _weth.balanceOf(address(this));
         if (spent > net) revert Overspent(net, spent);
@@ -930,7 +968,7 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         if (amount == 0) revert ZeroAmount();
         if (amount > p.stockAccrued) revert InsufficientAccrued(amount, p.stockAccrued);
 
-        uint16 bps = isAutoDistribute(p.owner) ? 0 : _fees.claimFeeBps;
+        uint16 bps = p.claimFeeFree ? 0 : _fees.claimFeeBps;
         (uint256 net, uint256 fee) = FeeMath.split(amount, bps);
 
         address stock = p.stock;
@@ -996,16 +1034,12 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         return abi.decode(ret, (bool));
     }
 
+    /// @dev No standing approvals are granted (audit v0.3 M-03: a max approval made `setRouter` a one-transaction
+    ///      custody transfer). `_buyStock` / `_zapWethDeposit` approve exactly one swap's input and reset it.
     function _setRouter(address newRouter) internal {
         if (newRouter == address(0)) revert ZeroAddress();
-        address old = address(_router);
-        if (old != address(0)) {
-            _usdg.forceApprove(old, 0);
-            _weth.forceApprove(old, 0);
-        }
+        if (IAggregatorRouter(newRouter).weth() != address(_weth)) revert RouterMismatch(newRouter);
         _router = IAggregatorRouter(newRouter);
-        _usdg.forceApprove(newRouter, type(uint256).max);
-        _weth.forceApprove(newRouter, type(uint256).max);
         emit RouterSet(newRouter);
     }
 }

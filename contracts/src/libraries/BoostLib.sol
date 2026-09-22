@@ -29,7 +29,14 @@ library BoostLib {
     struct Pool {
         IERC4626 strategy; // address(0) = boost unavailable
         uint256 totalShares; // internal shares held by every boosted plan combined
+        IERC20 asset; // the strategy's asset (USDG); approved per call, never standing (audit v0.3 M-03)
     }
+
+    /// @dev A strategy deposit must credit the vault with at least `assets` minus this tolerance (1 bp plus a
+    ///      few units of ERC-4626 / Morpho rounding); otherwise the deposit is refused instead of silently lost
+    ///      (audit v0.3 M-01: an empty strategy with a donated balance minted zero shares).
+    uint256 internal constant DEPOSIT_TOLERANCE_BPS = 1;
+    uint256 internal constant DEPOSIT_TOLERANCE_ABS = 3;
 
     // ------------------------------------------------------------------
     // Pure / view (internal: inlined into the vault)
@@ -65,6 +72,9 @@ library BoostLib {
         returns (uint256 toPool, uint256 fromPool)
     {
         if (enabled) {
+            // A plan may not be flagged boosted with no strategy to lend through, even when it has nothing to
+            // lend yet: every later deposit would revert until it is unboosted (audit v0.3 L-03).
+            if (address(pool.strategy) == address(0)) revert IPlanVault.BoostUnavailable();
             p.boosted = true;
             toPool = p.usdgIdle;
             if (toPool > 0) {
@@ -113,6 +123,15 @@ library BoostLib {
         _burn(pool, p, planId, assets, snapAssets, snapShares);
     }
 
+    /// @notice Put a page's boosted spend back into the strategy after the page was skipped (nobody was charged;
+    ///         the plans' internal shares were never burned). Exact, per-call approval.
+    function redeposit(Pool storage pool, uint256 assets) external {
+        IERC4626 s = pool.strategy;
+        pool.asset.forceApprove(address(s), assets);
+        s.deposit(assets, address(this));
+        pool.asset.forceApprove(address(s), 0);
+    }
+
     /// @notice Pull one epoch page's boosted spend from the strategy. Returns false (and emits) instead of
     ///         reverting when the strategy cannot pay — a fully utilised market must never block the epoch for
     ///         unboosted plans.
@@ -127,7 +146,8 @@ library BoostLib {
 
     /// @notice Set (or migrate) the strategy. Its asset must be `usdg`. With boosted positions open the whole
     ///         position is redeemed from the old strategy and deposited into the new one here (internal shares
-    ///         are untouched); clearing the strategy then reverts `BoostInUse`.
+    ///         are untouched); clearing the strategy then reverts `BoostInUse`. No standing approval is left on
+    ///         either strategy (audit v0.3 M-03).
     function setStrategy(Pool storage pool, IERC20 usdg, address strategy) external {
         IERC4626 old = pool.strategy;
         if (strategy != address(0)) {
@@ -135,18 +155,17 @@ library BoostLib {
             if (asset != address(usdg)) revert IPlanVault.BoostAssetMismatch(asset);
         }
         uint256 moved;
-        if (address(old) != address(0)) {
-            if (pool.totalShares > 0) {
-                if (strategy == address(0)) revert IPlanVault.BoostInUse();
-                uint256 held = old.balanceOf(address(this));
-                if (held > 0) moved = old.redeem(held, address(this), address(this));
-            }
-            usdg.forceApprove(address(old), 0);
+        if (address(old) != address(0) && pool.totalShares > 0) {
+            if (strategy == address(0)) revert IPlanVault.BoostInUse();
+            uint256 held = old.balanceOf(address(this));
+            if (held > 0) moved = old.redeem(held, address(this), address(this));
         }
         pool.strategy = IERC4626(strategy);
-        if (strategy != address(0)) {
-            usdg.forceApprove(strategy, type(uint256).max);
-            if (moved > 0) IERC4626(strategy).deposit(moved, address(this));
+        pool.asset = usdg;
+        if (moved > 0) {
+            usdg.forceApprove(strategy, moved);
+            IERC4626(strategy).deposit(moved, address(this));
+            usdg.forceApprove(strategy, 0);
         }
         emit IPlanVault.BoostStrategySet(strategy, moved);
     }
@@ -158,8 +177,21 @@ library BoostLib {
     function _deposit(Pool storage pool, Plan storage p, uint256 planId, uint256 assets) private {
         IERC4626 s = pool.strategy;
         if (address(s) == address(0)) revert IPlanVault.BoostUnavailable();
-        uint256 shares = Math.mulDiv(assets, pool.totalShares + 1, poolAssets(pool) + 1);
+        uint256 sharesBefore = s.balanceOf(address(this));
+        uint256 valueBefore = s.convertToAssets(sharesBefore);
+        uint256 shares = Math.mulDiv(assets, pool.totalShares + 1, valueBefore + 1);
+        IERC20 asset = pool.asset;
+        asset.forceApprove(address(s), assets);
         s.deposit(assets, address(this));
+        asset.forceApprove(address(s), 0);
+        // Refuse a deposit the strategy did not credit (zero shares, or a value shortfall beyond rounding).
+        uint256 sharesAfter = s.balanceOf(address(this));
+        uint256 valueAfter = s.convertToAssets(sharesAfter);
+        uint256 credited = valueAfter > valueBefore ? valueAfter - valueBefore : 0;
+        if (
+            sharesAfter == sharesBefore
+                || credited + DEPOSIT_TOLERANCE_ABS + (assets * DEPOSIT_TOLERANCE_BPS) / 10_000 < assets
+        ) revert IPlanVault.BoostDepositLost(assets, credited);
         p.boostShares += shares.toUint128();
         p.boostPrincipal += assets.toUint128();
         pool.totalShares += shares;

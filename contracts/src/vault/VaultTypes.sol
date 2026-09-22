@@ -13,6 +13,7 @@ struct Plan {
     uint32 lastEpochId; // last epoch this plan was filled in
     bool paused; // paused plans skip spend but keep balances
     bool boosted; // idle USDG is parked in the vault's boostStrategy (Morpho Blue) instead of sitting in usdgIdle
+    bool claimFeeFree; // owner held the auto-distribute $DCA tier at the last fill: claims of the accrued stock are fee-free
     // slot 2
     address stock; // registry-approved Stock Token
     // slot 3
@@ -23,6 +24,13 @@ struct Plan {
     uint128 boostPrincipal; // USDG cost basis of boostShares; value above it is unrealised yield
     // slot 5 — boosted plans only
     uint128 boostEarned; // yield realised so far (USDG), booked whenever boosted funds are spent or withdrawn
+}
+
+/// @notice Rounding / reconciliation remainders held by a vault until swept to `feeRecipient` (one struct so the
+///         linked VaultAdminLib can take a storage pointer to both).
+struct DustState {
+    uint256 usdg; // unspent purchase notional that could not be split exactly, plus skimmed USDG
+    uint256 weth; // WETH that reached the vault outside a deposit (never expected; swept whenever non-zero)
 }
 
 /// @notice Every fee / tolerance knob on a vault, in bps.

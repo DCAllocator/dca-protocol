@@ -109,8 +109,11 @@ contract UniV3Adapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
         address pool = abi.decode(route.extra, (address));
         if (!_poolOk(pool) || !_tokensMatch(pool, route.tokenIn, route.tokenOut)) return (0, 0);
         verifiedPool[pool] = true; // the simulation callback authenticates against this
-        amountOut = _simulate(pool, route.tokenIn, route.tokenOut, amountIn);
-        if (amountOut == 0) return (0, 0);
+        uint256 used;
+        (amountOut, used) = _simulate(pool, route.tokenIn, route.tokenOut, amountIn);
+        // A hop that cannot consume its whole input (in-range liquidity exhausted) is reported as no fill:
+        // the router executes full fills only (audit v0.3 M-02).
+        if (amountOut == 0 || used < amountIn) return (0, 0);
         midOut = _midOut(pool, route.tokenIn < route.tokenOut, amountIn);
     }
 
@@ -151,24 +154,27 @@ contract UniV3Adapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
     // ------------------------------------------------------------------
 
     /// @inheritdoc IUniswapV3SwapCallback
-    /// @dev Only verified pools may call. In SIMULATE mode the output is returned via a sentinel revert.
+    /// @dev Only verified pools may call. In SIMULATE mode the output and the input consumed are returned via
+    ///      a sentinel revert (sentinel, amountOut, amountInUsed).
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external {
         CallbackData memory d = abi.decode(data, (CallbackData));
         if (msg.sender != d.pool || !verifiedPool[d.pool]) revert UnauthorizedCallback();
 
         bool zeroForOne = d.tokenIn < d.tokenOut;
+        int256 inDelta = zeroForOne ? amount0Delta : amount1Delta;
         if (d.mode == MODE_SIMULATE) {
             int256 outDelta = zeroForOne ? amount1Delta : amount0Delta;
             uint256 out = outDelta < 0 ? SafeCast.toUint256(-outDelta) : 0;
+            uint256 used = inDelta > 0 ? SafeCast.toUint256(inDelta) : 0;
             bytes32 sentinel = QUOTE_SENTINEL;
             assembly ("memory-safe") {
                 let ptr := mload(0x40)
                 mstore(ptr, sentinel)
                 mstore(add(ptr, 0x20), out)
-                revert(ptr, 0x40)
+                mstore(add(ptr, 0x40), used)
+                revert(ptr, 0x60)
             }
         }
-        int256 inDelta = zeroForOne ? amount0Delta : amount1Delta;
         if (inDelta > 0) IERC20(d.tokenIn).safeTransfer(msg.sender, SafeCast.toUint256(inDelta));
     }
 
@@ -191,8 +197,11 @@ contract UniV3Adapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
         return IUniswapV3Pool(pool).token0() == t0 && IUniswapV3Pool(pool).token1() == t1;
     }
 
-    /// @dev Exact-input simulation through the real pool; the callback reverts with the output.
-    function _simulate(address pool, address tokenIn, address tokenOut, uint256 amountIn) internal returns (uint256) {
+    /// @dev Exact-input simulation through the real pool; the callback reverts with (output, input consumed).
+    function _simulate(address pool, address tokenIn, address tokenOut, uint256 amountIn)
+        internal
+        returns (uint256 amountOut, uint256 amountInUsed)
+    {
         bool zeroForOne = tokenIn < tokenOut;
         try IUniswapV3Pool(pool)
             .swap(
@@ -202,11 +211,11 @@ contract UniV3Adapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
                 zeroForOne ? MIN_SQRT_RATIO + 1 : MAX_SQRT_RATIO - 1,
                 abi.encode(CallbackData({mode: MODE_SIMULATE, pool: pool, tokenIn: tokenIn, tokenOut: tokenOut}))
             ) {
-            return 0; // unreachable: simulate mode always reverts
+            return (0, 0); // unreachable: simulate mode always reverts
         } catch (bytes memory reason) {
-            if (reason.length != 64) return 0;
-            (bytes32 sentinel, uint256 out) = abi.decode(reason, (bytes32, uint256));
-            return sentinel == QUOTE_SENTINEL ? out : 0;
+            if (reason.length != 96) return (0, 0);
+            (bytes32 sentinel, uint256 out, uint256 used) = abi.decode(reason, (bytes32, uint256, uint256));
+            return sentinel == QUOTE_SENTINEL ? (out, used) : (0, 0);
         }
     }
 

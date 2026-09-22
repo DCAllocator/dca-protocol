@@ -27,7 +27,7 @@ contract MorphoBlueStrategyTest is BaseTest {
         assertEq(strategy.asset(), address(usdg));
         assertEq(strategy.name(), "Boosted USDG");
         assertEq(strategy.symbol(), "bUSDG");
-        assertEq(strategy.decimals(), 6);
+        assertEq(strategy.decimals(), 12, "asset decimals + 6 virtual-share offset (audit v0.3 M-01)");
         assertEq(Id.unwrap(strategy.marketId()), Id.unwrap(marketId));
         assertEq(strategy.marketParams().loanToken, address(usdg));
         assertEq(strategy.owner(), owner);
@@ -47,8 +47,8 @@ contract MorphoBlueStrategyTest is BaseTest {
     function test_deposit_suppliesToMorpho() public {
         vm.prank(depositor);
         uint256 shares = strategy.deposit(1_000e6, depositor);
-        assertEq(shares, 1_000e6, "first deposit mints 1:1");
-        assertEq(strategy.balanceOf(depositor), 1_000e6);
+        assertEq(shares, 1_000e12, "first deposit mints 10^6 shares per asset unit");
+        assertEq(strategy.balanceOf(depositor), 1_000e12);
         assertEq(usdg.balanceOf(address(strategy)), 0, "never holds the asset");
         assertEq(morpho.position(marketId, address(strategy)).supplyShares > 0, true);
         assertApproxEqAbs(strategy.totalAssets(), 1_000e6, 1);
@@ -90,9 +90,9 @@ contract MorphoBlueStrategyTest is BaseTest {
         assertGt(value, 10_000e6);
         vm.prank(depositor);
         uint256 burned = strategy.withdraw(value, bob, depositor);
-        assertEq(burned, 10_000e6, "all shares burned");
+        assertApproxEqRel(burned, 10_000e12, 1e9, "all but rounding-dust shares burned");
         assertEq(usdg.balanceOf(bob), 1_000_000e6 + value);
-        assertEq(strategy.balanceOf(depositor), 0);
+        assertLt(strategy.balanceOf(depositor), 1e6, "leftover shares are worth < 1 asset unit");
         assertEq(usdg.balanceOf(address(strategy)), 0);
     }
 
@@ -100,9 +100,10 @@ contract MorphoBlueStrategyTest is BaseTest {
         vm.prank(depositor);
         strategy.deposit(10_000e6, depositor);
         vm.warp(block.timestamp + 10 days);
-        uint256 expected = strategy.previewRedeem(10_000e6);
+        uint256 all = strategy.balanceOf(depositor);
+        uint256 expected = strategy.previewRedeem(all);
         vm.prank(depositor);
-        uint256 out = strategy.redeem(10_000e6, depositor, depositor);
+        uint256 out = strategy.redeem(all, depositor, depositor);
         assertEq(out, expected);
         assertEq(strategy.totalSupply(), 0);
     }
@@ -113,8 +114,9 @@ contract MorphoBlueStrategyTest is BaseTest {
         vm.prank(alice);
         vm.expectRevert();
         strategy.withdraw(500e6, alice, depositor);
+        uint256 sharesFor500 = strategy.previewWithdraw(500e6);
         vm.prank(depositor);
-        strategy.approve(alice, 500e6);
+        strategy.approve(alice, sharesFor500);
         vm.prank(alice);
         strategy.withdraw(500e6, alice, depositor);
         assertEq(usdg.balanceOf(alice), 1_000_000e6 + 500e6);

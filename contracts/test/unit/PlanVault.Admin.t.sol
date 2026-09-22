@@ -56,8 +56,8 @@ contract PlanVaultAdminTest is BaseTest {
         assertEq(daily.vaultKind(), "daily");
         assertEq(weekly.vaultKind(), "weekly");
         assertEq(monthly.vaultKind(), "monthly");
-        assertEq(usdg.allowance(address(daily), address(router)), type(uint256).max);
-        assertEq(weth.allowance(address(daily), address(router)), type(uint256).max);
+        assertEq(usdg.allowance(address(daily), address(router)), 0, "no standing approvals (v0.3 M-03)");
+        assertEq(weth.allowance(address(daily), address(router)), 0);
     }
 
     function test_constructor_rejectsBadOrigin() public {
@@ -127,15 +127,43 @@ contract PlanVaultAdminTest is BaseTest {
 
     function test_setFees_toleranceCaps() public {
         FeeConfig memory f = daily.fees();
-        f.keeperTipBps = 5_001;
+        f.keeperTipBps = 1_001;
         vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IPlanVault.ValueOutOfRange.selector, 5_001, 5_000));
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.ValueOutOfRange.selector, 1_001, 1_000));
         daily.setFees(f);
         f = daily.fees();
-        f.swapSlippageBps = 501;
+        f.swapSlippageBps = 101;
         vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IPlanVault.ValueOutOfRange.selector, 501, 500));
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.ValueOutOfRange.selector, 101, 100));
         daily.setFees(f);
+    }
+
+    /// audit v0.3 L-04: the feeManager can move the fees but not the price tolerance / tip of every epoch buy.
+    function test_setFees_tolerancesAreOwnerOnly() public {
+        address mgr = makeAddr("mgr");
+        vm.prank(owner);
+        daily.setFeeManager(mgr);
+        FeeConfig memory f = daily.fees();
+        f.swapSlippageBps = 60;
+        vm.prank(mgr);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, mgr));
+        daily.setFees(f);
+        f = daily.fees();
+        f.keeperTipBps = 100;
+        vm.prank(mgr);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, mgr));
+        daily.setFees(f);
+        f = daily.fees();
+        f.purchaseFeeBps = 10;
+        vm.prank(mgr);
+        daily.setFees(f);
+        assertEq(daily.fees().purchaseFeeBps, 10);
+        f.swapSlippageBps = 60;
+        f.keeperTipBps = 100;
+        vm.prank(owner);
+        daily.setFees(f);
+        assertEq(daily.fees().swapSlippageBps, 60);
+        assertEq(daily.fees().keeperTipBps, 100);
     }
 
     function test_setFees_feeManagerRole() public {
@@ -210,18 +238,40 @@ contract PlanVaultAdminTest is BaseTest {
         assertEq(daily.maxPlansPerTx(), 1_000);
     }
 
-    function test_setRouter_revokesOldApproval() public {
+    /// audit v0.3 M-03: no standing approvals to any router; a new router must share the vault's WETH.
+    function test_setRouter_noStandingApprovals_andSanityCheck() public {
         MockRouter r2 = new MockRouter(address(weth));
         vm.prank(owner);
         vm.expectEmit(false, false, false, true);
         emit IPlanVault.RouterSet(address(r2));
         daily.setRouter(address(r2));
+        assertEq(daily.router(), address(r2));
         assertEq(usdg.allowance(address(daily), address(router)), 0);
         assertEq(weth.allowance(address(daily), address(router)), 0);
-        assertEq(usdg.allowance(address(daily), address(r2)), type(uint256).max);
+        assertEq(usdg.allowance(address(daily), address(r2)), 0);
+        assertEq(weth.allowance(address(daily), address(r2)), 0);
+        MockRouter wrongWeth = new MockRouter(address(usdg));
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.RouterMismatch.selector, address(wrongWeth)));
+        daily.setRouter(address(wrongWeth));
+        vm.prank(owner);
+        vm.expectRevert(); // an EOA has no weth()
+        daily.setRouter(bob);
         vm.prank(owner);
         vm.expectRevert(IPlanVault.ZeroAddress.selector);
         daily.setRouter(address(0));
+    }
+
+    /// The router is approved for exactly one swap's input and reset afterwards.
+    function test_swapApprovalsAreExactAndReset() public {
+        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        _nextEpoch(daily);
+        _advance(daily, address(nvda));
+        assertGt(daily.getPlan(id).stockAccrued, 0);
+        assertEq(usdg.allowance(address(daily), address(router)), 0);
+        vm.prank(alice);
+        daily.depositWETH(id, 1 ether, 0);
+        assertEq(weth.allowance(address(daily), address(router)), 0);
     }
 
     function test_setFeeRecipient() public {

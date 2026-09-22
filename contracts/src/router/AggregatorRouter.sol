@@ -20,7 +20,9 @@ import {FeeMath} from "../libraries/FeeMath.sol";
 /// @dev Approval model: callers approve THIS contract only. Tokens are moved straight into the first
 ///      adapter, and adapters pay pools from their own transient balance, so no approvals to third-party
 ///      routers ever exist. `swapWithRoute` refuses any path containing an unapproved hop, so a caller-supplied
-///      path (e.g. a vault keeper's override) can only ever select among approved pools.
+///      path (e.g. a vault keeper's override) can only ever select among approved pools, and `quotePath`
+///      applies the same impact cap to it. Every hop must fill in full (`PartialFill` otherwise): adapters
+///      report a hop that cannot consume its whole input as "no fill" at quote time, and execution reverts.
 ///      Split routes are a V2 item; V1 is single-pool per hop.
 contract AggregatorRouter is IAggregatorRouter, Ownable2Step {
     using SafeERC20 for IERC20;
@@ -175,19 +177,27 @@ contract AggregatorRouter is IAggregatorRouter, Ownable2Step {
 
     /// @notice Simulated output of an explicit path (every hop must be approved). Used by vaults to floor a
     ///         route override's `minOut` at what that path would deliver right now. Reverts if any hop is
-    ///         unapproved or cannot fill.
+    ///         unapproved or cannot fill in full, and — like the automatic selection — if the path's
+    ///         end-to-end impact against the pools' mid-prices exceeds `maxPriceImpactBps`, so an override can
+    ///         never accept more impact than the auto-route would (audit v0.3 M-02).
     function quotePath(Route[] calldata path, uint256 amountIn) external returns (uint256 amountOut) {
         if (amountIn == 0) revert ZeroAmount();
         uint256 n = path.length;
         if (n == 0 || n > 3) revert InvalidPath();
         amountOut = amountIn;
+        uint256 zeroImpactOut = amountIn; // what the same input would yield at every hop's current mid-price
         for (uint256 i; i < n; ++i) {
             if (i + 1 < n && path[i].tokenOut != path[i + 1].tokenIn) revert InvalidPath();
             bytes32 key = hopKey(path[i]);
             if (!isApprovedHop[key]) revert RouteNotApproved(key);
-            (amountOut,) = _adapter(path[i].protocol).quoteRoute(path[i], amountOut);
-            if (amountOut == 0) revert NoRoute(path[i].tokenIn, path[i].tokenOut);
+            uint256 hopIn = amountOut;
+            uint256 mid;
+            (amountOut, mid) = _adapter(path[i].protocol).quoteRoute(path[i], hopIn);
+            if (amountOut == 0 || mid == 0) revert NoRoute(path[i].tokenIn, path[i].tokenOut);
+            zeroImpactOut = Math.mulDiv(zeroImpactOut, mid, hopIn);
         }
+        uint256 impact = FeeMath.impactBps(amountOut, zeroImpactOut);
+        if (impact > maxPriceImpactBps) revert PriceImpactTooHigh(impact, maxPriceImpactBps);
     }
 
     // ------------------------------------------------------------------
@@ -239,10 +249,13 @@ contract AggregatorRouter is IAggregatorRouter, Ownable2Step {
         for (uint256 i; i < n; ++i) {
             ISwapAdapter a = _adapter(path[i].protocol);
             address next = i + 1 < n ? address(_adapter(path[i + 1].protocol)) : recipient;
-            // Unspent input of the first hop goes back to the caller (their token). Unspent intermediate
-            // tokens of later hops are forwarded to the recipient rather than left anywhere in the router.
-            address refundTo = i == 0 ? msg.sender : recipient;
-            (amt,) = a.swap(path[i], amt, next, refundTo);
+            // Full fills only: a hop that cannot consume its whole input has exhausted the pool's in-range
+            // liquidity, and any unspent intermediate would be the caller's money sitting in the wrong token
+            // (audit v0.3 M-02 / L-02). The adapter's own refund is undone by this revert.
+            uint256 hopIn = amt;
+            uint256 used;
+            (amt, used) = a.swap(path[i], hopIn, next, i == 0 ? msg.sender : recipient);
+            if (used < hopIn) revert PartialFill(i);
             if (amt == 0) break;
         }
         amountOut = amt;
