@@ -1,125 +1,373 @@
-# DCA Protocol — Security Re-audit (v0.2, post-remediation)
+# DCA Protocol — Smart Contract Security Audit (v0.3, fresh review)
 
 | | |
 |---|---|
-| **Target** | `contracts/src/**` at tag `v0.2` (commit `8abc39f`; diff vs `v0.1`: 15 files, +604/−635 in `src` + `script`); solc 0.8.28, via-ir, OZ 5.1.0. Apps migrated in `babe8f3`. |
-| **Date** | 2026-09-20 |
-| **Previous report** | [`audit/AUDIT-v0.1.md`](audit/AUDIT-v0.1.md) — 2 High, 3 Medium, 6 Low, 15 Info |
-| **Method** | Line-by-line re-review of every changed file; every v0.1 finding re-tested against the remediated code with a permanent regression test (`contracts/test/audit/`, 30 tests); existing suites rewritten for the new API; invariants tightened and re-run at CI depth (fuzz 2048, invariants 256×64); Slither 0.11.6; coverage; contract sizes. |
-| **Result** | **All 5 High/Medium findings closed or mitigated; 5 of 6 Lows closed; 2 items accepted by decision (L-02, L-06); 1 item open by decision (H-02 block-level sandwich) with concrete mitigations in place and a V2 design.** Two new issues were found in the remediated code during this pass and fixed in the same change (N-01, N-02). No new High or Medium. |
+| **Target** | `contracts/src/**` (31 files, 3,501 non-blank LoC) and `contracts/script/**` at commit `636c643` plus the uncommitted working tree of 2026-09-22 (FeeReceiver, deploy wiring, mocks). solc 0.8.28, via-ir, `evm_version = cancun`, OpenZeppelin 5.1.0, forge-std 1.16.2. |
+| **Chain** | Robinhood Chain (chain id 4663, Arbitrum Orbit, ArbOS 61). Single first-come-first-served sequencer run by Robinhood; no public mempool; L2 system contracts instantly upgradeable by a 7/8 multisig ([L2BEAT](https://l2beat.com/layer2s/projects/robinhood)). Stock Tokens are plain 18-decimal ERC-20s whose splits/dividends are expressed through an ERC-8056 `uiMultiplier` (raw balances never change) and have per-token Chainlink feeds ([Robinhood docs](https://docs.robinhood.com/chain/building-with-stock-tokens/)). |
+| **Date** | 2026-09-22 |
+| **Auditor** | Automated review by Claude Fable 5.1. Independent of the earlier reviews (archived: [`audit/AUDIT-v0.1.md`](audit/AUDIT-v0.1.md), [`audit/AUDIT-v0.2.md`](audit/AUDIT-v0.2.md), [`audit/AUDIT-FeeReceiver.md`](audit/AUDIT-FeeReceiver.md)); their findings were not taken as given — every one was re-derived from the code. |
+| **Method** | §2. Manual line-by-line review of every file against a written threat model; Slither 0.11.6; the existing 358-test suite plus invariants at CI depth (fuzz 2048, invariants 256×64); coverage; 18 new proof-of-concept tests (`contracts/test/audit/v0.3/`, all passing against the **unmodified** code). No source file was changed. |
+| **Result** | **1 High, 4 Medium, 4 Low, 14 Informational.** No path lets an unprivileged party take idle balances or accrued stock out of the vault. The High is the epoch purchase itself: it has no manipulation-resistant price reference and runs on a public schedule, so an unprivileged attacker takes a large share of every page from another block (PoC: −41% for users, +5.6k USDG for the attacker on a 15k page). Two Mediums permanently destroy or divert user funds under specific conditions (boost strategy donation griefing; route override / second-hop refunds). One Medium is the standard centralization finding, sharpened: a single owner transaction hands custody of all idle USDG to an arbitrary contract. Everything is fixable with small, local changes listed in §9. |
 
-## 1. Status of v0.1 findings
+**Read this first.** The protocol is well built: the code is clean, the accounting invariants hold under fuzzing, the fee sink even has an on-path TWAP guard. The problems are concentrated in one place — *the price at which user money is turned into stock* — and in the blast radius of admin keys. Both were noted as "accepted / operational" in the previous reports; this review treats them as open, because the mitigations they rely on (operator discipline, private relays, key hygiene) are exactly the kind that fail in the incidents we studied (§2.3).
 
-| ID | v0.1 finding | Sev | Status | What changed | Regression test |
-|---|---|---|---|---|---|
-| H-01 | Dust zap plan permanently bricks a stock's epochs | High | **Closed** | Zap-at-epoch removed (vaults USDG-only); `minAmountPerEpoch` / `minDeposit` = 10 USDG; a page whose purchase cannot be quoted/executed is **skipped** (`EpochPageSkipped`), never reverted | `Audit.H01.ZapDustDoS` (5) |
-| H-02 | Epoch swap atomically sandwichable by anyone | High | **Mitigated / open** | Unprivileged atomic variant closed (operator-only triggering, `keeperOnly` default on). Block-level sandwich of the operator's tx remains by decision; operators can pass a reference-price `minOut` override which reverts the fill under manipulation. See §3. | `Audit.H02.Sandwich` (4, incl. `test_KNOWN_RESIDUAL_*`) |
-| M-01 | Aggregate zap sizing/caps let one plan grief all zap plans | Med | **Closed** | Feature removed; ETH/WETH converts per-deposit with the depositor's own `minUsdgOut`, unfilled WETH returned to depositor | `Audit.M01.UsdgOnly` (3) |
-| M-02 | Route override = unbounded price override for keepers | Med | **Closed** | Router trades only owner-approved hops (`approveHop`/`revokeHop`, `RouteNotApproved` for every caller); override `minOut ≥ max(auto floor, override path's own floor)`; override failures revert (page not consumed) | `Audit.M02.RouteOverride` (5) |
-| M-03 | `keeperOnly` bypassed via permissionless EpochKeeper | Med | **Closed** | `runDue` / `run` / `performUpkeep` are `onlyOperator`; `checkUpkeep` stays view; vaults default `keeperOnly = true`; Deploy registers `KEEPERS` as operators | `Audit.M03.KeeperOnlyBypass` (4) |
-| L-01 | `_creditZap` rounding: stranded USDG, WETH under-debit | Low | **Closed** | No WETH accounting left; USDG remainder of pro-rata splits → `usdgDust`, swept to treasury at `dustSweepMinUsdg`; invariants now strict (`usdg == idle + usdgDust`, `weth == wethDust`) and green at CI depth | `Audit.L01.ExactAccounting` (2), `VaultInvariants` |
-| L-02 | Fee charged on unspent USDG in partial fills | Low | **Accepted (pinned)** | Unchanged by decision; documented in SECURITY.md §5 | `Audit.L02.PartialFillFee::test_KNOWN_*` |
-| L-03 | Sub-unit stock output reverts the page | Low | **Closed** | Covered by skip-not-revert + minimums | `Audit.H01…::test_dustOutputPageIsSkipped_otherPagesFill` |
-| L-04 | Hop-2 refund stranded on the vault | Low | **Closed** | Router forwards unspent intermediates to `recipient`; vault books incoming WETH as `wethDust` and sweeps it in the same tx | `Audit.L04.HopRefund` (2) |
-| L-05 | Free empty plans indexed; prune blocking | Low | **Closed** | Nothing enters the index below `minDeposit`; re-index needs another ≥ 10 USDG; each cycle pays the withdraw fee | `Audit.L05.IndexSpam` (3) |
-| L-06 | Push fee transfers can block exits | Low | **Accepted** | Unchanged by decision; runbook note in SECURITY.md §7 | `Audit.L06…::test_KNOWN_ACCEPTED_*` |
-| I-01 | Invariant suite red; swap layer mocked linearly | Info | **Closed** | Suite green; `MockRouter` quotes are now fill-aware; real-router + CPMM fixture in `test/audit/`; handler exercises partial fills and route outages | — |
-| I-02 | `advanceEpoch` on empty stock marks epoch executed | Info | **Closed** | Reverts `EpochNotDue` | `test_noPlans_notDueAndReverts` |
-| I-03 | Skipped zap plan forgoes its USDG | Info | **Closed** | Mode removed | — |
-| I-04 | `prunePlan` not `nonReentrant` | Info | **Closed** | Added | — |
-| I-05 | Registry accepts non-contracts | Info | **Closed** | `NotAContract` check (USDG/WETH still listable by owner — unchanged) | `StockRegistry.t.sol::test_reverts` |
-| I-06 | `setThresholds` unbounded; no-DCA edge | Info | **Closed** | Thresholds must be > 0; `_perks` returns none when `dca == 0` | `test_noDcaToken_noPerks` |
-| I-08 | Missing zero checks / adapter id check | Info | **Closed** | Router `weth`, adapters `router`/`poolManager`, `setKeeper(0)`, `setOperator(0)`; `setAdapter` verifies `protocolId()` | `test_admin` |
-| I-11 | `totalNotionalUsdg` counted residual | Info | **Closed** | Counts `spent` | `test_residualUsdgReturnedProRata` |
-| I-14 | `MockDCA` in `src/` | Info | **Closed** | Moved to `test/mocks/` | — |
-| I-15 | Documentation drift | Info | **Closed** | README / SECURITY.md rewritten for the new model | — |
-| I-07, I-09, I-10, I-12, I-13 | Zap minOut/deadline; tip sweep; DCA flash-buy; Cancun/OZ; admin timelock | Info | **Unchanged** | Operational / V2 items; see §4 | — |
+---
 
-## 2. New findings in the remediated code (found and fixed in this pass)
+## 1. Executive summary
 
-| ID | Title | Sev | Fix | Test |
-|---|---|---|---|---|
-| N-01 | Route selection picked the highest-output candidate *then* applied the impact cap: a thin pool with a marginally better output but > 150 bps impact masked an in-cap pool and produced `NoRoute` (latent in v0.1, more exposed with an explicit allowlist) | Low | `_bestHop` / `_bestTwoHop` now select the best output **among candidates within the cap** (per hop and end-to-end) | `Router.t.sol::test_quote_selectionIsCapAware` |
-| N-02 | When the auto-route had no quote (e.g. only approved pool over the cap), an override's `minOut` was bounded only by `> 0`: a compromised operator could fill a page through an approved pool at any price precisely when a sandwich is most lucrative | Low | New `AggregatorRouter.quotePath(path, amountIn)`; the vault floors the override at `max(autoFloor, pathQuote × (1 − swapSlippageBps))` — an override can accept a path's impact, never a worse price than that path delivers right now | `Audit.M02…::test_noAutoQuote_overrideFlooredByPathQuote`, `Router.t.sol::test_quotePath` |
+| Severity | Count | IDs |
+|---|---|---|
+| Critical | 0 | — |
+| High | 1 | H-01 |
+| Medium | 4 | M-01, M-02, M-03, M-04 |
+| Low | 4 | L-01, L-02, L-03, L-04 |
+| Informational | 14 | I-01 … I-14 |
 
-Nothing else surfaced: reentrancy (all entries `nonReentrant`, incl. `prunePlan`; `receive` removed — vault never unwraps), access control on every new admin path (`approveHop`, `revokeHop`, `setMinimums`, `setDustSweepMin`, `sweepDust`, `setOperator`), callback authentication unchanged, hop-key identity (`keccak(protocol, tokenIn, tokenOut, fee, extra)`) so two pools on one pair are distinct and revocation is exact, `MAX_HOPS_PER_PAIR = 8` bounds quote gas (≤ 8 + 8×8 simulations), `quoteRoute` is public but only caches `verifiedPool` for pools that already pass `_poolOk`, dust accounting conservation under fuzz/invariants, `Overspent` / `SwapReturnedZero` still guard the balance-delta path.
+**Before mainnet (blocking):**
+1. **H-01** — give every epoch purchase an external price floor (the per-stock Chainlink feed the chain already provides, or the pool TWAP guard already written for `FeeReceiver`) and skip the page when the fill deviates. Apply the same floor to operator overrides.
+2. **M-01** — seed the `MorphoBlueStrategy` at deploy, give it a decimals offset, and make the vault refuse a boost deposit that mints zero strategy shares.
+3. **M-03** — replace the vault's standing `type(uint256).max` approvals to the router and strategy with per-call exact approvals (as `FeeReceiver` already does), and put the owner behind a timelock.
 
-## 3. H-02 — what remains and how to close it
+**Soon after:** M-02 (cap override impact; return second-hop refunds to users), M-04 (unaccounted balances), the Lows.
 
-**Closed:** the v0.1 exploit (an unprivileged address pushing a pool, calling `advanceEpoch` and unwinding in one transaction). No public entry point can trigger an epoch: `advanceEpoch` requires `isKeeper` (default `keeperOnly = true`), and the EpochKeeper contract — the only whitelisted keeper — requires `isOperator` on `runDue`, `run` and `performUpkeep` (`test_atomicSandwichByAnyoneIsClosed`).
+---
 
-**Still open (kept visible by `test_KNOWN_RESIDUAL_operatorTxCanStillBeSandwichedInBlock`):** every price reference the vault uses — `quote`, `minOut = quote × 0.995`, the impact cap vs `slot0` — is read inside the executing transaction. A builder, or a searcher who can land a transaction before and after the operator's in the same block, still extracts value: with a $1M pool and a $600k push, a $10k epoch loses ~55%.
+## 2. Scope and method
 
-**In place today (operational, use all three):**
-1. Operators submit through a private relay / builder with no public-mempool exposure.
-2. Operators pass a **reference-price `minOut` override** each run: expected stock from an off-chain reference (Robinhood price, or `TwapOracle.consultTick` ≥ 30 min) × (1 − 1–3%); the override is accepted only if ≥ the auto floor, and under manipulation the fill **reverts** and the page is retried (`test_mitigation_referenceMinOutOverrideRevertsUnderManipulation`).
-3. Randomise the execution time within the epoch rather than firing at the boundary.
+### 2.1 In scope
 
-**Recommended V2 contract change (closes it without operator discipline), in order of effort:**
-1. **On-chain TWAP guard** in `_buyStock`: owner-set reference pool per stock; `expected = totalNet × twapPrice(pool, window)`; require `bought ≥ expected × (1 − maxDeviationBps)` else skip the page. Reuses `TwapOracle`; ~40 lines; make `window`/`maxDeviationBps` owner-settable with sane bounds (≥ 10 min, ≤ 500 bps).
-2. **Commit / execute**: record the auto quote in one transaction (`commitEpoch`) and execute ≥ N blocks later using the committed `minOut`; no single block can set both the reference and the fill.
-3. **Oracle floor**: if a Chainlink / Pyth feed for the stock exists on Robinhood Chain, use it as the reference (or as a second bound alongside the TWAP).
-4. **Order splitting**: several randomised sub-buys per epoch raise the attacker's cost per unit extracted; combine with 1.
-
-## 4. Residual / informational (unchanged or new, no code change made)
-
-| ID | Note |
-|---|---|
-| R-01 | **No permissionless fallback for epochs.** By design after M-03: if every operator is down, epochs are missed (never caught up). Run ≥ 2 independent operators (bot + Chainlink Automation forwarder). A time-boxed fallback (anyone after `boundary + X h`) would re-open H-02's atomic variant for that window — not recommended without the TWAP guard. |
-| R-02 | **Trusted-operator override.** Operators can still choose *which* approved path and *when*; combined with the block-level sandwich this means a malicious operator key is a fund-extraction key up to the impact cap per page. Keep operator keys in HSM/KMS, rotate, monitor `JobRun` fills vs reference prices. |
-| R-03 | `USDG` / `WETH` are still listable as "stocks" by the owner (registry does not know them); listing USDG makes every epoch for it skip (`InvalidPath`). Owner error only. |
-| R-04 | Two-hop selection is best-first-leg × best-second-leg; it does not consider a worse first leg paired with a much better second leg. Fine for ≤ 8 hops per pair; revisit if the allowlist grows. |
-| R-05 | `quoteRoute` / `quotePath` are non-view (sentinel-revert simulation) and callable by anyone; harmless (no state beyond `verifiedPool` caching of already-valid pools) but frontends must `eth_call` them. |
-| R-06 | The 10 USDG minimums are owner-settable with no upper bound; raising them mid-life does not affect existing plans' `amountPerEpoch` (only new plans and changes) — intended, but document for users. |
-| I-07 | `Zap` swaps accept `minOut = 0` and have no deadline; the frontend must always set `minOut`. |
-| I-09 | `EpochKeeper._forwardTips` sweeps the contract's USDG balance to the calling operator (by design). |
-| I-10 | `$DCA` perks are spot balances; now that epochs are operator-only the user can no longer make the flash-buy atomic with the epoch, but can still time it. V2: lookback snapshot. |
-| I-12 | Confirm Robinhood Chain's ArbOS supports `PUSH0` / `MCOPY` (`evm_version = cancun`); bump OZ to latest 5.x. |
-| I-13 | Owner powers apply instantly (`setRouter`, `approveHop`, `setFees`, `setOperator`, `setMinimums`); put the owner behind a timelock and monitor `HopApproved` / `HopRevoked` / `RouterSet` / `OperatorSet`. |
-
-## 5. App migration (done — commit `babe8f3`, after tag `v0.2`)
-
-Both apps now consume the v0.2 ABI (`pnpm --filter @dca/web abi`, `pnpm --filter @dca/scheduler abi`). Points specific to the changed zap behaviour:
-
-- **Create / deposit with ETH.** `createPlan` has no zap-mode flag; ETH is converted inside the call. The UI quotes the amount **net of any deposit fee** (what the vault actually swaps) and sends `minOut = quote × (1 − 0.5%)`; the 10 USDG `minDeposit` is enforced client-side on the *worst case* the swap may credit (quote − tolerance), so a deposit that would revert on chain is blocked before signing. Copy states that the plan holds USDG, never ETH, and that any unfilled sliver of ETH is returned in the same transaction.
-- **Funding is required.** A plan cannot be started unfunded; the create page reads `minAmountPerEpoch` / `minDeposit` from the vault (fallback 10 USDG) for the slider floor, validation and messaging.
-- **Withdraw / remove** are USDG-only (`withdrawIdle(planId, amount)`); the ETH checkbox and `wethIdle` displays are gone; TVL and "waiting to buy" no longer have an ETH component.
-- **Skipped pages** (`EpochPageSkipped`) are decoded (router custom errors / `Error(string)` / ASCII tag) and shown inline in the Activity feed ("Skipped — no approved route within the impact cap. Nobody was charged…"); the scheduler logs the same as a warning.
-- **Scheduler pre-flight** checks `isOperator` / `owner` for its wallet and logs an explicit error otherwise (every run would revert `NotOperator`).
-
-Verified end to end on an isolated anvil + `DeployLocal` stack: ETH-funded create (blocked below the minimum, accepted above; vault WETH balance 0, `usdg.balanceOf == totalUsdgIdle`), operator fill through the scheduler, ETH top-up (min check), partial USDG withdrawal, remove, and a skipped page after revoking the stock's hop.
-
-## 6. Code maturity (Trail of Bits categories) — v0.1 → v0.2
-
-| Category | v0.1 | v0.2 | Why |
+| File | LoC | Runtime size | Role |
 |---|---|---|---|
-| Arithmetic | Moderate | **Satisfactory** | Rounding remainders are booked, not floored away; strict balance invariants green at CI depth; L-02 pinned knowingly |
-| Auditing / events | Satisfactory | Satisfactory | + `EpochPageSkipped(reason)`, `DustSwept`, `HopApproved/Revoked`, `MinimumsSet` |
-| Access controls | Moderate | **Satisfactory** | Keeper path closed end to end; override bounded; allowlist gate in the router for every caller |
-| Complexity | Satisfactory | **Satisfactory+** | Vault −1.3 KB (20.97 KB runtime, 3.6 KB headroom); zap-at-epoch machinery (≈150 lines) removed; adapters no longer discover pools |
-| Decentralization | Moderate | Moderate | Operator-only epochs add an availability dependency (R-01); owner still un-timelocked (I-13) |
-| Documentation | Strong | Strong | README / SECURITY.md updated; scheduler README notes the operator requirement |
-| Low-level code | Satisfactory | Satisfactory | Unchanged |
-| Transaction ordering | **Weak** | **Moderate** | Atomic unprivileged sandwich closed; block-level sandwich remains with operational mitigations; contract-level guard is a V2 item (§3) |
-| Testing & verification | Moderate | **Satisfactory** | 244 tests (was 201): real-router + CPMM regression suite for every finding, fill-aware mock, invariant handler with partial fills and route outages, strict invariants, CI profile green |
+| `src/vault/PlanVault.sol` (+ Daily/Weekly/Monthly) | 1,011 | 23,604 B (972 B under EIP-170) | Plans, deposits, epochs, fees, boost accounting |
+| `src/libraries/BoostLib.sol` | 206 | 4,322 B (linked, delegatecalled) | Boost pool share maths, strategy calls |
+| `src/boost/MorphoBlueStrategy.sol`, `src/libraries/MorphoLib.sol`, `src/interfaces/IMorpho.sol` | 172 / 71 / 64 | 8,392 B | ERC-4626 over one Morpho Blue market |
+| `src/router/AggregatorRouter.sol`, `IAggregatorRouter.sol` | 317 / 68 | 8,749 B | Allow-listed best-of-N routing, impact cap |
+| `src/router/adapters/UniV3Adapter.sol`, `RamsesV3Adapter.sol`, `UniV4Adapter.sol`, `ISwapAdapter.sol` | 225 / 13 / 255 / 28 | 5,511 / 5,511 / 6,056 B | Pool simulation + execution |
+| `src/treasury/FeeReceiver.sol` | 378 | 8,510 B | 70/30 fee split, buyback-and-burn, TWAP guard |
+| `src/keeper/EpochKeeper.sol` | 228 | 5,398 B | Operator-only job runner |
+| `src/periphery/Zap.sol`, `ClaimHelper.sol` | 87 / 124 | — | Conveniences, read helpers |
+| `src/registries/StockRegistry.sol`, `src/vault/VaultDirectory.sol`, `src/oracles/TwapOracle.sol`, `src/libraries/EpochLib.sol`, `FeeMath.sol`, `src/vault/VaultTypes.sol`, interfaces | — | — | Support |
+| `script/Deploy.s.sol`, `DeployLocal.s.sol`, `ApproveRoutes.s.sol` | — | — | Deployment wiring (reviewed for configuration risk) |
 
-## 7. Changes since this audit — **v0.3 Boost (unaudited)**
+### 2.2 Out of scope
+`apps/**`, the `$DCA` token (not in the repo), Morpho Blue, Uniswap V3/V4, Ramses, the Stock Token contracts and Paxos USDG themselves (their documented behaviour was used as input), the Robinhood Chain sequencer/bridge.
 
-Added after the v0.2 review; **not covered by this report** and should be in scope of the next one.
+### 2.3 What we borrowed from the reference reports
 
-- **Feature.** Per-plan opt-in lending of idle USDG on Morpho Blue between buys (`Plan.boosted`, `createPlan(..., bool boost)`, `setPlanBoost`), with per-plan share / cost-basis / realised-yield accounting (`boostShares`, `boostPrincipal`, `boostEarned`) and a live APY quoted from the market's IRM. README "Boost", SECURITY.md §11.
-- **New code.** `src/boost/MorphoBlueStrategy.sol` (OZ ERC-4626 over one Morpho Blue market, depositor-gated, liquidity-bounded `maxWithdraw`), `src/libraries/BoostLib.sol` (**linked external library**, delegatecalled on vault storage — `PlanVault` would otherwise exceed EIP-170: 25.6 KB inline vs 23.6 KB linked), `src/libraries/MorphoLib.sol` (Morpho share maths + interest projection, reimplemented), `src/interfaces/IMorpho.sol`. `ClaimHelper` exposes `boostValueOf` and boost fields.
-- **Vault changes.** `_collect` values boosted plans against one pool snapshot; the page's boosted spend is pulled in one strategy withdrawal before the swap, and a failed pull drops the boosted fills instead of reverting (`BoostWithdrawFailed`); a skipped swap re-lends the pulled USDG. `withdrawIdle` / `prunePlan` / `rescueERC20` account for boosted balances and strategy shares. `setBoostStrategy` migrates positions atomically.
-- **Tests.** 303 (was 244): `MorphoBlueStrategy.t.sol` (16), `PlanVault.Boost.t.sol` (36 incl. a value-conservation fuzz), invariant handler extended with boost toggles, time warps, liquidity crunches and bad debt; two new invariants (`boostPoolConsistent`, `boostFundsAreLent`). Green at CI depth. No fork test against a live Morpho deployment yet.
-- **Known trade-offs.** Vault EIP-170 headroom is now ~1 KB; boosted withdrawals/spends depend on Morpho market liquidity; bad debt is socialised; a mock (`test/mocks/MockMorpho.sol`) stands in for Morpho in all tests.
+Before starting, the structure and failure modes of published audits were reviewed:
 
-## 8. Appendix — tooling output
+- **CertiK** ([methodology](https://www.certik.com/blog/how-we-audit-a-comprehensive-guide-to-certiks-auditing-methodology)): every finding carries category, severity, location and status, then *Description → Scenario → Proof of Concept → Recommendation*. Centralization is a first-class "Major" category. This report uses that finding layout.
+- **Hacken** ([methodology](https://docs.hacken.io/methodologies/smart-contracts/)): severity from *likelihood × impact* adjusted by *exploitability* (privileged vs. unprivileged) and *complexity*; a fixed 15-category checklist (access control, reentrancy, arithmetic, initialisation/upgradeability, business logic, economic attacks, DoS, asset safety, front-running/MEV, randomness, time, external interactions, chain-specific, gas, documentation mismatch); a code-quality score; PoCs mandatory for High/Critical. §2.5 records the checklist result; §7 gives the scores.
+- **What went wrong elsewhere.** [Merlin DEX](https://www.fxstreet.com/cryptocurrencies/news/zksync-dex-merlin-hacked-for-182-million-immediately-after-certik-audit-202304261156) lost $1.8M days after an audit that had *flagged* centralization: a privileged key held unlimited approvals over pool funds. [Swaprum](https://www.dlnews.com/articles/defi/defi-protocol-swaprum-in-3m-rug-pull-was-certik-audited/) was drained through an admin capability the report listed but did not weigh. [Mango Markets](https://blockworks.com/news/defi-platform-exploited-for-14-5m-despite-security-audits) lost $112M to price manipulation of the reference its contracts trusted. The common thread — *admin approvals and manipulable price references are accepted as "operational" and then exploited* — is exactly the profile of H-01 and M-03 here, which is why they are not downgraded on the strength of process mitigations.
 
-- `forge test`: 244 pass / 0 fail (default profile); CI profile (`fuzz.runs = 2048`, `invariant.runs = 256`, `depth = 64`): 244 pass / 0 fail.
-- `forge coverage --ir-minimum` (src, all tests): 97.9 % lines, 96.5 % statements, 87.7 % branches; `PlanVault` 99.3 % lines.
-- Slither 0.11.6 (`--exclude-informational --exclude-optimization`): 11 High-impact hits, all false positives (`reentrancy-*` on `nonReentrant` paths, `arbitrary-send-eth` to caller-chosen recipient in `Zap`, `uninitialized-state` on a mapping). No real finding.
-- `forge lint src script`: clean.
-- Contract sizes (runtime): vaults 20,967–20,969 B (limit 24,576), router 8,164 B, UniV3Adapter 5,511 B, UniV4Adapter 6,056 B, EpochKeeper 5,398 B.
-- Not run: fork suite (`RH_RPC` unset; `config/addresses.rh.json` still has TODO addresses), formal verification.
+### 2.4 Severity model
 
-*Automated review by Claude (Opus 5). The v0.1 findings are closed to the extent stated above; H-02 remains a live risk until the V2 guard ships and should be independently reviewed together with the redesigned router before mainnet.*
+Severity = **impact × likelihood**, then adjusted one step down when exploitation needs a privileged key (Hacken's "dependent" exploitability).
+
+| | Likelihood High (unprivileged, cheap, repeatable) | Medium (needs capital, timing or a role) | Low (owner key / rare state) |
+|---|---|---|---|
+| **Impact High** (loss or permanent lock of user funds, core function broken) | Critical | **High** | Medium |
+| **Impact Medium** (bounded loss, degraded function, funds diverted to a protocol address) | High | **Medium** | Low |
+| **Impact Low** (dust, griefing, admin-recoverable) | Medium | Low | Informational |
+
+### 2.5 Checklist result (Hacken's 15 categories)
+
+| Category | Result |
+|---|---|
+| Access control | Sound. Every admin path is `onlyOwner`/`onlyFeeManager`/`onlyOperator`; user paths check plan ownership; `advanceEpoch` is keeper-gated by default; `EpochKeeper` execution is operator-only. Permissionless by design: `depositUSDG` (any plan), `prunePlan`, adapter `quoteRoute`, `wrapEth`, `skim` (→ M-01). |
+| Reentrancy | All vault entry points `nonReentrant`; `Zap`, `FeeReceiver` guarded; router/adapters stateless between transactions; callbacks authenticated (V3: `msg.sender == pool && verifiedPool`; V4: `msg.sender == poolManager`). Slither's hits are all on guarded paths or event-after-call (§8). |
+| Arithmetic | `SafeCast` everywhere, `Math.mulDiv`, no `unchecked`. Rounding favours users on stock distribution and the pool on internal shares; the one user-unfavourable rounding (fee on unspent notional in partial fills) is a documented product decision. |
+| Initialisation / upgradeability | No proxies; constructors validate inputs and origin alignment; `Ownable2Step` everywhere (I-01 on `renounceOwnership`). |
+| Business logic | **H-01, M-02.** |
+| Economic attacks | **M-01, L-01.** |
+| Denial of service | Skip-not-revert epoch design is good; residual: **L-03** (boost liquidity), I-05 (`runDue` unbounded), I-06 (quote gas). |
+| Asset / balance safety | **M-03, M-04, L-02.** Invariants `usdg == idle + dust`, `stock == accrued + dustPot`, `Σ boostShares == totalShares` hold at CI depth. |
+| Front-running / MEV | **H-01** (predictable-timing manipulation; the chain's FCFS sequencer removes same-block sandwiching by third parties but not this). |
+| Randomness | n/a. |
+| Time | Epoch ids from `block.timestamp`; sequencer drift is seconds; I-09 on the deploy-time origin race. |
+| External interactions | Morpho (try/catch on page withdrawals; migration path, L-03), DEX pools (allow-listed), tokens (`_tryTransfer` for stock, SafeERC20 elsewhere), USDG issuer powers (I-10). |
+| Chain-specific | ArbOS 61 supports Cancun opcodes (I-11); ERC-8056 multiplier means Stock Token raw balances never rebase (good — the vault's raw accounting is safe) but the DEX price of a raw token steps on a split (I-12). |
+| Gas | I-06 (quote cost is O(hops²) simulations), I-07 (`maxPlansPerTx` up to 1,000). |
+| Documentation vs. code | NatSpec claim "an override picks a path, never a worse price" is false when the auto-route has no quote (M-02); `Zap` NatSpec still describes removed zap-at-epoch plans (I-13). |
+
+---
+
+## 3. System overview and threat model
+
+```
+user ──USDG/ETH──▶ PlanVault (Daily | Weekly | Monthly)          ── fees ──▶ FeeReceiver ──70%──▶ treasury
+                      │  idle USDG (or lent via BoostLib ──▶ MorphoBlueStrategy ──▶ Morpho Blue)      └─30%──▶ buyback $DCA → burn
+                      │
+   operator ─ EpochKeeper ─▶ advanceEpoch(stock, limit, override?)
+                      │
+                      ▼  one aggregate USDG→stock swap per page
+               AggregatorRouter (allow-listed hops, impact cap vs slot0) ──▶ UniV3 / Ramses / UniV4 adapters ──▶ pools
+                      │
+                      ▼  pro-rata stock to plans (auto-distribute or accrue) ; claims by plan owner
+```
+
+| Actor | Can | Cannot | Bound today | Findings |
+|---|---|---|---|---|
+| **Anyone** | fund any plan; prune empty plans; call router/adapters with own tokens; supply to Morpho on the strategy's behalf; trade the pools the vault buys from | touch balances, trigger epochs, pass overrides | — | **H-01** (pool state at the scheduled time is theirs to set), **M-01** (donation before first deposit) |
+| **Plan owner** | deposit, withdraw idle (fee), claim (fee), pause, boost/unboost, set amount/recipient | affect other plans | own funds | L-01 (perk timing) |
+| **Operator** (EpochKeeper role; owner always is one) | choose *when*, *page size* and *path/minOut* of every epoch fill | pull funds directly | `minOut ≥ max(auto floor, path floor)` — both computed from the pool state in the same block | **M-02** (uncapped path impact, second-hop refunds to treasury) |
+| **feeManager** | set every fee ≤ 90 bps, keeper tip ≤ 50%, swap slippage ≤ 5% | anything else | — | I-03 |
+| **Owner** (multisig, 2-step) | set router, strategy, fee recipient, hops/pools/adapters, keepers, thresholds, minimums, pause | change epoch length, exceed fee caps | **none on custody**: standing max approvals (**M-03**); no timelock (I-02) |
+| **Morpho market** | be illiquid, accrue bad debt | — | boosted funds only | L-03 |
+| **Stock Token issuer / USDG issuer** | pause, freeze, blocklist (documented for Paxos tokens) | — | systemic | I-10 |
+
+Value at risk: all idle USDG in the three vaults (custody: owner via M-03; per-page fraction via H-01/M-02), all boosted USDG (Morpho + M-01), accrued stock (only via the claim fee bypass L-01, fee side).
+
+---
+
+## 4. Findings summary
+
+| ID | Title | Severity | Exploitable by | PoC (`contracts/test/audit/v0.3/`) |
+|---|---|---|---|---|
+| **H-01** | Epoch purchases have no manipulation-resistant price reference; timing is public → cross-block value extraction from every page | **High** | anyone with capital | `Audit3.H01.PriceManipulation` (2) |
+| **M-01** | Zero-share deposits: a donation to an empty `MorphoBlueStrategy` (Morpho `supply` on its behalf, or `skim`) makes every later boosted deposit worth 0, permanently | **Medium** | anyone (griefing, attacker pays ≥ victims' loss) | `Audit3.M01.StrategyDonation` (4) |
+| **M-02** | Route override floor has no impact cap; a partially filled second hop forwards users' WETH to the treasury (also on the auto path within the cap) | **Medium** | operator (uncapped fill); anyone shaping pool liquidity (auto-path leak) | `Audit3.M02.OverrideUncapped` (3) |
+| **M-03** | Standing `type(uint256).max` approvals make `setRouter` / `setBoostStrategy` single-transaction custody transfers; no timelock | **Medium** (Centralization / Major) | owner key | `Audit3.M03.AdminApprovalDrain` (2) |
+| **M-04** | Unaccounted USDG / Stock Token balances in a vault are unrecoverable (no skim, rescue refuses them) | **Medium** (impact: permanent lock; likelihood low) | anyone who sends; issuers | `Audit3.L04.UnaccountedBalances` (1) |
+| L-01 | $DCA perks are spot balances read in the user's own call → claim fee bypass with a transient balance | Low | any user | `Audit3.L01.ClaimFeeBypass` (1) |
+| L-02 | `Zap` strands the router's first-hop refund (partial fills) with no sweep | Low | — (user loss on liquidity edge) | `Audit3.L02.ZapStrandsRefund` (2) |
+| L-03 | Boost operational edges: flag without strategy bricks deposits; migration impossible while the market is illiquid; a borrower can make boosted plans miss an epoch | Low | user / owner / borrower | `Audit3.L03.BoostEdgeCases` (3) |
+| L-04 | Purchase fee, keeper tip and impact cap all measured against the executing block's pool state; `feeManager` may widen slippage to 5% | Low | feeManager | — |
+| I-01…I-14 | Informational (§6) | Info | — | — |
+
+Run: `cd contracts && forge test --match-path "test/audit/v0.3/*" -vv`
+
+---
+
+## 5. Detailed findings
+
+### H-01 · Epoch purchases have no manipulation-resistant price reference; timing is public
+
+| | |
+|---|---|
+| **Category** | Business logic / MEV / oracle |
+| **Severity** | **High** (impact High: unbounded fraction of every page; likelihood Medium: needs capital and a few seconds of exposure, no privilege, no mempool access, repeatable every epoch) |
+| **Location** | [`PlanVault._buyStock`](contracts/src/vault/PlanVault.sol#L517-L558) (`quoted`, `minOut`), [`AggregatorRouter._bestHop`](contracts/src/router/AggregatorRouter.sol#L258-L272) / [`_bestTwoHop`](contracts/src/router/AggregatorRouter.sol#L277-L307) (impact vs `slot0`), [`UniV3Adapter._midOut`](contracts/src/router/adapters/UniV3Adapter.sol#L215-L224) |
+| **Status** | Open. Listed as "H-02, mitigated / open by decision" in v0.2 with operational mitigations. Re-rated here with new evidence. |
+
+**Description.** Every number the vault checks before it spends user money — the router quote, `minOut = quote × (1 − swapSlippageBps)`, and the price-impact cap — is derived from the pool's *current* state in the executing block. None of them measures the distance of that state from a fair price. The impact cap in particular bounds the page's *own* slippage relative to the pool mid it finds, so a pool that was pushed 70% away from fair passes the cap exactly as a fair pool does (PoC 2: pushes of $100k, $500k and $2M all pass).
+
+The v0.2 report closed the *same-block* version (operator-only triggering) and accepted a residual "block-level sandwich" mitigated by private relays and an optional operator-supplied reference `minOut`. On Robinhood Chain there is no public mempool and the sequencer orders first-come-first-served, which does make same-block sandwiching by third parties impractical. It does nothing against the attack that matters here, which does not need ordering at all:
+
+**Scenario.**
+1. The keeper documentation fixes the schedule: Daily at 00:00 UTC, Weekly Monday 00:00, "poll a few minutes after each boundary". `isEpochDue` is public, `EpochKeeper.dueJobs()` lists what is about to be bought.
+2. Seconds before the operator's expected transaction, the attacker buys the stock in the approved pool (block N). The pool is now priced above fair.
+3. The operator's transaction lands (block N+k): the quote, floor and impact cap are all computed on the pushed pool, everything passes, the page fills at the pushed price.
+4. The attacker sees the fill in the sequencer feed (soft-confirmed within a block) and sells back (block N+k+1). Their only cost is fees plus arbitrage exposure during the hold — on a new chain with thin stock-token pools and few arbitrageurs, a few seconds of hold is cheap.
+
+**Proof of concept** — `test_crossBlockManipulation_takesValueFromEveryPlanOnThePage`: $2M USDG / 4,000 NVDA constant-product pool (a 15k page has 0.8% impact, well inside the cap), three plans of 5,000 USDG. Attacker pushes with 600k USDG in block N, operator runs the epoch in block N+1 with the auto-route and no override, attacker unwinds in block N+2.
+
+```
+fair NVDA        29.540
+manipulated NVDA 17.511   (users receive 59% of fair)
+attacker profit  5,623 USDG on a 15,000 USDG page
+```
+
+`test_impactCapIsBlindToThePushSize` shows the cap passing after pushes of any size.
+
+Note also the inverse: in a *$1M* pool the same 15k page is already over the 150 bps cap and is **skipped** (nobody buys); the attacker's push, by deepening the USDG side, is what made the fill possible. Page skipping is itself steerable by whoever shapes the pool.
+
+**Why the operational mitigations are not enough.** (a) Private relays are irrelevant on this chain and would not help anyway — the attack precedes the transaction. (b) The reference-price `minOut` override is optional, per-run, and requires the operator bot to fetch and sign a price for every stock every epoch; a bot that omits it (or is compromised, see M-02) leaves users exposed. (c) Randomising execution inside the epoch widens the attacker's hold window but does not remove it; `isEpochDue`/`dueJobs` still announce the target.
+
+**Recommendation** (contract-level, in order of preference):
+
+1. **External floor in `_buyStock`.** Robinhood Chain publishes a Chainlink `AggregatorV3Interface` feed per Stock Token (multiplier already applied). Owner-set `feed[stock]` (+ `maxStaleness`, `maxDeviationBps`); compute `expectedOut = amountIn × 10^stockDec / price` (adjusting USDG/feed decimals) and require `quoted ≥ expectedOut × (1 − maxDeviationBps)` — otherwise **skip the page** (`EpochPageSkipped("price deviates")`) so the attacker gains nothing and the plans try again next epoch. Apply the same check to the override branch. ~40 lines; the feed validation pattern (price > 0, `updatedAt` staleness, `answeredInRound`) is standard.
+2. **Or reuse the guard already written for the fee sink.** `FeeReceiver._checkPath` (spot tick within `guardMaxTicks` of the `guardWindow` TWAP for every V3-style pool on the path) is exactly the guard the vault lacks. Move it into a small shared library and call it from `_buyStock` for the chosen path; skip the page on `PriceDeviates`. Requires observation cardinality on the approved pools (the FeeReceiver runbook already covers this).
+3. **Commit-execute** as defence in depth: record the quote in one transaction and execute ≥ N blocks later against the committed `minOut`; forces the attacker to hold the pushed price for N blocks.
+4. Keep the operator reference-price override as an additional layer, not the only one.
+
+Choosing (1) also removes the fee sink's dependence on observation cardinality if you use the same feeds there.
+
+---
+
+### M-01 · Donation to an empty `MorphoBlueStrategy` makes later boosted deposits worth zero
+
+| | |
+|---|---|
+| **Category** | Economic / ERC-4626 share inflation (griefing variant) |
+| **Severity** | **Medium** (impact High: permanent loss of the deposit; likelihood Medium: unprivileged and cheap to trigger, but the attacker's donation is also lost, so it is griefing rather than theft; window open at launch and whenever the strategy empties) |
+| **Location** | [`MorphoBlueStrategy`](contracts/src/boost/MorphoBlueStrategy.sol) (no `_decimalsOffset` override, no zero-share check), [`skim`](contracts/src/boost/MorphoBlueStrategy.sol#L146-L151), [`BoostLib._deposit`](contracts/src/libraries/BoostLib.sol#L158-L167) (does not verify what the strategy credited), [`Deploy.s.sol`](contracts/script/Deploy.s.sol#L184-L193) (strategy deployed unseeded) |
+| **Status** | Open |
+
+**Description.** `MorphoBlueStrategy` is an OpenZeppelin ERC-4626 with the default decimals offset, i.e. one virtual share. Deposits are gated to the vaults, but the strategy's `totalAssets()` is its Morpho supply position, and **anyone can grow that position**: Morpho Blue's `supply(…, onBehalf = strategy)` has no authorization check, and the strategy's own `skim()` is permissionless. While `totalSupply() == 0`, a deposit of `a` mints `a × 1 / (totalAssets + 1)` shares — zero whenever `a ≤ totalAssets`. OZ's `deposit` does not revert on zero shares; it pulls the assets and mints nothing. The vault, in `BoostLib._deposit`, credits the plan with internal shares computed *before* the strategy call and never checks how many strategy shares (or how much value) came back. The plan therefore shows `boostPrincipal = a` and a boosted value of 0, and the assets belong to the virtual share forever. Each swallowed deposit raises `totalAssets`, so the threshold snowballs.
+
+**Scenario.** Strategy deployed by `Deploy.s.sol`, no deposits yet. Attacker supplies 11 USDG on the strategy's behalf. Alice opens a boosted plan with 10 USDG → 0 strategy shares, value 0. Bob deposits 20 USDG → 0 shares. Alice's `withdrawIdle(max)` reverts `ZeroAmount`. Carol deposits 1,000 USDG, gets 24 shares and works; Alice and Bob stay at zero and 41 USDG are owned by nobody. `test_windowReopensWhenTheStrategyEmpties` shows the same after every boosted user has unboosted (supply back to a few wei of dust shares): a 1,000 USDG donation then swallows a 50 USDG deposit.
+
+**Proof of concept** — `Audit3.M01.StrategyDonation` (4 tests, all on the unmodified code).
+
+**Recommendation** (all three, they are independent and cheap):
+1. `MorphoBlueStrategy`: `function _decimalsOffset() internal pure override returns (uint8) { return 6; }` (10⁶ virtual shares; a 10 USDG deposit then needs a > $10M donation to round to zero, and the rounding loss per deposit is bounded by `totalAssets / 10⁶`).
+2. `BoostLib._deposit`: measure `s.balanceOf(this)` and `poolAssets` before/after and revert (`BoostUnavailable` or a new `BoostDepositLost`) if the share delta is zero or the value delta is below `assets − 1`. This turns any future strategy misbehaviour into a revert instead of a silent loss.
+3. `Deploy.s.sol`: seed the strategy in the same script (temporarily allow the deployer as depositor, deposit e.g. 100 USDG, transfer the shares to `0x…dEaD`, revoke the depositor). Document that a migration target must be seeded too.
+
+---
+
+### M-02 · Route override floor is uncapped; second-hop refunds go to the treasury
+
+| | |
+|---|---|
+| **Category** | Business logic / privileged-role bound / asset safety |
+| **Severity** | **Medium** (impact High on the page: up to the whole notional; likelihood Low–Medium: needs the operator key *or*, for the leak, a liquidity edge on the second hop) |
+| **Location** | [`PlanVault._buyStock` override branch](contracts/src/vault/PlanVault.sol#L524-L537), [`AggregatorRouter.quotePath`](contracts/src/router/AggregatorRouter.sol#L179-L191) (no impact check), [`AggregatorRouter._execute`](contracts/src/router/AggregatorRouter.sol#L239-L247) (`refundTo = recipient` for later hops), [`PlanVault._buyStock` L555-556](contracts/src/vault/PlanVault.sol#L555-L556) (`wethIn → wethDust`), [`_sweepDust`](contracts/src/vault/PlanVault.sol#L648-L661) |
+| **Status** | Open (v0.2 "R-02 trusted-operator override" and "N-02" partially cover it; the impact-cap gap and the WETH leak are new) |
+
+**Description.** The override's floor is `max(autoFloor, quotePath(path) × (1 − slippage))`. `quotePath` simulates the path but applies **no impact cap** and no external reference. So precisely when the auto-route has no in-cap quote — the page is larger than any approved pool absorbs within 150 bps — the auto floor is 0 and the only bound is what the chosen path delivers *right now*, at any impact. The NatSpec promise "an override picks a path, never a worse price" therefore only holds when an auto quote exists. Combined with H-01 (the path quote is manipulable) a compromised operator key is a per-page extraction key with no on-chain bound, and the page-size lever (`limit`) that would make the auto-route work is left to the same operator.
+
+The second part is independent of the operator. When a two-hop path's second hop fills only partially (its pool runs out of in-range liquidity), the router forwards the unspent **WETH** — which is the users' converted USDG — to the vault, and the vault books it as `wethDust` and forwards it to `feeRecipient` in the same transaction. A first-hop residual, by contrast, is returned to the plans pro rata. The auto path accepts such a route when the unfilled fraction keeps the combined impact under the cap (≈ up to 1.4%); the override path accepts any fraction.
+
+**Scenario / PoC** (`Audit3.M02.OverrideUncapped`):
+- `test_overrideFillsBeyondTheImpactCap_whenAutoRouteHasNoQuote`: $200k pool, 15k page (~7% impact) → auto-route `NoRoute`, page skipped; operator override fills at the 7%-impact price.
+- `test_partialSecondHop_sendsUsersWethToTheTreasury`: USDG→WETH deep, WETH→NVDA with 10 NVDA of liquidity. Override fills: users are charged the full 15,000 USDG, receive 10 NVDA (~$5k) and **3.29 WETH (~$10k) of their money is forwarded to the treasury**; `totalUsdgIdle` shows no residual returned.
+- `test_autoRoute_smallPartialSecondHop_stillLeaksToTreasury`: same on the auto path with a 1% partial second hop, inside the cap.
+
+**Recommendation.**
+1. Make `quotePath` return the path's impact (per-hop mids are already computed by the adapters; combine as `_bestTwoHop` does) and have the vault require `impact ≤ maxPriceImpactBps` for overrides. Better: also apply the H-01 external floor to overrides.
+2. Treat second-hop refunds as user money: either revert the page on a partial later hop (router flag `requireFullFill` for vault callers; the page is then skipped, not consumed) or convert the WETH back to USDG through the approved WETH→USDG hop in the same transaction and return it pro rata with the USDG residual. Do not route it to `feeRecipient`.
+3. Consider removing the override's price authority entirely: keep `path` selection (useful when a pool is degraded) but always floor at the auto/external reference; when the auto-route has no quote, the correct operator tool is a smaller `limit`, not a worse price.
+
+---
+
+### M-03 · Standing unlimited approvals turn `setRouter` / `setBoostStrategy` into single-transaction custody transfers
+
+| | |
+|---|---|
+| **Category** | Centralization / privilege (CertiK "Major") |
+| **Severity** | **Medium** (impact Critical: every idle USDG and WETH in the vault; likelihood Low: owner key; no delay, no bound, no interface check) |
+| **Location** | [`PlanVault._setRouter`](contracts/src/vault/PlanVault.sol#L999-L1010) (`forceApprove(newRouter, max)` for USDG and WETH), [`BoostLib.setStrategy`](contracts/src/libraries/BoostLib.sol#L146-L149) (`forceApprove(strategy, max)`), [`PlanVault.setBoostStrategy`](contracts/src/vault/PlanVault.sol#L719-L721) |
+| **Status** | Open (v0.2 I-13 "admin timelock" listed as unchanged) |
+
+**Description.** The vault approves `type(uint256).max` of USDG and WETH to whatever address the owner passes to `setRouter`, and `type(uint256).max` of USDG to whatever passes `setBoostStrategy` (the only check is `asset() == usdg`). Neither call verifies a router/strategy interface, neither is delayed, and the approval is usable by the target contract immediately and independently of any swap or deposit. The `Overspent` / `SwapReturnedZero` checks in `_buyStock` bound what a malicious router can take *during a page*; they do not bound what it can `transferFrom` on its own. `FeeReceiver` was written the right way (exact `amountIn` approval before the call, reset to 0 after) — the vault, which holds the user funds, was not.
+
+This matters beyond "the owner is trusted": it is the difference between a compromised owner key having to execute a swap-shaped action bounded by the impact cap and page size, and a compromised key draining every vault in two transactions with no user-visible warning beyond an event. The multisig's L2 also has instantly upgradeable system contracts (L2BEAT), so a timelock at the protocol level is the only delay users would get.
+
+**Proof of concept** — `Audit3.M03.AdminApprovalDrain`: `setRouter(EvilRouter)` then anyone calls `evil.drain()` → 200,000 USDG of two users gone, their withdrawals revert; same with `setBoostStrategy(EvilStrategy)` whose only ERC-4626 method is `asset()`.
+
+**Recommendation.**
+1. Per-call exact approvals: in `_buyStock` and `_zapWethDeposit` approve `amountIn` immediately before `swapWithRoute`/`swap` and `forceApprove(…, 0)` after; in `BoostLib._deposit` and `setStrategy` approve `assets`/`moved` before `deposit` and reset after. Remove the standing approvals from `_setRouter` and `setStrategy`. Gas cost: two `SSTORE`s per page and per boost deposit.
+2. Interface sanity in `setRouter` (`IAggregatorRouter(newRouter).weth() == _weth`, `maxPriceImpactBps() > 0`) and in `setBoostStrategy` (`totalAssets()`/`convertToAssets` callable), as `FeeReceiver._setRouter` does.
+3. Put the owner behind a `TimelockController` (≥ 24–48 h) for `setRouter`, `setBoostStrategy`, `setFeeRecipient`, `approveHop`, `setAdapter`, `registerPool`/`addPool`; keep `pause`, `revokeHop`, `setKeeper(…, false)` on a fast path. Emit and monitor `RouterSet` / `BoostStrategySet`.
+
+---
+
+### M-04 · Unaccounted USDG / Stock Token balances in a vault are unrecoverable
+
+| | |
+|---|---|
+| **Category** | Asset safety / recoverability |
+| **Severity** | **Medium** (impact High: permanent lock of whatever arrives; likelihood Low: needs an external transfer — an issuer distribution, a mistaken send, a future token feature) |
+| **Location** | [`PlanVault.rescueERC20`](contracts/src/vault/PlanVault.sol#L757-L767) (refuses USDG, WETH, strategy shares and every `isKnown` stock), [`_sweepDust`](contracts/src/vault/PlanVault.sol#L648-L661) (moves only the `usdgDust` counter) |
+| **Status** | Open |
+
+**Description.** The vault's accounting is counter-based (`totalUsdgIdle + usdgDust`, `totalStockAccrued + dustPot`), which is correct and robust, and `rescueERC20` is rightly forbidden from touching those tokens. But nothing reconciles `balanceOf` with the counters: any USDG or Stock Token that reaches the vault outside its own flows is invisible to every function and can never leave. Robinhood's ERC-8056 design means splits and dividends do **not** change raw balances (good), but issuer distributions in another form, refunds from a future DEX/hook, a partner airdrop, or a plain mistaken transfer all land here. The PoC shows 1 NVDA and 500 USDG stuck after every user has exited.
+
+**Recommendation.** Add an owner/feeManager `skim(token)` that books the excess into the existing user-favourable sinks rather than to the treasury: `stock.balanceOf − totalStockAccrued − dustPot → dustPot[stock]` (distributed pro rata to that stock's plans at the next epoch) and `usdg.balanceOf − totalUsdgIdle − usdgDust → usdgDust` (or, if you prefer, a new `usdgExcess` swept to the treasury — a product decision, but make it possible). Keep the invariants exact by asserting them in `skim`.
+
+---
+
+### L-01 · $DCA perks are spot balances → claim fee bypass with a transient balance
+
+| | |
+|---|---|
+| **Severity** | Low (impact Low–Medium: the protocol's 25 bps claim fee; likelihood High for any user with access to $DCA liquidity) |
+| **Location** | [`PlanVault._claim`](contracts/src/vault/PlanVault.sol#L933) (`isAutoDistribute(p.owner)` at claim time), [`_perks`](contracts/src/vault/PlanVault.sol#L972-L976) |
+
+`claim` is the user's own transaction, so the perk check is atomic with anything they do around it: borrow ≥ `autoDistributeThreshold` $DCA (flash loan, lending market, a friend), claim with a 0 fee, return it. PoC: `Audit3.L01.ClaimFeeBypass` — the treasury receives 0 instead of 25 bps. (The epoch-time fee halving is operator-timed and only predictable, not atomic — v0.2 I-10.) **Recommendation:** snapshot-based perks (balance at the previous epoch boundary, or a minimum holding age via a checkpointed token), or compute claim perks from the balance at the plan's last fill.
+
+### L-02 · `Zap` strands the router's first-hop refund
+
+| | |
+|---|---|
+| **Severity** | Low (bounded by the unfilled fraction the impact cap lets through, ~≤ 1.5%; permanent) |
+| **Location** | [`Zap._wethToUsdg`](contracts/src/periphery/Zap.sol#L83-L86), [`swapUsdgForEth`](contracts/src/periphery/Zap.sol#L53-L66); [`AggregatorRouter._execute` refund to `msg.sender`](contracts/src/router/AggregatorRouter.sol#L244) |
+
+The router refunds an unspent first-hop input to `msg.sender`; for `Zap` that is the `Zap` contract, which has no sweep and passes only `msg.value`/`amountIn` onward. PoC: `Audit3.L02.ZapStrandsRefund` — 0.1 ETH of WETH and 100 USDG stranded on 10%-fill routes. **Recommendation:** measure the input balance delta in `Zap` and return `amountIn − spent` to the user (as `PlanVault._zapWethDeposit` does), or add a `refundTo` parameter to `router.swap`.
+
+### L-03 · Boost operational edge cases
+
+| | |
+|---|---|
+| **Severity** | Low |
+| **Location** | [`BoostLib.setPlanBoost`](contracts/src/libraries/BoostLib.sol#L63-L82) (no strategy check when `usdgIdle == 0`), [`BoostLib.setStrategy`](contracts/src/libraries/BoostLib.sol#L131-L152) (atomic full redeem), [`BoostLib.withdrawPage`](contracts/src/libraries/BoostLib.sol#L119-L126) |
+
+PoC `Audit3.L03.BoostEdgeCases`:
+- **Flag without strategy.** With the strategy cleared, `setPlanBoost(true)` on an empty plan succeeds (nothing to lend, no check); every subsequent deposit to that plan by anyone — the owner, a friend, `Zap.depositEthAsUsdg` — reverts `BoostUnavailable` until the owner unboosts. *Fix:* require `pool.strategy != 0` when enabling.
+- **Migration blocked while illiquid.** `setBoostStrategy(new)` redeems the whole position atomically; when the market is fully utilised (`liquidity() == 0`) it reverts, and clearing reverts `BoostInUse`. The owner cannot leave a bad market exactly when they want to. *Fix:* allow a migration that leaves the old position in place (old strategy stays withdrawable per plan; new deposits go to the new one), or a partial redeem loop.
+- **Borrower-driven epoch miss.** A borrower who takes the free liquidity just before the epoch makes every boosted plan on the page "sit out" (dropped fills, never caught up); unboosted plans fill. Inherent to lending; document it in the boost UI (the existing `test_fill_illiquidMarket_boostedPlansSitOut` covers the mechanism) and consider filling boosted plans from `usdgIdle` first up to a small buffer.
+
+### L-04 · Slippage/tip parameters and `feeManager` scope
+
+| | |
+|---|---|
+| **Severity** | Low |
+| **Location** | [`PlanVault.setFees`](contracts/src/vault/PlanVault.sol#L669-L680), `MAX_SWAP_SLIPPAGE_BPS = 500`, `MAX_KEEPER_TIP_BPS = 5_000` |
+
+`feeManager` (a hot-wallet-style role, not necessarily the multisig) can widen `swapSlippageBps` to 5% — which, with H-01, is the fraction of every page an attacker can take *without* moving the impact cap — and can route 50% of purchase fees to `msg.sender` of `advanceEpoch` as tips. **Recommendation:** owner-only for `swapSlippageBps` and `keeperTipBps` (or lower caps: ≤ 100 bps / ≤ 1,000 bps), and keep the H-01 external floor independent of `swapSlippageBps`.
+
+---
+
+## 6. Informational
+
+| ID | Note | Location |
+|---|---|---|
+| I-01 | `renounceOwnership` remains callable on every `Ownable2Step` contract; a mistaken call bricks admin forever (no upgrade path). Override it to revert. | all contracts |
+| I-02 | No timelock on any owner action; every admin change is instant (see M-03). | all |
+| I-03 | `feeManager` may be `address(0)`-cleared but has no 2-step; document it as a hot role and monitor `FeeConfigSet`. | `PlanVault.setFeeManager` |
+| I-04 | `EpochKeeper._forwardTips` sends tips to `msg.sender`; when that is the Chainlink Automation forwarder contract the USDG is stuck there. Make the tip recipient configurable. | [`EpochKeeper.sol#L218-L223`](contracts/src/keeper/EpochKeeper.sol#L218-L223) |
+| I-05 | `runDue` / `checkUpkeep` / `dueJobs` loop over every job; with 3 vaults × N stocks all due at the same boundary, `runDue` executes N pages in one transaction and will exceed the block gas limit; `checkUpkeep` may exceed Automation's simulation limit. `run(index)` is the practical path — document it; consider a cursor for `runDue`. | [`EpochKeeper.sol#L144-L179`](contracts/src/keeper/EpochKeeper.sol#L144-L179) |
+| I-06 | Quote cost is O(hops²) full swap simulations: with `MAX_HOPS_PER_PAIR = 8` on both legs a single `quoteWithImpact` can run 8 direct + 8 first-leg + 64 second-leg simulations (~100k gas each on real V3 pools). Keep approved hops per pair to 1–3 and memoise the second-leg quote per distinct `o1`. | [`AggregatorRouter._bestTwoHop`](contracts/src/router/AggregatorRouter.sol#L277-L307) |
+| I-07 | `maxPlansPerTx` may be set to 1,000; a page of 1,000 plans (≈ 3 `SSTORE`s each plus perk calls) is likely above the block gas limit. Cap at ~250 or document `limit`. | `PlanVault.setMaxPlansPerTx` |
+| I-08 | `quoteRoute` on both adapters is public and non-view and caches `verifiedPool[pool] = true` for any factory pool; harmless (only factory pools) but it lets anyone re-verify a pool after `unregisterPool`. Treat `revokeHop` as the only real off-switch (already documented). | [`UniV3Adapter.sol#L111`](contracts/src/router/adapters/UniV3Adapter.sol#L111) |
+| I-09 | `Deploy.s.sol` derives `origin` from the simulation timestamp; if the broadcast lands after the day/week boundary the constructor reverts `BadOrigin` (safe, but re-run). | [`Deploy.s.sol#L140-L146`](contracts/script/Deploy.s.sol#L140-L146) |
+| I-10 | External issuer powers: Paxos USDG carries freeze/blocklist roles; a frozen vault address locks everything, a frozen user cannot withdraw. Robinhood Stock Tokens are minted/burned only by the issuer; their pause powers are undocumented. Add to SECURITY.md as accepted systemic risk. | — |
+| I-11 | `evm_version = cancun` is supported on ArbOS 61 (the Cancun opcode set landed in ArbOS 20–30, Prague in ArbOS 40); `prague` would also be available. OZ 5.1.0 → latest 5.x is advisable (no advisory affects the components used). | `foundry.toml` |
+| I-12 | ERC-8056: a Stock Token split changes `uiMultiplier`, not balances, so the vault's raw accounting is unaffected, **but** the raw-token DEX price steps by the split ratio at `effectiveAt`. Any reference-price guard (H-01) must use a multiplier-aware source (the Chainlink feeds are) or reset its TWAP window across `UIMultiplierUpdated`. Frontends must display `stockAccrued × uiMultiplier`. | — |
+| I-13 | Documentation drift: `Zap` NatSpec still refers to "zap-at-epoch plans whose owner wants USDG credited instead of WETH" (feature removed in v0.2); `WethZapped` names its first parameter `wethIn` but receives `spent`; `IEpochAdvanceable` is unused; `TwapOracle` NatSpec says "nothing in the vault depends on it" while `FeeReceiver` now does. | `Zap.sol`, `IPlanVault.sol`, `IEpochAdvanceable.sol`, `TwapOracle.sol` |
+| I-14 | Minor hygiene: `Zap` and `VaultDirectory.set` have no zero-address checks; `hopKey` includes the informational `fee` field so one pool can be approved under several keys (owner error only, counts against `MAX_HOPS_PER_PAIR`); `_tryTransfer` forwards all gas to the stock token; `MorphoBlueStrategy` shares are freely transferable ERC-20s (fine, the vault never transfers them, but a future `rescueERC20` change must keep excluding them). | various |
+
+---
+
+## 7. Code quality assessment
+
+| Dimension (Hacken) | Score | Notes |
+|---|---|---|
+| Documentation | **9/10** | README/SECURITY.md/NatSpec are unusually thorough and honest about trade-offs; minor drift (I-13). |
+| Code quality | **9/10** | Small functions, explicit phases (`_collect → _buyStock → _commitSpend → _payFees → _distribute → _finalizePage`), custom errors, events on every admin path, SafeERC20/SafeCast throughout, lint-clean. Vault at the EIP-170 edge (972 B headroom) constrains fixes — the H-01 floor and M-03 approvals fit; anything larger needs another linked library. |
+| Architecture | **7/10** | Allow-listed routing, skip-not-revert epochs and counter-based accounting are strong choices. Weak points are the missing external price reference (H-01), the asymmetry between `FeeReceiver`'s guards/approvals and the vault's (H-01, M-03), and no reconciliation path for stray balances (M-04). |
+| Test coverage | **9/10** | 358 tests → 376 with this suite; 98.1% lines / 97.0% statements / 90.0% branches on `src`; invariant handler with partial fills, route outages, boost toggles, liquidity crunches and bad debt, green at CI depth. Gaps: no fork test against live Morpho / Uniswap; nothing exercised an empty-strategy deposit (M-01) or a partial second hop (M-02) before this review. |
+| Security posture | **6/10** | Excellent on the classic classes (reentrancy, access control, arithmetic, callbacks). The residual risk is concentrated and design-level: price reference, admin blast radius, ERC-4626 edge. |
+
+Trail of Bits maturity view: Arithmetic Satisfactory · Auditing/events Satisfactory · Access controls Satisfactory · Complexity Satisfactory · **Decentralization Weak** (M-03, I-02) · Documentation Strong · Low-level code Satisfactory · **Transaction ordering / price integrity Weak** (H-01, M-02) · Testing Strong.
+
+---
+
+## 8. Appendix — tooling
+
+- **Tests.** `forge test`: 358 pass / 0 fail before this review; `test/audit/v0.3/*`: 18 pass; full suite at CI profile (fuzz 2048, invariants 256×64) with the PoCs included: **376 pass / 0 fail** (38 suites; `VaultInvariants` 10/10, `FeeReceiverInvariants` 5/5).
+- **Coverage** (`forge coverage --ir-minimum`, `src/` only): 98.10% lines (1344/1370), 96.97% statements, 89.97% branches, 99.56% functions. `PlanVault` 99.2% lines / 86.9% branches; adapters 92–94% lines.
+- **Slither 0.11.6** (`--exclude-informational --exclude-optimization`, src only): 147 results. Triage: `arbitrary-send-eth` (Zap: caller-chosen recipient, by design); `reentrancy-balance` / `reentrancy-eth` / `reentrancy-no-eth` / `reentrancy-benign` / `reentrancy-events` (all on `nonReentrant` paths, or event-after-call, or stateless router — no finding); `uninitialized-state` (mapping, false positive); `incorrect-equality` (balance-delta checks, intended); `unused-return` (`forceApprove`/`deposit` return values, benign — but see M-01 for why checking the strategy's return *would* have helped); `missing-zero-check` (I-14); `calls-loop` (`_perks`, `_tryTransfer` per plan, bounded by `maxPlansPerTx`); `timestamp` (epoch maths, intended). No true positive that is not already a finding above.
+- **`forge lint src`**: clean. **Contract sizes**: vaults 23,604 B; router 8,749 B; V3 adapter 5,511 B; V4 adapter 6,056 B; FeeReceiver 8,510 B; strategy 8,392 B; BoostLib 4,322 B.
+- **Not run:** the fork suite (`RH_RPC` unset, `config/addresses.rh.json` still has placeholder addresses); formal verification; a live Morpho Blue / Uniswap V4 integration test.
+
+**Reproduce:** `cd contracts && forge test --match-path "test/audit/v0.3/*" -vv`. The PoC files contain no fixes; they will start failing when the corresponding finding is closed, at which point flip the assertions and keep them as regressions (the pattern used by `test/audit/` for v0.1).
+
+---
+
+## 9. Recommendation roadmap
+
+| Priority | Item | Effort | Closes |
+|---|---|---|---|
+| **P0** | External price floor in `_buyStock` (Chainlink feed per stock, or the `FeeReceiver` TWAP guard as a shared library), applied to auto and override paths; skip the page on deviation | ~60 lines + tests | H-01, most of M-02 |
+| **P0** | Per-call exact approvals in the vault (router, strategy); interface checks in `setRouter`/`setBoostStrategy`; `TimelockController` as owner | ~30 lines + ops | M-03, I-02 |
+| **P0** | `MorphoBlueStrategy._decimalsOffset = 6`; `BoostLib._deposit` share/value delta check; seed the strategy in `Deploy.s.sol` | ~20 lines | M-01 |
+| **P1** | Impact cap (or the P0 floor) enforced for `quotePath`/overrides; second-hop refunds returned to users or the page reverted | ~40 lines | rest of M-02 |
+| **P1** | `skim(token)` reconciling stray balances into `dustPot` / `usdgDust` | ~25 lines | M-04 |
+| **P1** | Perk snapshotting for claims; owner-only slippage/tip; `setPlanBoost(true)` strategy check; `Zap` refund handling | small | L-01, L-04, L-03a, L-02 |
+| **P2** | Non-atomic strategy migration; configurable tip recipient; `runDue` cursor; `renounceOwnership` disabled; docs drift | small | L-03b, I-01, I-04, I-05, I-13 |
+| **Before mainnet, non-code** | Fill `config/addresses.rh.json` from official sources and run the fork suite against live Morpho/Uniswap; confirm observation cardinality on every approved pool if the TWAP route is chosen; record USDG/Stock Token issuer powers in SECURITY.md; re-audit the diff after P0/P1 | — | — |
+
+*This report reflects the code as of 2026-09-22. Findings are ordered by the reviewer's assessment of risk to user funds; the severity of H-01 and M-03 in particular is a judgement that operational mitigations should not substitute for contract-level guarantees on a product that custodies retail savings on a schedule everyone can read.*
