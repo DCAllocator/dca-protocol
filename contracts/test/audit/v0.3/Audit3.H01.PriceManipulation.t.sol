@@ -75,6 +75,57 @@ contract Audit3_H01_PriceManipulation is AuditBase {
         assertLt(manipulatedOut * 100, fairOut * 70, "users receive < 70% of the fair fill");
     }
 
+    /// The attacker's real cost is arbitrage during the hold. If one arbitrageur restores the price between the
+    /// push and the operator's transaction, the page fills at fair value and the attacker's unwind is a large
+    /// loss. This is the economic argument for an UNPREDICTABLE execution time: it converts a risk-free
+    /// front-run into a bet against every arbitrageur for the length of the hold. It is an argument about
+    /// likelihood, not about the contract: the contract still accepts whatever price it finds.
+    function test_arbitrageDuringTheHold_makesTheAttackALoss() public {
+        _nextEpoch();
+        uint256 snap = vm.snapshotState();
+        _advance(keeper);
+        uint256 fairOut = _totalAccrued();
+        vm.revertToState(snap);
+
+        bool buyNvda = address(usdg) == pool.token0();
+        uint256 push = 600_000e6;
+        uint256 nvdaHeld = attacker.trade(pool, buyNvda, push);
+
+        // An arbitrageur sells NVDA (bought at the fair 500 elsewhere) back into the pool until it is ~fair.
+        Trader arber = new Trader();
+        nvda.mint(address(arber), 2_000e18);
+        (uint256 r0, uint256 r1) = pool.reserves();
+        (uint256 rUsdg, uint256 rNvda) = buyNvda ? (r0, r1) : (r1, r0);
+        // restore reserves to the constant-product point where price == 500: rNvda' = sqrt(k / 500)
+        uint256 k = rUsdg * rNvda;
+        uint256 targetNvda = _sqrt(k / 500e6) * 1e9; // reserves are 1e6 / 1e18 scaled: sqrt(k/500e6) * 1e9
+        uint256 sell = targetNvda > rNvda ? targetNvda - rNvda : 0;
+        uint256 arbUsdg = arber.trade(pool, !buyNvda, sell);
+        uint256 arbCost = (sell * 500e6) / 1e18;
+        emit log_named_uint("arbitrageur profit USDG (1e6)", arbUsdg - arbCost);
+        assertGt(arbUsdg, arbCost, "arber profits from the pushed price");
+
+        vm.roll(block.number + 1);
+        _advance(keeper);
+        uint256 out = _totalAccrued();
+        assertGt(out * 100, fairOut * 97, "page fills within ~3% of fair");
+
+        vm.roll(block.number + 1);
+        uint256 usdgBack = attacker.trade(pool, !buyNvda, nvdaHeld);
+        emit log_named_uint("attacker loss USDG (1e6)", push - usdgBack);
+        assertLt(usdgBack, push - 100_000e6, "attacker loses > 100k USDG on a 600k push");
+    }
+
+    function _sqrt(uint256 x) internal pure returns (uint256 y) {
+        if (x == 0) return 0;
+        uint256 z = (x + 1) / 2;
+        y = x;
+        while (z < y) {
+            y = z;
+            z = (x / z + z) / 2;
+        }
+    }
+
     /// The same pre-positioning cannot be detected by the cap regardless of its size: the cap bounds the page's
     /// slippage relative to the current pool state, never the distance of that state from a reference price.
     function test_impactCapIsBlindToThePushSize() public {

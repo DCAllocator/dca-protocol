@@ -5,7 +5,7 @@ import {BaseTest} from "../../BaseTest.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IPlanVault} from "../../../src/interfaces/IPlanVault.sol";
 
-/// @dev A "router" that never swaps: it only needs the standing approval the vault grants in _setRouter.
+/// @dev A "router" that never swaps: it only has the standing approval the vault used to grant in _setRouter.
 contract EvilRouter {
     address public immutable weth;
 
@@ -18,8 +18,7 @@ contract EvilRouter {
     }
 }
 
-/// @dev A "strategy" whose only ERC-4626 surface is asset(): enough to pass setBoostStrategy and receive a
-///      standing max approval on the vault's USDG.
+/// @dev A "strategy" whose only ERC-4626 surface is asset().
 contract EvilStrategy {
     address public immutable asset;
 
@@ -32,42 +31,46 @@ contract EvilStrategy {
     }
 }
 
-/// @dev AUDIT v0.3 / M-03. The vault grants type(uint256).max USDG + WETH approvals to whatever address the owner
-///      sets as router, and max USDG to whatever it sets as boost strategy. A single owner transaction therefore
-///      hands full custody of every user's idle USDG to an arbitrary contract, with no swap, no time delay and no
-///      on-chain bound. FeeReceiver, by contrast, approves exactly amountIn per call and resets it to 0.
+/// @title AUDIT v0.3 / M-03 regression — no standing approvals: setRouter / setBoostStrategy move no funds
+///
+/// Finding: the vault approved type(uint256).max USDG + WETH to whatever the owner set as router, and max USDG to
+/// whatever it set as strategy — a single owner transaction was a custody transfer.
+/// Fix: exact, per-call approvals around every swap / strategy deposit, reset to 0 afterwards; `setRouter` checks
+/// the router shares the vault's WETH. (A timelock in front of the owner is an ops decision, see AUDIT.md.)
 contract Audit3_M03_AdminApprovalDrain is BaseTest {
     address internal thief = makeAddr("thief");
 
-    function test_setRouter_isASingleTxCustodyTransfer() public {
+    function test_setRouter_grantsNothing() public {
         uint256 a = _createUsdgPlan(daily, alice, address(nvda), 100e6, 100_000e6);
         uint256 b = _createUsdgPlan(daily, bob, address(nvda), 100e6, 100_000e6);
-        assertEq(usdg.balanceOf(address(daily)), 200_000e6);
-
         EvilRouter evil = new EvilRouter(address(weth));
         vm.prank(owner);
-        daily.setRouter(address(evil)); // no interface check, no timelock, no event a user could react to in time
-        assertEq(usdg.allowance(address(daily), address(evil)), type(uint256).max);
-
-        evil.drain(usdg, address(daily), thief); // anyone
-        assertEq(usdg.balanceOf(thief), 200_000e6);
-        assertEq(usdg.balanceOf(address(daily)), 0);
-
+        daily.setRouter(address(evil));
+        assertEq(usdg.allowance(address(daily), address(evil)), 0);
+        assertEq(weth.allowance(address(daily), address(evil)), 0);
+        vm.expectRevert(); // ERC20InsufficientAllowance: nothing to pull
+        evil.drain(usdg, address(daily), thief);
+        assertEq(usdg.balanceOf(thief), 0);
+        assertEq(usdg.balanceOf(address(daily)), 200_000e6);
         vm.prank(alice);
-        vm.expectRevert();
         daily.withdrawIdle(a, type(uint256).max);
         vm.prank(bob);
-        vm.expectRevert();
         daily.withdrawIdle(b, type(uint256).max);
+        assertEq(usdg.balanceOf(address(daily)), 0);
     }
 
-    function test_setBoostStrategy_isASingleTxCustodyTransfer() public {
+    function test_setBoostStrategy_grantsNothing() public {
         _createUsdgPlan(daily, alice, address(nvda), 100e6, 100_000e6);
         EvilStrategy evil = new EvilStrategy(address(usdg));
         vm.prank(owner);
-        daily.setBoostStrategy(address(evil)); // passes: asset() matches, no open positions
-        assertEq(usdg.allowance(address(daily), address(evil)), type(uint256).max);
+        daily.setBoostStrategy(address(evil));
+        assertEq(usdg.allowance(address(daily), address(evil)), 0);
+        vm.expectRevert(); // ERC20InsufficientAllowance: nothing to pull
         evil.drain(address(daily), thief);
-        assertEq(usdg.balanceOf(thief), 100_000e6);
+        assertEq(usdg.balanceOf(thief), 0);
+        // a boosted deposit into it fails loudly instead of being taken
+        vm.prank(bob);
+        vm.expectRevert();
+        daily.createPlan(address(nvda), 10e6, address(0), 10e6, 0, 0, true);
     }
 }

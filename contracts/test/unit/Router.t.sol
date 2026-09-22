@@ -318,6 +318,26 @@ contract RouterTest is Test {
         router.quotePath(p, 0);
     }
 
+    /// audit v0.3 M-02: quotePath applies the same impact cap as the automatic selection, direct and two-hop.
+    function test_quotePath_enforcesImpactCap() public {
+        uniNvda500.setBroken(false);
+        Route[] memory p = new Route[](1);
+        p[0] = rUni500;
+        uniNvda500.setImpact(200); // 2% + 5 bps fee > 150 bps
+        vm.expectPartialRevert(IAggregatorRouter.PriceImpactTooHigh.selector);
+        router.quotePath(p, 1_000e6);
+        uniNvda500.setImpact(100);
+        assertGt(router.quotePath(p, 1_000e6), 0, "1% + fee is inside the cap");
+        p = new Route[](2);
+        p[0] = rUsdgWeth;
+        p[1] = rWethNvda;
+        uniWethNvda3000.setImpact(200);
+        vm.expectPartialRevert(IAggregatorRouter.PriceImpactTooHigh.selector);
+        router.quotePath(p, 1_000e6);
+        uniWethNvda3000.setImpact(0);
+        assertGt(router.quotePath(p, 1_000e6), 0);
+    }
+
     function test_quote_unapprovedPoolIsNeverConsidered() public {
         // A better pool exists in the factory but is not approved: ignored.
         MockV3Pool cheap =
@@ -468,43 +488,59 @@ contract RouterTest is Test {
         router.swap(address(usdg), address(nvda), 1_000e6, q + 1, user);
     }
 
-    function test_swap_partialFillHop0RefundsCaller() public {
+    /// audit v0.3 M-02 / L-02: the router executes FULL fills only. A hop that cannot consume its whole input
+    /// (in-range liquidity exhausted) is "no fill" at quote time and `PartialFill` at execution, so no refund
+    /// can ever be stranded on a caller that does not expect one (Zap) or forwarded to the wrong party (vault).
+    function test_swap_partialFillHop0_isRefusedAtQuoteAndExecution() public {
         _revoke(rV4);
-        // Pool runs out of liquidity at 1.98 NVDA (~1% below the ~1.999 quote: within the impact cap).
+        // Pool runs out of liquidity at 1.98 NVDA (~1% below the ~1.999 full quote: inside the impact cap).
         uniNvda500.setMaxOut(1.98e18);
         uniNvda3000.setBroken(true);
         ramsesNvda3000.setBroken(true);
         uniWethNvda3000.setBroken(true);
-        (uint256 q, Route[] memory path) = router.quote(address(usdg), address(nvda), 1_000e6);
-        assertEq(q, 1.98e18, "quote reflects the partial fill");
+        (uint256 out, uint256 mid) = uni.quoteRoute(rUni500, 1_000e6);
+        assertEq(out, 0, "partial fill reported as no fill");
+        assertEq(mid, 0);
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.NoRoute.selector, address(usdg), address(nvda)));
+        router.quote(address(usdg), address(nvda), 1_000e6);
+        Route[] memory p = new Route[](1);
+        p[0] = rUni500;
         uint256 usdgBefore = usdg.balanceOf(user);
         vm.prank(user);
-        router.swapWithRoute(address(usdg), address(nvda), 1_000e6, q, user, path);
-        uint256 spent = usdgBefore - usdg.balanceOf(user);
-        assertLt(spent, 1_000e6, "unspent input refunded to the caller");
-        assertApproxEqRel(spent, 990.5e6, 0.002e18);
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.PartialFill.selector, 0));
+        router.swapWithRoute(address(usdg), address(nvda), 1_000e6, 0, user, p);
+        assertEq(usdg.balanceOf(user), usdgBefore);
         assertEq(usdg.balanceOf(address(uni)), 0);
+        // the same pool fills a trade it can absorb in full
+        uint256 nvdaBefore = nvda.balanceOf(user);
+        vm.prank(user);
+        router.swapWithRoute(address(usdg), address(nvda), 500e6, 0, user, p);
+        assertApproxEqRel(nvda.balanceOf(user) - nvdaBefore, 1e18, 0.01e18);
     }
 
-    /// L-04 regression: an unspent intermediate on hop 2 is forwarded to the recipient, never stranded.
-    function test_swap_partialFillHop1ForwardsIntermediateToRecipient() public {
+    function test_swap_partialFillHop1_isRefusedAtQuoteAndExecution() public {
         _revoke(rV4);
         uniNvda3000.setImpact(200);
         uniNvda500.setImpact(200);
         ramsesNvda3000.setImpact(200);
         (uint256 hop1Out,) = router.quote(address(usdg), address(weth), 1_000e6);
         uint256 full = uniWethNvda3000.midOut(address(weth) < address(nvda), hop1Out) * 997 / 1000;
-        uniWethNvda3000.setMaxOut(full * 995 / 1000); // hop 2 consumes 99.5% of the WETH
-        (uint256 q, Route[] memory path) = router.quote(address(usdg), address(nvda), 1_000e6);
-        assertEq(path.length, 2);
+        uniWethNvda3000.setMaxOut(full * 995 / 1000); // hop 2 would consume only 99.5% of the WETH
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.NoRoute.selector, address(usdg), address(nvda)));
+        router.quote(address(usdg), address(nvda), 1_000e6);
+        Route[] memory p = new Route[](2);
+        p[0] = rUsdgWeth;
+        p[1] = rWethNvda;
         address recipient = makeAddr("recipient");
         vm.prank(user);
-        router.swapWithRoute(address(usdg), address(nvda), 1_000e6, q, recipient, path);
-        assertEq(nvda.balanceOf(recipient), q);
-        assertGt(weth.balanceOf(recipient), 0, "leftover WETH forwarded to the recipient");
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.PartialFill.selector, 1));
+        router.swapWithRoute(address(usdg), address(nvda), 1_000e6, 0, recipient, p);
+        assertEq(nvda.balanceOf(recipient), 0);
+        assertEq(weth.balanceOf(recipient), 0, "no intermediate forwarded anywhere");
         assertEq(weth.balanceOf(address(uni)), 0, "nothing stranded in the adapter");
         assertEq(weth.balanceOf(address(router)), 0, "nothing stranded in the router");
         assertEq(weth.balanceOf(user), 10_000e18, "caller's WETH untouched");
+        assertEq(usdg.balanceOf(user), 10_000_000e6, "caller's USDG untouched");
     }
 
     function test_swapWithRoute_validation() public {
@@ -657,19 +693,23 @@ contract RouterTest is Test {
         router.swapWithRoute(address(usdg), address(nvda), 1e6, 0, user, p);
     }
 
-    function test_v4_partialFillRefund() public {
+    function test_v4_partialFill_isRefusedAtQuoteAndExecution() public {
         pm.setMaxOut(v4NvdaKey, 1.98e18);
         uniNvda500.setBroken(true);
         uniNvda3000.setBroken(true);
         ramsesNvda3000.setBroken(true);
         uniWethNvda3000.setBroken(true);
-        (uint256 q, Route[] memory path) = router.quote(address(usdg), address(nvda), 1_000e6);
-        assertEq(path[0].protocol, 2);
-        assertEq(q, 1.98e18);
+        (uint256 out,) = v4.quoteRoute(rV4, 1_000e6);
+        assertEq(out, 0, "partial fill reported as no fill");
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.NoRoute.selector, address(usdg), address(nvda)));
+        router.quote(address(usdg), address(nvda), 1_000e6);
+        Route[] memory p = new Route[](1);
+        p[0] = rV4;
         uint256 before = usdg.balanceOf(user);
         vm.prank(user);
-        router.swapWithRoute(address(usdg), address(nvda), 1_000e6, q, user, path);
-        assertApproxEqRel(before - usdg.balanceOf(user), 990.1e6, 0.002e18);
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.PartialFill.selector, 0));
+        router.swapWithRoute(address(usdg), address(nvda), 1_000e6, 0, user, p);
+        assertEq(usdg.balanceOf(user), before);
         assertEq(usdg.balanceOf(address(v4)), 0);
     }
 
@@ -835,7 +875,7 @@ contract RouterTest is Test {
         Route[] memory p = new Route[](1);
         p[0] = rV4;
         vm.prank(user);
-        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.InsufficientOutput.selector, 1, 2));
+        vm.expectRevert(abi.encodeWithSelector(IAggregatorRouter.PartialFill.selector, 0));
         router.swapWithRoute(address(usdg), address(nvda), 1_000e6, 2, user, p);
     }
 

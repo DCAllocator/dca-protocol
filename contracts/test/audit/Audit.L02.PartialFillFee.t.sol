@@ -11,7 +11,7 @@ import {Plan, FeeConfig} from "../../src/vault/VaultTypes.sol";
 contract AuditL02PartialFillFee is BaseTest {
     function test_KNOWN_feeChargedOnUnspentUsdgOnPartialFills() public {
         FeeConfig memory f = daily.fees();
-        f.keeperTipBps = 5_000;
+        f.keeperTipBps = 1_000; // the cap since audit v0.3 L-04
         vm.prank(owner);
         daily.setFees(f);
         uint256 id = _createUsdgPlan(daily, alice, address(nvda), 100e6, 100e6);

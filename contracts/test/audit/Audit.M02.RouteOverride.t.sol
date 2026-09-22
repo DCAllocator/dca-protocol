@@ -62,9 +62,10 @@ contract AuditM02RouteOverride is AuditBase {
         assertEq(_plan(1).usdgIdle, 100_000e6, "page not consumed, nothing charged");
     }
 
-    /// When the auto-router has no route (e.g. the only approved pool is over the impact cap) the override is still
-    /// floored at the override path's OWN current quote: an operator can accept the impact, not a worse price.
-    function test_noAutoQuote_overrideFlooredByPathQuote() public {
+    /// When the auto-router has no route because the only approved pool is over the impact cap, the override
+    /// cannot be used to accept that impact either (audit v0.3 M-02: `quotePath` enforces the cap). Inside the
+    /// cap, the override is still floored at the override path's OWN current quote.
+    function test_noAutoQuote_overrideIsCappedLikeTheAutoRoute() public {
         fairPool.setImpact(200); // 2% > 150 bps cap -> auto route says NoRoute
         vm.prank(keeper);
         vm.expectEmit(true, true, false, false);
@@ -74,6 +75,13 @@ contract AuditM02RouteOverride is AuditBase {
 
         Route[] memory path = new Route[](1);
         path[0] = _route(address(usdg), address(nvda), 500, address(fairPool));
+        vm.prank(keeper);
+        vm.expectPartialRevert(IAggregatorRouter.PriceImpactTooHigh.selector);
+        daily.advanceEpoch(address(nvda), 0, abi.encode(path, uint256(1)));
+        assertEq(_plan(1).usdgIdle, 100_000e6, "page not consumed, nothing charged");
+
+        // inside the cap the path quote is the floor: an operator picks a path, never a worse price
+        fairPool.setImpact(100);
         uint256 pathOut = router.quotePath(path, 9_925e6);
         uint256 pathFloor = (pathOut * 9_950) / 10_000;
         vm.prank(keeper);
@@ -82,7 +90,7 @@ contract AuditM02RouteOverride is AuditBase {
         vm.prank(keeper);
         assertTrue(daily.advanceEpoch(address(nvda), 0, abi.encode(path, pathFloor)));
         assertGe(_plan(1).stockAccrued, pathFloor);
-        assertLt(_plan(1).stockAccrued, 19.85e18 * 985 / 1000, "the operator explicitly accepted ~2% impact");
+        assertLt(_plan(1).stockAccrued, 19.85e18 * 995 / 1000, "~1% impact accepted, inside the cap");
     }
 
     function test_approvedWorsePoolStillMustMeetAutoFloor() public {

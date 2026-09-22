@@ -371,3 +371,26 @@ Trail of Bits maturity view: Arithmetic Satisfactory · Auditing/events Satisfac
 | **Before mainnet, non-code** | Fill `config/addresses.rh.json` from official sources and run the fork suite against live Morpho/Uniswap; confirm observation cardinality on every approved pool if the TWAP route is chosen; record USDG/Stock Token issuer powers in SECURITY.md; re-audit the diff after P0/P1 | — | — |
 
 *This report reflects the code as of 2026-09-22. Findings are ordered by the reviewer's assessment of risk to user funds; the severity of H-01 and M-03 in particular is a judgement that operational mitigations should not substitute for contract-level guarantees on a product that custodies retail savings on a schedule everyone can read.*
+
+---
+
+## 10. Remediation status (post-audit, 2026-09-22)
+
+Applied on top of the audited commit for every Medium and Low finding; High and Informational items are left for
+manual review as requested. Each fix has a regression in `contracts/test/audit/v0.3/` (the former PoC, flipped to
+assert the fixed behaviour); tests marked `test_KNOWN_*` document what is still open by decision.
+
+| ID | Status | What changed | Where |
+|---|---|---|---|
+| H-01 | **Open** (manual review) | — | — |
+| M-01 | **Fixed** | `MorphoBlueStrategy` uses 10⁶ virtual shares (`_decimalsOffset = 6`; share `decimals()` is now 12). `BoostLib._deposit` measures the strategy shares and value actually credited and reverts `BoostDepositLost` on a zero-share or short deposit. `Deploy.s.sol` / `DeployLocal.s.sol` seed the strategy with `BOOST_SEED_USDG` (default 100) of dead shares. | `boost/MorphoBlueStrategy.sol`, `libraries/BoostLib.sol`, `script/*` |
+| M-02 | **Fixed** | `AggregatorRouter.quotePath` computes the path's end-to-end impact and reverts `PriceImpactTooHigh` above `maxPriceImpactBps`, so an override can never accept more impact than the auto-route. The router executes **full fills only**: adapters report a hop that cannot consume its whole input as "no fill" (the simulate sentinel now carries `amountInUsed`), and `_execute` reverts `PartialFill(hop)`. No refund or intermediate is ever forwarded; `wethDust` can no longer be fed by a swap. | `router/AggregatorRouter.sol`, `router/adapters/*` |
+| M-03 | **Fixed (contract side)** | No standing approvals anywhere: the vault approves exactly one swap's input before `swapWithRoute` / `swap` and resets it to 0 (also on the caught-revert path); `BoostLib` does the same around every strategy `deposit` (incl. migration and the skip-path `redeposit`). `setRouter` checks `weth()` matches (`RouterMismatch`). **Open (ops decision):** timelock in front of the owner — see the questions in the remediation summary. | `vault/PlanVault.sol`, `libraries/BoostLib.sol` |
+| M-04 | **Fixed** | `skim(token)` (owner / feeManager): excess of a listed stock → that stock's `dustPot` (to its plans at the next epoch); excess USDG / WETH → the dust sinks swept to `feeRecipient`. Implemented in the new linked `VaultAdminLib` together with `rescueERC20`, which keeps `PlanVault` under EIP-170 (24,223 B, 353 B headroom). Dust counters moved into a `DustState` struct; the `usdgDust()` / `wethDust()` getters are unchanged. | `libraries/VaultAdminLib.sol`, `vault/PlanVault.sol` |
+| L-01 | **Fixed** | `Plan.claimFeeFree` is written at each fill (same storage slot as `lastEpochId`, so it is free) from the tier the owner held at that moment; `claim` reads the flag instead of the spot balance. A balance acquired after the fill applies to the *next* fill. `ClaimHelper.Position` exposes the flag. | `vault/PlanVault.sol`, `vault/VaultTypes.sol`, `periphery/ClaimHelper.sol` |
+| L-02 | **Fixed (by M-02)** | With full fills only there is no refund for `Zap` to strand; regression uses the real router + adapter. | — |
+| L-03 | **Partly fixed** | `setPlanBoost(true)` reverts `BoostUnavailable` when no strategy is set. **Open:** atomic migration still fails while the market is illiquid (`test_KNOWN_migrationImpossibleWhileMarketIlliquid`) — needs a design decision; borrower-driven epoch miss is inherent and documented (`test_KNOWN_borrowerCanMakeBoostedPlansMissTheEpoch`). | `libraries/BoostLib.sol` |
+| L-04 | **Fixed** | `swapSlippageBps` cap 500 → **100**, `keeperTipBps` cap 5,000 → **1,000**; both may only be changed by the owner (the feeManager can still set every fee). | `vault/PlanVault.sol` |
+| I-01…I-14 | Open (manual review) | — | — |
+
+**ABI / integration impact** (apps must regenerate their ABIs): `Plan` struct gained `claimFeeFree` (slot 1; `getPlan` tuple changes); `ClaimHelper.Position` gained `claimFeeFree`; `IPlanVault` gained `skim`, `Skimmed`, `BoostDepositLost`, `NotSkimmable`, `RouterMismatch`; `IAggregatorRouter` gained `PriceImpactTooHigh`, `PartialFill`; `MorphoBlueStrategy.decimals()` is 12; the vaults link two libraries (`BoostLib`, `VaultAdminLib`). Local anvil deployments predate these changes and must be redeployed. Product-visible changes: a router swap either fills in full or reverts; a page too large for the pool is skipped (auto) or refused (override) — operators should page with `limit`; the claim-fee tier is the one held at purchase time.

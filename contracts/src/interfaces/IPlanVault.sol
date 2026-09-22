@@ -30,6 +30,12 @@ interface IPlanVault {
     error BoostUnavailable();
     error BoostInUse();
     error BoostAssetMismatch(address asset);
+    /// @notice The boost strategy credited fewer shares / less value than the USDG deposited (audit v0.3 M-01).
+    error BoostDepositLost(uint256 deposited, uint256 credited);
+    /// @notice `skim` only reconciles USDG, WETH and listed stocks; anything else goes through `rescueERC20`.
+    error NotSkimmable(address token);
+    /// @notice A router must share the vault's WETH (sanity check on `setRouter`).
+    error RouterMismatch(address router);
 
     // ------------------------------------------------------------------
     // Events
@@ -81,6 +87,8 @@ interface IPlanVault {
         uint256 indexed planId, address indexed stock, address indexed recipient, uint256 amount, uint256 fee
     );
     event DustSwept(address indexed token, address indexed to, uint256 amount);
+    /// @notice Unaccounted balance of `token` booked into the vault's dust sinks (see `skim`).
+    event Skimmed(address indexed token, uint256 amount);
     event FeeConfigSet(FeeConfig fees);
     event ThresholdsSet(uint256 autoDistributeThreshold, uint256 feeHalveThreshold);
     event MinimumsSet(uint256 minAmountPerEpoch, uint256 minDeposit);
@@ -122,6 +130,7 @@ interface IPlanVault {
     // ------------------------------------------------------------------
     function advanceEpoch(address stock, uint256 limit, bytes calldata routeOverride) external returns (bool completed);
     function sweepDust() external;
+    function skim(address token) external;
     function currentEpochId() external view returns (uint32);
     function nextEpochStart() external view returns (uint256);
     function isEpochDue(address stock) external view returns (bool);

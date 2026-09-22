@@ -70,7 +70,7 @@ contract PlanVaultBoostTest is BaseTest {
         assertApproxEqAbs(daily.boostAssets(), 1_000e6, 1);
         assertApproxEqAbs(_boostValue(daily, id), 1_000e6, 1);
         assertEq(daily.stockPlanCount(address(nvda)), 1, "indexed like any funded plan");
-        assertEq(strategy.balanceOf(address(daily)), 1_000e6);
+        assertEq(strategy.balanceOf(address(daily)), 1_000e12, "strategy shares carry a 10^6 offset (v0.3 M-01)");
         _checkInvariants(daily);
     }
 
@@ -580,8 +580,8 @@ contract PlanVaultBoostTest is BaseTest {
 
         assertEq(daily.boostStrategy(), address(holding));
         assertEq(strategy.balanceOf(address(daily)), 0, "old position fully redeemed");
-        assertEq(usdg.allowance(address(daily), address(strategy)), 0, "old approval revoked");
-        assertEq(usdg.allowance(address(daily), address(holding)), type(uint256).max);
+        assertEq(usdg.allowance(address(daily), address(strategy)), 0, "no standing approvals (v0.3 M-03)");
+        assertEq(usdg.allowance(address(daily), address(holding)), 0);
         assertApproxEqAbs(daily.boostAssets(), pool, 2, "value carried over");
         assertApproxEqAbs(_boostValue(daily, a), va, 2, "plan shares untouched");
         assertApproxEqAbs(_boostValue(daily, b), vb, 2);

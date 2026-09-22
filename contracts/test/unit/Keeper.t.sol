@@ -197,16 +197,16 @@ contract KeeperTest is BaseTest {
 
     function test_tipsForwardedToCaller() public {
         FeeConfig memory f = daily.fees();
-        f.keeperTipBps = 5_000;
+        f.keeperTipBps = 1_000; // 10%, the cap since audit v0.3 L-04
         vm.prank(owner);
         daily.setFees(f);
         _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         _nextEpoch(daily);
         vm.prank(bot);
         vm.expectEmit(true, false, false, true);
-        emit EpochKeeper.TipsForwarded(bot, 0.75e6);
+        emit EpochKeeper.TipsForwarded(bot, 0.15e6);
         k.runDue();
-        assertEq(usdg.balanceOf(bot), 0.75e6);
+        assertEq(usdg.balanceOf(bot), 0.15e6);
         assertEq(usdg.balanceOf(address(k)), 0);
     }
 

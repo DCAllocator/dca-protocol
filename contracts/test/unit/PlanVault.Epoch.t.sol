@@ -287,6 +287,15 @@ contract PlanVaultEpochTest is BaseTest {
         _advance(daily, address(blk));
         assertEq(daily.getPlan(id).stockAccrued, 1.9926e18, "accrued instead of bricking the epoch");
         assertEq(blk.balanceOf(alice), 0);
+        // The tier held AT FILL is what the claim honours: fee-free even after the $DCA is gone (v0.3 L-01).
+        assertTrue(daily.getPlan(id).claimFeeFree);
+        vm.prank(alice);
+        dca.transfer(bob, 100_000e18);
+        blk.setBlocked(alice, false);
+        vm.prank(alice);
+        daily.claim(id, type(uint256).max);
+        assertEq(blk.balanceOf(alice), 1.9926e18, "no claim fee");
+        assertEq(blk.balanceOf(treasury), 0);
     }
 
     // ------------------------------------------------------------------
@@ -319,17 +328,22 @@ contract PlanVaultEpochTest is BaseTest {
         assertEq(nvda.balanceOf(address(daily)), 0);
     }
 
-    function test_claim_zeroFeeWhenThresholdCrossedAfterEpoch() public {
+    /// audit v0.3 L-01: the claim-fee tier is fixed at fill time; a balance acquired afterwards (or only for the
+    /// duration of the claim) does not waive the fee.
+    function test_claim_feeTierIsLockedAtFill() public {
         uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         _nextEpoch(daily);
         _advance(daily, address(nvda));
         uint256 accrued = daily.getPlan(id).stockAccrued;
         assertGt(accrued, 0);
+        assertFalse(daily.getPlan(id).claimFeeFree);
         _giveDca(alice, 100_000); // buys $DCA between epoch and claim
+        assertTrue(daily.isAutoDistribute(alice), "the perk applies to the NEXT fill");
         vm.prank(alice);
         daily.claim(id, type(uint256).max);
-        assertEq(nvda.balanceOf(alice), accrued, "0 claim fee");
-        assertEq(nvda.balanceOf(treasury), 0);
+        uint256 fee = (accrued * 25) / 10_000;
+        assertEq(nvda.balanceOf(alice), accrued - fee, "25 bps claim fee still due");
+        assertEq(nvda.balanceOf(treasury), fee);
     }
 
     function test_claim_reverts() public {
@@ -774,14 +788,14 @@ contract PlanVaultEpochTest is BaseTest {
 
     function test_keeperTip() public {
         FeeConfig memory f = daily.fees();
-        f.keeperTipBps = 2_000; // 20% of fees
+        f.keeperTipBps = 1_000; // 10% of fees (the cap since audit v0.3 L-04)
         vm.prank(owner);
         daily.setFees(f);
         _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         _nextEpoch(daily);
         _advance(daily, address(nvda));
-        assertEq(usdg.balanceOf(keeper), 0.3e6);
-        assertEq(usdg.balanceOf(treasury), 1.2e6);
+        assertEq(usdg.balanceOf(keeper), 0.15e6);
+        assertEq(usdg.balanceOf(treasury), 1.35e6);
     }
 
     function test_paused_blocksEpoch() public {

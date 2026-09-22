@@ -21,6 +21,10 @@ interface IAggregatorRouter {
     error AdapterNotSet(uint8 protocol);
     error ZeroAmount();
     error RouteNotApproved(bytes32 hopKey);
+    /// @notice An explicit path's end-to-end price impact exceeds `maxPriceImpactBps` (M-02).
+    error PriceImpactTooHigh(uint256 impactBps, uint16 maxBps);
+    /// @notice A hop consumed less than its whole input: the router executes full fills only (M-02 / L-02).
+    error PartialFill(uint256 hop);
 
     event AdapterSet(uint8 indexed protocol, address adapter);
     event MaxPriceImpactSet(uint16 bps);
@@ -48,9 +52,10 @@ interface IAggregatorRouter {
         external
         returns (uint256 amountOut);
 
-    /// @notice Swap along an explicit path (from `quote`, or a trusted override). Every hop must be approved.
-    ///         Pulls `amountIn` from msg.sender. Unspent input of hop 0 is refunded to msg.sender; unspent
-    ///         intermediate tokens of later hops are forwarded to `recipient`.
+    /// @notice Swap along an explicit path (from `quote`, or a trusted override). Every hop must be approved
+    ///         and every hop must consume its whole input: a partial fill on any hop reverts `PartialFill`
+    ///         (a partially filled pool is one whose in-range liquidity is exhausted, so the price is at its
+    ///         limit anyway). Pulls `amountIn` from msg.sender.
     function swapWithRoute(
         address tokenIn,
         address tokenOut,
@@ -60,7 +65,9 @@ interface IAggregatorRouter {
         Route[] calldata path
     ) external returns (uint256 amountOut);
 
-    /// @notice Simulated output of an explicit path of approved hops (reverts if unapproved / no fill).
+    /// @notice Simulated output of an explicit path of approved hops. Reverts if a hop is unapproved, cannot
+    ///         fill in full, or if the path's end-to-end price impact (vs pool mid-prices) exceeds
+    ///         `maxPriceImpactBps` — the same cap the automatic route selection applies.
     function quotePath(Route[] calldata path, uint256 amountIn) external returns (uint256 amountOut);
 
     function weth() external view returns (address);

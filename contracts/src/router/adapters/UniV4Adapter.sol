@@ -131,8 +131,10 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
         PoolKey memory key = abi.decode(route.extra, (PoolKey));
         if (!knownPool[poolId(key)] || !_keyMatches(key, route.tokenIn, route.tokenOut)) return (0, 0);
         bool zeroForOne = route.tokenIn < route.tokenOut;
-        amountOut = _simulate(key, zeroForOne, amountIn);
-        if (amountOut == 0) return (0, 0);
+        uint256 used;
+        (amountOut, used) = _simulate(key, zeroForOne, amountIn);
+        // Full fills only (see UniV3Adapter / audit v0.3 M-02).
+        if (amountOut == 0 || used < amountIn) return (0, 0);
         midOut = _midOut(key, zeroForOne, amountIn);
     }
 
@@ -193,7 +195,8 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
                 let ptr := mload(0x40)
                 mstore(ptr, sentinel)
                 mstore(add(ptr, 0x20), amountOut)
-                revert(ptr, 0x40)
+                mstore(add(ptr, 0x40), amountInUsed)
+                revert(ptr, 0x60)
             }
         }
 
@@ -217,7 +220,10 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
         return key.currency0 == t0 && key.currency1 == t1;
     }
 
-    function _simulate(PoolKey memory key, bool zeroForOne, uint256 amountIn) internal returns (uint256) {
+    function _simulate(PoolKey memory key, bool zeroForOne, uint256 amountIn)
+        internal
+        returns (uint256 amountOut, uint256 amountInUsed)
+    {
         try poolManager.unlock(
             abi.encode(
                 CallbackData({
@@ -225,11 +231,11 @@ contract UniV4Adapter is ISwapAdapter, IUnlockCallback, Ownable2Step {
                 })
             )
         ) {
-            return 0; // unreachable
+            return (0, 0); // unreachable
         } catch (bytes memory reason) {
-            if (reason.length != 64) return 0;
-            (bytes32 sentinel, uint256 out) = abi.decode(reason, (bytes32, uint256));
-            return sentinel == QUOTE_SENTINEL ? out : 0;
+            if (reason.length != 96) return (0, 0);
+            (bytes32 sentinel, uint256 out, uint256 used) = abi.decode(reason, (bytes32, uint256, uint256));
+            return sentinel == QUOTE_SENTINEL ? (out, used) : (0, 0);
         }
     }
 

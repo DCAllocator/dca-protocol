@@ -67,6 +67,15 @@ contract MorphoBlueStrategy is ERC4626, Ownable2Step {
     // ERC-4626
     // ------------------------------------------------------------------
 
+    /// @dev 10^6 virtual shares per virtual asset. Morpho Blue lets anyone `supply` on this contract's behalf
+    ///      (and `skim` is open), so with the default single virtual share a donation to an EMPTY strategy made
+    ///      every later deposit up to that size mint zero shares (audit v0.3 M-01). With this offset such a
+    ///      donation is instead mostly handed to the next depositor, and rounding loss per deposit is bounded by
+    ///      totalAssets / 10^6. Share `decimals()` = asset decimals + 6.
+    function _decimalsOffset() internal pure override returns (uint8) {
+        return 6;
+    }
+
     /// @notice Value of the whole supply position, interest accrued to the current block.
     function totalAssets() public view override returns (uint256) {
         return MorphoLib.expectedSupplyAssets(morpho, _params, address(this));

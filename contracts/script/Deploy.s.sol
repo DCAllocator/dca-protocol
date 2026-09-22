@@ -24,6 +24,8 @@ import {EpochLib} from "../src/libraries/EpochLib.sol";
 import {MorphoBlueStrategy} from "../src/boost/MorphoBlueStrategy.sol";
 import {IMorpho, Id, MarketParams} from "../src/interfaces/IMorpho.sol";
 import {IDCA} from "../src/token/IDCA.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 /// @title Deploy
 /// @notice Production deployment for Robinhood Chain (4663). Reads external addresses from the environment
@@ -39,6 +41,8 @@ import {IDCA} from "../src/token/IDCA.sol";
 /// Boost: `MORPHO` (Morpho Blue singleton) + `MORPHO_MARKET_ID` (bytes32 id of a market whose loan token is USDG)
 /// deploy a `MorphoBlueStrategy` over that market, allow the three vaults to deposit and set it as their
 /// `boostStrategy`. Leave `MORPHO` empty to ship without boost; `setBoostStrategy` can wire it up later.
+/// The strategy is seeded with `BOOST_SEED_USDG` whole USDG (default 100, paid by the deployer) whose shares are
+/// sent to 0x…dEaD so the share supply is never zero (audit v0.3 M-01). `BOOST_SEED_USDG=0` skips the seed.
 ///
 /// Post-deploy (multisig): call `acceptOwnership()` on registry, router, adapters, vaults, keeper, directory,
 /// boost strategy.
@@ -58,6 +62,7 @@ contract Deploy is Script {
         string v3Pools;
         address morpho;
         bytes32 morphoMarketId;
+        uint256 boostSeed;
     }
 
     struct Out {
@@ -166,6 +171,13 @@ contract Deploy is Script {
             MarketParams memory market = IMorpho(e.morpho).idToMarketParams(Id.wrap(e.morphoMarketId));
             require(market.loanToken == e.usdg, "MORPHO_MARKET_ID: loan token is not USDG");
             o.boostStrategy = new MorphoBlueStrategy(e.morpho, market, deployer);
+            if (e.boostSeed > 0) {
+                require(IERC20(e.usdg).balanceOf(deployer) >= e.boostSeed, "deployer lacks BOOST_SEED_USDG");
+                o.boostStrategy.setDepositor(deployer, true);
+                IERC20(e.usdg).approve(address(o.boostStrategy), e.boostSeed);
+                o.boostStrategy.deposit(e.boostSeed, 0x000000000000000000000000000000000000dEaD);
+                o.boostStrategy.setDepositor(deployer, false);
+            }
             for (uint256 v; v < 3; ++v) {
                 o.boostStrategy.setDepositor(address(vaults[v]), true);
                 vaults[v].setBoostStrategy(address(o.boostStrategy));
@@ -226,6 +238,7 @@ contract Deploy is Script {
         e.v3Pools = vm.envOr("V3_POOLS", string(""));
         e.morpho = vm.envOr("MORPHO", address(0));
         e.morphoMarketId = vm.envOr("MORPHO_MARKET_ID", bytes32(0));
+        e.boostSeed = vm.envOr("BOOST_SEED_USDG", uint256(100)) * 10 ** IERC20Metadata(e.usdg).decimals();
         require(e.usdg != address(0) && e.weth != address(0), "USDG / WETH required");
         require(e.morpho == address(0) || e.morphoMarketId != bytes32(0), "MORPHO set: MORPHO_MARKET_ID required");
         require(e.feeRecipient != address(0), "FEE_RECIPIENT required");

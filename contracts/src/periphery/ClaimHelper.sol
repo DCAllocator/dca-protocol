@@ -23,6 +23,8 @@ contract ClaimHelper {
         uint32 lastEpochId;
         bool paused;
         bool boosted;
+        /// @dev Claims of the accrued stock are fee-free (owner held the auto-distribute tier at the last fill).
+        bool claimFeeFree;
         /// @dev USDG currently lent through the vault's boost strategy for this plan (principal + unrealised yield).
         uint256 boostValue;
         /// @dev Cost basis of `boostValue`; the difference is yield not yet realised.
@@ -57,6 +59,7 @@ contract ClaimHelper {
                     lastEpochId: p.lastEpochId,
                     paused: p.paused,
                     boosted: p.boosted,
+                    claimFeeFree: p.claimFeeFree,
                     boostValue: _value(p.boostShares, poolAssets, poolShares),
                     boostPrincipal: p.boostPrincipal,
                     boostEarned: p.boostEarned

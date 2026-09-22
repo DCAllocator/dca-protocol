@@ -335,6 +335,12 @@ contract DeployLocal is Script {
         morpho.supply(market, 10_000_000e6, 0, deployer, "");
         morpho.mockBorrow(marketId, 9_000_000e6, deployer); // phantom debt: the loan tokens come back to us
         MorphoBlueStrategy boostStrategy = new MorphoBlueStrategy(address(morpho), market, deployer);
+        // Seed 100 USDG of dead shares so the share supply is never zero (audit v0.3 M-01), as Deploy.s.sol does.
+        usdg.mint(deployer, 100e6);
+        usdg.approve(address(boostStrategy), 100e6);
+        boostStrategy.setDepositor(deployer, true);
+        boostStrategy.deposit(100e6, 0x000000000000000000000000000000000000dEaD);
+        boostStrategy.setDepositor(deployer, false);
         PlanVault[4] memory boostVaults =
             [PlanVault(daily), PlanVault(weekly), PlanVault(monthly), PlanVault(testVault)];
         for (uint256 v; v < 4; ++v) {
