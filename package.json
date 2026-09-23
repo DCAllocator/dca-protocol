@@ -12,6 +12,8 @@
     "balance": "pnpm --filter @dca/scheduler balance",
     "transfer": "pnpm --filter @dca/scheduler transfer",
     "fork": "bash scripts/fork.sh",
+    "share": "bash scripts/share.sh",
+    "fund": "bash scripts/fund-tester.sh",
     "protocol:deploy": "bash scripts/deploy.sh"
   },
   "packageManager": "pnpm@10.33.0"
