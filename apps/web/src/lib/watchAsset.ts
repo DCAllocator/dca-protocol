@@ -1,5 +1,12 @@
 import type { Address } from "viem";
-import { tickerIconUrl } from "@/lib/tickers";
+
+/**
+ * The Robinhood Stock Token mark (the feather on lime), served from /public. Robinhood's asset registry
+ * (`api.robinhood.com/rhj/assets`, `logoUrl`) publishes one PNG per token address, but every one of them is this
+ * same 180×180 image; a local copy also works for the mock tokens on a local anvil, whose addresses the CDN does
+ * not know.
+ */
+export const STOCK_TOKEN_LOGO_PATH = "/robinhood-stock-token.png";
 
 /**
  * EIP-747 (`wallet_watchAsset`) parameters for a Stock Token, kept pure so the rules are documented in one place and
@@ -7,9 +14,10 @@ import { tickerIconUrl } from "@/lib/tickers";
  *   - `symbol` is the registry ticker cut to 11 characters, the longest symbol MetaMask accepts (longer ones make it
  *     reject the whole request). MetaMask may still warn when this differs from the token's on-chain `symbol()`.
  *   - `decimals` passes through unchanged (18 for every Stock Token today, but the registry value is authoritative).
- *   - `image` is the ABSOLUTE URL of the light-theme ticker SVG: the wallet fetches it from its own context, so a
- *     site-relative path would resolve against the extension, not this app. With no origin (server render, tests)
- *     the field is omitted and the wallet shows its default glyph.
+ *   - `image` is the ABSOLUTE URL of the Robinhood Stock Token logo — deliberately not the company's logo the app
+ *     shows (/public/tickers): in the wallet the token should read as Robinhood's token, not as the stock itself.
+ *     The wallet fetches it from its own context, so a site-relative path would resolve against the extension,
+ *     not this app. With no origin (server render, tests) the field is omitted and the wallet shows its default glyph.
  */
 export type WatchAssetParams = {
   type: "ERC20";
@@ -24,6 +32,6 @@ export function watchAssetParamsFor(stock: { address: Address; symbol: string; d
     symbol: stock.symbol.slice(0, WATCH_ASSET_SYMBOL_MAX),
     decimals: stock.decimals,
   };
-  if (origin) options.image = origin.replace(/\/+$/, "") + tickerIconUrl(stock.symbol, "light");
+  if (origin) options.image = origin.replace(/\/+$/, "") + STOCK_TOKEN_LOGO_PATH;
   return { type: "ERC20", options };
 }

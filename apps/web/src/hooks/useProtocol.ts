@@ -9,6 +9,7 @@ import { Market, UnsupportedMarketIrmError } from "@morpho-org/blue-sdk";
 import type { PublicClient } from "viem";
 import { ADDRESSES, isZero, TEST_VAULT, VAULT_KINDS, SECONDS_PER_YEAR, DCA_PERK_DEFAULTS, USDG_DECIMALS, type VaultKind } from "@/lib/config";
 import { valueOf } from "@/lib/format";
+import { usePersistedQuery } from "@/lib/persistedQuery";
 import marketCapSnapshot from "@/data/market-caps.json";
 
 /** Periodic CoinGecko snapshot of each Stock Token's market cap (symbol → USD), see scripts/snapshot-market-caps.mjs. */
@@ -33,20 +34,28 @@ export type VaultMap = Record<VaultKind, Address>;
 /** Every shown vault's address, in VAULT_KINDS order. */
 export const vaultList = (vaults: VaultMap): Address[] => VAULT_KINDS.map((k) => vaults[k]);
 
-/** VaultDirectory.get() — the single on-chain bootstrap point (plus the local test vault when enabled). */
+/**
+ * VaultDirectory.get() — the single on-chain bootstrap point (plus the local test vault when enabled). Persisted across
+ * page loads (lib/persistedQuery), so a reload knows every address — and can show the cached stock list — before
+ * this read answers.
+ */
 export function useDirectory() {
-  const q = useReadContract({
-    address: ADDRESSES.directory,
-    abi: VaultDirectoryAbi,
-    functionName: "get",
-    query: { enabled: !isZero(ADDRESSES.directory), staleTime: 60_000, refetchInterval: false },
+  const client = usePublicClient();
+  const configured = !isZero(ADDRESSES.directory);
+  const q = usePersistedQuery({
+    name: "directory",
+    address: configured ? ADDRESSES.directory : undefined,
+    enabled: !!client,
+    staleTime: 60_000,
+    refetchInterval: false,
+    queryFn: (): Promise<Directory> => client!.readContract({ address: ADDRESSES.directory, abi: VaultDirectoryAbi, functionName: "get" }),
   });
-  const dir = q.data as Directory | undefined;
+  const dir = q.data;
   const vaults = useMemo<VaultMap | undefined>(
     () => (dir ? ({ hourly: dir.hourly, daily: dir.daily, weekly: dir.weekly, monthly: dir.monthly, ...(TEST_VAULT ? { test: TEST_VAULT } : {}) } as VaultMap) : undefined),
     [dir],
   );
-  return { dir, vaults, isLoading: q.isLoading, error: q.error, configured: !isZero(ADDRESSES.directory) };
+  return { dir, vaults, isLoading: q.isLoading, error: q.error, configured };
 }
 
 export type Stock = {
@@ -55,45 +64,42 @@ export type Stock = {
   decimals: number;
   approved: boolean;
   feeOnTransfer: boolean;
-  totalSupply?: bigint;
 };
 
-/** Approved stocks + metadata from the registry, including on-chain total supply (for market cap). */
+/**
+ * approvedStocks(), then every stock's info() in the same tick: viem sends those as one Multicall3 aggregate3 where the
+ * chain has it (plain eth_calls otherwise — never `client.multicall`, which throws on a chain without Multicall3).
+ * All or nothing: any failed read rejects, so a partial list is never shown or persisted.
+ */
+async function readStockList(client: PublicClient, registry: Address): Promise<Stock[]> {
+  const addrs = await client.readContract({ address: registry, abi: StockRegistryAbi, functionName: "approvedStocks" });
+  const infos = await Promise.all(addrs.map((a) => client.readContract({ address: registry, abi: StockRegistryAbi, functionName: "info", args: [a] })));
+  return addrs.map((address, i) => {
+    const { symbol, decimals, approved, feeOnTransfer } = infos[i];
+    return { address, symbol, decimals, approved, feeOnTransfer };
+  });
+}
+
+/** `useStocks` until the list has loaded, so `useTvl` can tell "not loaded yet" from an empty registry. */
+const NO_STOCKS: Stock[] = [];
+
+/**
+ * Approved stocks + metadata from the registry, as one query (see `readStockList`). Persisted across page loads
+ * (lib/persistedQuery): a reload renders the last good list at once and revalidates it in the background.
+ */
 export function useStocks(registry?: Address) {
-  const list = useReadContract({
+  const client = usePublicClient();
+  const q = usePersistedQuery({
+    name: "stockList",
     address: registry,
-    abi: StockRegistryAbi,
-    functionName: "approvedStocks",
-    query: { enabled: !!registry, staleTime: 60_000, refetchInterval: false },
+    enabled: !!client,
+    staleTime: 60_000,
+    refetchInterval: false,
+    queryFn: () => readStockList(client!, registry!),
   });
-  const addrs = (list.data ?? []) as readonly Address[];
-  const infos = useReadContracts({
-    contracts: addrs.map((a) => ({ address: registry!, abi: StockRegistryAbi, functionName: "info", args: [a] }) as const),
-    query: { enabled: !!registry && addrs.length > 0, staleTime: 60_000, refetchInterval: false },
-  });
-  const supplies = useReadContracts({
-    contracts: addrs.map((a) => ({ address: a, abi: ERC20Abi, functionName: "totalSupply" }) as const),
-    query: { enabled: addrs.length > 0, staleTime: 60_000, refetchInterval: false },
-  });
-  const stocks: Stock[] = useMemo(
-    () =>
-      addrs.map((address, i) => {
-        const r = infos.data?.[i]?.result as
-          | { approved: boolean; known: boolean; feeOnTransfer: boolean; decimals: number; symbol: string }
-          | undefined;
-        return {
-          address,
-          symbol: r?.symbol ?? "…",
-          decimals: r?.decimals ?? 18,
-          approved: r?.approved ?? true,
-          feeOnTransfer: r?.feeOnTransfer ?? false,
-          totalSupply: supplies.data?.[i]?.result as bigint | undefined,
-        };
-      }),
-    [addrs, infos.data, supplies.data],
-  );
+  const stocks = q.data ?? NO_STOCKS;
   const bySymbol = useMemo(() => Object.fromEntries(stocks.map((s) => [s.address.toLowerCase(), s])), [stocks]);
-  return { stocks, byAddress: bySymbol, isLoading: list.isLoading || infos.isLoading || supplies.isLoading };
+  return { stocks, byAddress: bySymbol, isLoading: q.isLoading };
 }
 
 export type FeeConfig = {
@@ -427,9 +433,42 @@ export function useBuyDcaRoute(dir?: Directory) {
 export type PriceMap = Record<string, bigint | undefined>; // lower(address) → USDG per whole token
 
 /**
- * USDG price of one whole unit of each token, via the router's quote() simulation. Quoting a single
- * unit (not the full amount) keeps the read under the router's impact cap. Tokens with no route resolve
- * to undefined and are simply not valued.
+ * AggregatorRouter.quote declared `view`. The router marks it nonpayable only because the adapters simulate each swap
+ * and revert it, so under eth_call it reads exactly what `simulateContract` returns (checked stock by stock on a fork).
+ * As a read it joins viem's call batching — one Multicall3 aggregate3 per ~80 same-tick quotes where the chain has
+ * it — which `simulateContract` (always `batch: false`) never does.
+ */
+const RouterQuoteViewAbi = [
+  {
+    type: "function",
+    name: "quote",
+    stateMutability: "view",
+    inputs: [
+      { name: "tokenIn", type: "address" },
+      { name: "tokenOut", type: "address" },
+      { name: "amountIn", type: "uint256" },
+    ],
+    outputs: [
+      { name: "amountOut", type: "uint256" },
+      {
+        name: "path",
+        type: "tuple[]",
+        components: [
+          { name: "protocol", type: "uint8" },
+          { name: "tokenIn", type: "address" },
+          { name: "tokenOut", type: "address" },
+          { name: "fee", type: "uint24" },
+          { name: "extra", type: "bytes" },
+        ],
+      },
+    ],
+  },
+] as const;
+
+/**
+ * USDG price of one whole unit of each token, via the router's quote() (as a batched read, see
+ * `RouterQuoteViewAbi`). Quoting a single unit (not the full amount) keeps the read under the router's impact
+ * cap. Tokens with no route resolve to undefined and are simply not valued.
  */
 export function usePrices(router?: Address, usdg?: Address, tokens?: { address: Address; decimals: number }[]) {
   const client = usePublicClient();
@@ -443,9 +482,9 @@ export function usePrices(router?: Address, usdg?: Address, tokens?: { address: 
     queryFn: async () => {
       const results = await Promise.allSettled(
         tokens!.map((t) =>
-          client!.simulateContract({
+          client!.readContract({
             address: router!,
-            abi: AggregatorRouterAbi,
+            abi: RouterQuoteViewAbi,
             functionName: "quote",
             args: [t.address, usdg!, 10n ** BigInt(t.decimals)],
           }),
@@ -454,7 +493,7 @@ export function usePrices(router?: Address, usdg?: Address, tokens?: { address: 
       const out: PriceMap = {};
       tokens!.forEach((t, i) => {
         const r = results[i];
-        out[t.address.toLowerCase()] = r.status === "fulfilled" ? (r.value.result[0] as bigint) : undefined;
+        out[t.address.toLowerCase()] = r.status === "fulfilled" ? r.value[0] : undefined;
       });
       return out;
     },
@@ -522,7 +561,8 @@ export function useStockHoldings(vaults?: VaultMap, stocks?: Stock[]) {
 /**
  * Total value locked = USDG waiting to buy (on the vaults, plus what is lent out on Morpho for boosted plans)
  * + stock on hand (at router price). Vaults hold USDG only — ETH is converted the moment it is deposited — so
- * there is no ETH component. `ready` flips once every vault aggregate and every needed price has answered.
+ * there is no ETH component. `ready` flips once every vault aggregate, the stock list and every needed price has
+ * answered (before the list loads there are no holdings to value, and the total would be USDG only).
  */
 export function useTvl(dir?: Directory, vaults?: VaultMap, infos?: VaultInfo[], stocks?: Stock[]) {
   const holdings = useStockHoldings(vaults, stocks);
@@ -543,7 +583,7 @@ export function useTvl(dir?: Directory, vaults?: VaultMap, infos?: VaultInfo[], 
       else if (stockUsd !== undefined) stockUsd += v;
     }
     const infosReady = !!infos && infos.length > 0 && infos.every((v) => v.totalUsdgIdle !== undefined && v.boostAssets !== undefined);
-    const ready = infosReady && !holdings.isLoading && !pricesLoading;
+    const ready = infosReady && !!stocks && stocks !== NO_STOCKS && !holdings.isLoading && !pricesLoading;
     const total = stockUsd === undefined ? undefined : usdg + boosted + stockUsd;
     return { usdg, boosted, stockUsd, perStockUsd, total, ready, prices, holdings: holdings.perStock, perVault: holdings.perVault };
   }, [infos, stocks, prices, pricesLoading, holdings]);

@@ -114,8 +114,8 @@ Chain equity feeds are 24/5 (~52 h weekend gap) and proposed hourly = market hou
 
 Item 5: Q14 remove prices from picker rows only, or also the selected-stock "· $price" line and the legacy tile (spec
 assumes all three; USD values on /app, /app/plans, /app/token stay); Q15 symbol sent to MetaMask: registry ticker
-("NVDA") or on-chain `symbol()` (local mocks are "NVDAst"); Q16 hide the button for the local test wallet or show a
-"test wallet" toast.
+("NVDA") or on-chain `symbol()` (local mocks are "NVDAst"); Q16 resolved: the local test wallet (wagmi `mock`
+connector) was removed, so there is nothing to hide the button for.
 
 Items 1/2: Q17 rejection toast tone (warn vs error); Q18 Pause indicator location (Status cell vs menu trigger); Q19 copy
 ("Boost off" vs "Unboosted", "Plan paused"/"Plan resumed", "Claimed" vs "Claimed 0.0123 NVDA"); Q20 keep sibling row

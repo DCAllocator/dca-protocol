@@ -1,28 +1,36 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { Notice, Spinner, StockAvatar, Countdown, Icon } from "@/components/ui";
+import { Notice, Spinner, StockAvatar, Countdown, Icon, Tip } from "@/components/ui";
 import { BoostCard } from "@/components/app/BoostCard";
 import { TxFlowDialog } from "@/components/app/TxFlowDialog";
 import { ConnectButton } from "@/components/ConnectButton";
-import { AddToWalletButton } from "@/components/app/AddToWalletButton";
-import { fmtUsd, fmtUnits, fmtBps, tsToShort } from "@/lib/format";
+import { AddToWalletButton, useAddToWalletVisible } from "@/components/app/AddToWalletButton";
+import { usePerkThresholds } from "@/hooks/useProtocol";
+import { fmtUsd, fmtUnits, fmtUnitsCompact, fmtBps, tsToShort } from "@/lib/format";
 import { tickerName } from "@/lib/tickers";
-import { VAULT_KINDS, DOCS_PATH } from "@/lib/config";
+import { VAULT_KINDS, DOCS_PATH, isZero, type VaultKind } from "@/lib/config";
 import { ZAP_SLIPPAGE_BPS, type CreatePlanModel, type Pay } from "./useCreatePlan";
-import { Box, Coin, Detail, Dropdown, OrderSummary, StockPicker, clean, everyLabel } from "./fields";
+import { Box, Coin, Detail, Dropdown, OrderSummary, StockPicker, StockPickerDialog, clean, everyLabel } from "./fields";
 
 /*
  * The create card, cut into blocks. A page is a list of these in some order, all fed the same model `m`
  * from `useCreatePlan()`; nothing in a block changes what is sent — only how the form reads. `/app/create`
  * is the swap-card order (fund → buy → every | per buy); `/app/create/2` is the sentence order
- * (buy X every Y → of → fund with).
+ * (spend X every Y → on → fund plan → summary).
  */
 
 type Props = { m: CreatePlanModel };
 
-/** When each buy actually happens; used to be a (false) randomisation claim — the scheduler fires at the boundary. */
+/** When each buy actually happens (/app/create). */
 const EVERY_TIP = "Each buy runs shortly after its period starts (UTC).";
+/**
+ * The ⓘ by the frequency on /app/create/2, worded as the product asked for. CAUTION: it is only true once the
+ * scheduler randomises when it fires; as of this change apps/scheduler runs every due job at boundary + 3 s
+ * (BOUNDARY_GRACE_SECONDS) with no jitter (tasks/00-overview.md Q28). Ship jitter first, or reword.
+ */
+const FILL_TIMING_TIP = "Fill timing includes randomization to mitigate frontrunning risk.";
 
 /** Shown instead of any card when the app has no VaultDirectory address. */
 export function NotConfigured() {
@@ -35,9 +43,20 @@ export function NotConfigured() {
  * where the hint belongs there; variant A shows it under the per-buy amount instead.
  */
 export function FundWithBox({ m, label = "Fund with", coverage = false, className = "" }: Props & { label?: string; coverage?: boolean; className?: string }) {
-  const { pay, setPay, upfront, setUpfront, upfrontWei, zapQuote, address, usdgBal, ethBal, fundMax, fundShare, fundHint } = m;
   return (
-    <Box label={label} error={fundHint} className={className}>
+    <Box label={label} error={m.fundHint} className={className}>
+      <FundAmountFields m={m} />
+      {coverage && m.coverage && !m.underfunded && <div className="mt-1.5 text-[12px] text-ink-3">{m.coverage}</div>}
+      <UnderfundedWarning m={m} />
+    </Box>
+  );
+}
+
+/** The funding amount itself: the big input, the USDG / ETH pill, the ≈ USDG line and the balance with HALF / MAX. */
+function FundAmountFields({ m }: Props) {
+  const { pay, setPay, upfront, setUpfront, upfrontWei, zapQuote, address, usdgBal, ethBal, fundMax, fundShare } = m;
+  return (
+    <>
       <div className="flex items-center gap-3">
         <input
           className="amount-input swap-input text-[30px]"
@@ -93,8 +112,60 @@ export function FundWithBox({ m, label = "Fund with", coverage = false, classNam
           ))}
         </span>
       </div>
-      {coverage && m.coverage && <div className="mt-1.5 text-[12px] text-ink-3">{m.coverage}</div>}
+    </>
+  );
+}
+
+/**
+ * /app/create/2's funding box: the amount (USDG or ETH), then how many times the plan runs on it — or, when it is less
+ * than one buy, the warning that says what happens instead.
+ */
+export function FundPlanBox({ m, className = "" }: Props & { className?: string }) {
+  return (
+    <Box label="Fund plan" error={m.fundHint} className={className}>
+      <FundAmountFields m={m} />
+      <RunsLine m={m} />
+      <UnderfundedWarning m={m} />
     </Box>
+  );
+}
+
+/**
+ * Shown under the funding when it covers less than one buy (`underfunded`). Spells out what the vault will actually do
+ * — one smaller buy that takes everything, then nothing until a top-up — rather than blocking the plan, which is valid.
+ */
+export function UnderfundedWarning({ m }: Props) {
+  const { underfunded, upfrontUsdg, perBuyWei, pay } = m;
+  if (!underfunded) return null;
+  const approx = pay === "ETH" ? "≈ " : "";
+  return (
+    <div role="status" className="mt-2.5 flex items-start gap-2 rounded-lg border border-amber-line bg-amber-bg px-3 py-2 text-[12px] leading-snug text-warn">
+      <Icon name="info" size={14} className="mt-px shrink-0" />
+      <span>
+        That&apos;s less than one buy. Your first buy will spend all {approx}
+        {fmtUsd(upfrontUsdg)} instead of {fmtUsd(perBuyWei)}, then the plan buys nothing more until you top it up from My plans.
+      </span>
+    </div>
+  );
+}
+
+/** How many times the plan runs on this funding, e.g. "Runs 31 times before the funds run out: 30 × $100.00, then $50.00." */
+function RunsLine({ m }: Props) {
+  const { runs, buysCovered, lastBuyUsdg, perBuyWei, fundedEnough, underfunded, pay } = m;
+  if (!runs || !fundedEnough || underfunded) return null;
+  const approx = pay === "ETH" ? "≈ " : "";
+  const partial = lastBuyUsdg !== undefined && lastBuyUsdg > 0n;
+  return (
+    <div className="mt-1.5 text-[12px] text-ink-3">
+      {approx}Runs <span className="text-ink-2">{runs === 1 ? "once" : `${runs.toLocaleString()} times`}</span> before the funds run out
+      {partial && buysCovered ? (
+        <>
+          : {buysCovered.toLocaleString()} × {fmtUsd(perBuyWei)}, then {fmtUsd(lastBuyUsdg)}.
+        </>
+      ) : (
+        "."
+      )}
+    </div>
   );
 }
 
@@ -148,12 +219,57 @@ export function StockBox({ m, label = "Buy", className = "" }: Props & { label?:
   );
 }
 
+/**
+ * /app/create/2's stock field: one row, the label on the left and the chosen stock on the right; the whole row opens
+ * the picker dialog (search, the largest stocks as pills, price and market cap per row). Once a wallet is connected
+ * the row also carries "Add to MetaMask" for the chosen stock — outside the row's button, never nested in it.
+ */
+export function StockRow({ m, label = "On", className = "" }: Props & { label?: string; className?: string }) {
+  const [open, setOpen] = useState(false);
+  const walletLine = useAddToWalletVisible();
+  const { stockObj, stockAddr, ranked, rankReady, setStock } = m;
+  return (
+    <>
+      <div
+        className={`relative flex items-center justify-between gap-3 rounded-xl border border-line bg-surface-3 px-3.5 py-3.5 transition-colors hover:border-line-strong sm:px-4 ${className}`}
+      >
+        <span className="text-[15px] text-ink-3">{label}</span>
+        <span className="flex flex-col items-end gap-1">
+          {/* The ::after stretches this button over the whole row, so anywhere on it opens the picker. */}
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            aria-haspopup="dialog"
+            aria-label={stockObj ? `Stock: ${stockObj.symbol}, ${tickerName(stockObj.symbol)}. Change` : "Select a stock"}
+            className="flex h-8 items-center gap-2 text-[17px] font-semibold text-ink after:absolute after:inset-0 after:rounded-xl"
+          >
+            {stockObj ? (
+              <>
+                <StockAvatar symbol={stockObj.symbol} size={28} />
+                {stockObj.symbol}
+              </>
+            ) : rankReady ? (
+              <span className="text-[15px] font-medium text-ink-2">Select stock</span>
+            ) : (
+              <span className="h-7 w-24 animate-pulse rounded-full bg-surface-4" aria-hidden />
+            )}
+            <Icon name="chevron" size={16} className="text-ink-3" />
+          </button>
+          {/* {stockObj && walletLine && <AddToWalletButton address={stockObj.address} symbol={stockObj.symbol} decimals={stockObj.decimals} className="relative z-10" />} */}
+        </span>
+      </div>
+      <StockPickerDialog open={open} onClose={() => setOpen(false)} stocks={ranked} value={stockAddr ?? ""} onSelect={setStock} />
+    </>
+  );
+}
+
 /** Frequency dropdown (day / week / month, plus `test` locally), the same list in both variants. */
-export function FrequencyDropdown({ m, width = "w-40" }: Props & { width?: string }) {
+export function FrequencyDropdown({ m, width = "w-40", align }: Props & { width?: string; align?: "left" | "right" }) {
   const { kind, setKind } = m;
   return (
     <Dropdown
       plain
+      align={align}
       width={width}
       trigger={
         <>
@@ -222,19 +338,32 @@ export function EveryPerBuyGrid({ m }: Props) {
 }
 
 /**
- * Variant B: one row that reads as a sentence — "Buy [amount] USDG every [day ▾]". The coverage hint is not
- * here (it sits under "Fund plan with", which comes later on that page); the minimum stays under the amount.
+ * Variant B: one centred row that reads as a sentence — "Spend [amount] ($) USDG every [day ▾]" — with the fill-timing
+ * ⓘ at the box's top right, over the frequency it describes. The amount input grows with what is typed so the
+ * sentence stays together; the minimum sits centred underneath.
  */
-export function BuyEverySentence({ m }: Props) {
+export function SpendEverySentence({ m }: Props) {
+  const width = `${Math.max((m.perBuy || "100").length, 2) + 0.35}ch`;
   return (
-    <Box label="Buy" tip={EVERY_TIP}>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <PerBuyInput m={m} className="min-w-0 flex-1 basis-24 text-[26px] sm:text-[30px]" />
-        <span className="shrink-0 text-[14px] font-medium text-ink-2">USDG</span>
-        <span className="shrink-0 text-[14px] text-ink-3">every</span>
-        <FrequencyDropdown m={m} />
+    <Box label="Spend" aside={<Tip text={FILL_TIMING_TIP} align="end" />}>
+      <div className="flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1">
+        <input
+          className="amount-input swap-input max-w-[9ch] text-center text-[30px] sm:text-[34px]"
+          style={{ width }}
+          inputMode="decimal"
+          value={m.perBuy}
+          onChange={(e) => m.setPerBuy(clean(e.target.value))}
+          placeholder="100"
+          aria-label="Amount per buy, in USDG"
+        />
+        <span className="inline-flex shrink-0 items-center gap-1.5 text-[16px] font-medium text-ink">
+          <Coin unit="USDG" />
+          USDG
+        </span>
+        <span className="shrink-0 text-[16px] text-ink-3">every</span>
+        <FrequencyDropdown m={m} align="right" />
       </div>
-      <div className="mt-1.5 text-[12px] text-ink-3">
+      <div className="mt-1.5 text-center text-[12px] text-ink-3">
         <MinLine m={m} />
       </div>
     </Box>
@@ -248,6 +377,108 @@ export function MonthlyLine({ m }: Props) {
     <p className="mt-2 text-[12.5px] text-ink-3">
       ≈ <span className="num text-ink-2">{fmtUsd(m.monthly)}</span> a month, spent while the plan has funds.
     </p>
+  );
+}
+
+/**
+ * One line recalling the plan about to be started, above the button: "$100.00 of NVDA every day · 30 buys · $3,000.00
+ * total · last ≈ 22 Oct". Before the funding is known it falls back to the monthly pace. The dates assume nothing is
+ * paused or topped up and come from the vault's schedule (first buy = next period start, one period per buy).
+ */
+export function PlanSummary({ m }: Props) {
+  const { perBuyOk, perBuyWei, stockObj, kind, runs, upfrontUsdg, fundedEnough, underfunded, lastBuyAt, monthly, pay } = m;
+  if (!perBuyOk || !stockObj) return null;
+  const approx = pay === "ETH" ? "≈ " : "";
+  const funded = !!runs && fundedEnough && upfrontUsdg !== undefined;
+  return (
+    <p className="mt-3 text-center text-[12.5px] leading-relaxed text-ink-3">
+      <span className="num text-ink">{fmtUsd(perBuyWei)}</span> of <span className="font-medium text-ink">{stockObj.symbol}</span> every {everyLabel(kind)}
+      {underfunded ? (
+        <>
+          {" · "}
+          <span className="text-warn">
+            one buy of{" "}
+            <span className="num">
+              {approx}
+              {fmtUsd(upfrontUsdg)}
+            </span>
+            , then a top-up needed
+          </span>
+        </>
+      ) : funded ? (
+        <>
+          {" · "}
+          <span className="text-ink-2">
+            {runs.toLocaleString()} {runs === 1 ? "buy" : "buys"}
+          </span>
+          {" · "}
+          <span className="num text-ink-2">
+            {approx}
+            {fmtUsd(upfrontUsdg)}
+          </span>{" "}
+          total
+          {runs > 1 && lastBuyAt !== undefined && <> · last ≈ {fmtWhen(lastBuyAt, kind)}</>}
+        </>
+      ) : (
+        <>
+          {" · ≈ "}
+          <span className="num text-ink-2">{fmtUsd(monthly)}</span> a month
+        </>
+      )}
+    </p>
+  );
+}
+
+/** "22 Oct" (this year) / "22 Oct 2027"; hourly and test plans add the UTC time, since several buys share a day. */
+function fmtWhen(ts: bigint, kind: VaultKind): string {
+  const d = new Date(Number(ts) * 1000);
+  const sameYear = d.getUTCFullYear() === new Date().getUTCFullYear();
+  const day = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }), timeZone: "UTC" });
+  if (kind !== "hourly" && kind !== "test") return day;
+  return `${day}, ${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" })} UTC`;
+}
+
+/**
+ * $DCA holder-perk banner under the create card: holding the threshold (100k $DCA by default, read live from the
+ * vaults) has every buy sent straight to the wallet and halves the per-buy fee. Links to the Buy $DCA tab. A wallet
+ * that already clears both thresholds sees a quiet confirmation instead; with no $DCA on this deployment, nothing.
+ */
+export function DcaPerksBanner({ m }: Props) {
+  const t = usePerkThresholds();
+  const { dir, address, dcaBal } = m;
+  if (!dir || isZero(dir.dca)) return null;
+  const bal = dcaBal ?? 0n;
+  if (address && bal >= t.autoDistribute && bal >= t.feeHalve) {
+    return (
+      <div className="mt-3 flex items-center gap-2.5 rounded-xl border border-line px-4 py-3 text-[12.5px] text-ink-2">
+        <Icon name="check" size={14} className="shrink-0 text-good" />
+        <span>Your $DCA is working: every buy is sent straight to your wallet and your buy fee is halved.</span>
+      </div>
+    );
+  }
+  const same = t.autoDistribute === t.feeHalve;
+  return (
+    <div className="mt-3 flex items-center gap-3 rounded-xl border border-lime/25 bg-lime/[0.07] px-3.5 py-3 sm:px-4">
+      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lime text-lime-ink" aria-hidden>
+        <Icon name="bolt" size={15} />
+      </span>
+      <p className="min-w-0 flex-1 text-[12.5px] leading-snug text-ink-2">
+        {same ? (
+          <>
+            Hold <span className="font-semibold text-ink">{fmtUnitsCompact(t.feeHalve, 18)} $DCA</span> and your stock is sent straight to your wallet{" "}
+            <span className="font-semibold text-ink">and</span> your fees are halved.
+          </>
+        ) : (
+          <>
+            Hold <span className="font-semibold text-ink">{fmtUnitsCompact(t.autoDistribute, 18)} $DCA</span> and your stock is sent straight to your wallet;
+            hold <span className="font-semibold text-ink">{fmtUnitsCompact(t.feeHalve, 18)}</span> and your fees are halved too.
+          </>
+        )}
+      </p>
+      <Link href="/app/buy" className="btn-secondary h-8 shrink-0 rounded-lg px-3 text-[12.5px]">
+        Buy $DCA
+      </Link>
+    </div>
   );
 }
 

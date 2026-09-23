@@ -51,14 +51,13 @@ export function Hero() {
         <div className="min-w-0">
           <p className="eyebrow">$DCA · Robinhood Chain</p>
           <h1 className="mt-4 text-5xl font-semibold leading-[1.02] tracking-tight text-ink md:text-6xl">
-            Wall Street stocks.
+            The token that <span className="whitespace-nowrap text-lime">$DCA's</span> itself.
             <br />
-            On a clock. <span className="whitespace-nowrap text-lime">On-chain.</span>
           </h1>
-          <p className="mt-5 text-[22px] font-semibold tracking-tight text-ink">Every fee buys $DCA back.</p>
+          <p className="mt-5 text-[22px] font-semibold tracking-tight text-ink">Wall street stocks, automatically bought on-chain.</p>
           <p className="lede mt-3 max-w-lg">
-            DCA is the recurring-buy protocol for Robinhood stock tokens. Pick a stock and a rhythm; it buys for you on-chain and sends the stock to
-            your wallet. $DCA is the protocol&apos;s token — and what the protocol&apos;s fees buy back.
+            DCA is an execution protocol for Robinhood stock tokens. Pick a stock and a frequency; it buys for you on-chain and sends the stock directly to
+            your wallet.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <BuyDca className="btn-primary btn-lg" />
@@ -67,7 +66,7 @@ export function Hero() {
             </Link>
           </div>
           <ul className="mt-8 flex flex-wrap gap-x-6 gap-y-2 text-[12px] text-ink-3">
-            {["Non-custodial", "Permissionless", "Immutable contracts", "Fees hard-capped in code", "Open source"].map((t) => (
+            {["Non-custodial", "Permissionless", "Open source"].map((t) => (
               <li key={t} className="flex items-center gap-1.5">
                 <span className="h-1.5 w-1.5 rounded-full bg-lime" />
                 {t}

@@ -7,7 +7,7 @@ import { useAccount, useReadContract } from "wagmi";
 import { useDirectory, useRankedStocks, useVaults, useUser, useQuote, useBoostApys, boostAvailable, TOP_STOCKS, type Stock } from "@/hooks/useProtocol";
 import { useTxSequence, type TxStep } from "@/hooks/useTx";
 import { PlanVaultAbi, ERC20Abi } from "@/abi";
-import { PageHeader, Notice, Spinner, StockAvatar, Segmented, Countdown, Icon } from "@/components/ui";
+import { PageHeader, Notice, Spinner, StockAvatar, Segmented, Countdown, Icon, HashLink } from "@/components/ui";
 import { BoostCard } from "@/components/app/BoostCard";
 import { ConnectButton } from "@/components/ConnectButton";
 import { fmtUsd, fmtUnits, fmtBps, fmtPct, tsToShort, feeOf } from "@/lib/format";
@@ -385,6 +385,24 @@ export default function CreatePlan() {
                   </button>
                 )}
                 {seq.error && <Notice kind="error">{seq.error}</Notice>}
+                {seq.waiting && (
+                  <Notice kind="warn">
+                    <span className="flex items-center justify-between gap-3">
+                      <span>
+                        Still waiting for the network — the transaction is sent and may still land. Nothing else will be sent.
+                        {seq.steps[seq.step]?.hash && (
+                          <>
+                            {" "}
+                            <HashLink hash={seq.steps[seq.step].hash!} />
+                          </>
+                        )}
+                      </span>
+                      <button type="button" className="btn-secondary btn-xs shrink-0" onClick={() => void seq.keepWaiting()}>
+                        Keep waiting
+                      </button>
+                    </span>
+                  </Notice>
+                )}
               </div>
 
               <p className="text-[12px] leading-normal text-ink-3">

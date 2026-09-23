@@ -29,9 +29,9 @@ hand-off when no route exists and `BUY_DCA_URL` is external (hybrid; Q23). No co
 - "Valid pool" source of truth is the router, not FeeReceiver (it quotes the router per swap and stores no pool) [confirmed].
   [hypothesis] the production $DCA pool may be an ETH-paired Pons/Uniswap-v4 hook pool; `UniV4Adapter.sol:77-80` rejects
   native-ETH pools, so it might exist yet not be router-routable — the gate below detects only routable pools (Q22).
-- Dev convention: everything branches on `activeChain.id === 31337` (`chain.ts:23`, `AppShell.tsx:17`, `wagmi.ts:18-19`,
+- Dev convention: everything branches on `activeChain.id === 31337` (`chain.ts:23`, `AppShell.tsx:17`,
   `config.ts:53-54`); `flagOn` at `config.ts:45` is private. "nom dev" ≈ `pnpm dev` on 31337 [hypothesis; Q21].
-- No `Tabs` primitive (`Segmented` has `onChange` only); sidebar highlights exact paths only; the mock wallet drops on full reload → tabs must use `next/link`.
+- No `Tabs` primitive (`Segmented` has `onChange` only); sidebar highlights exact paths only; the (since removed) mock wallet dropped on full reload → tabs must use `next/link`.
 - Stray `bg-red-500` at 302 (F21). No test runner (F23).
 - The "Every" tooltip at 303 says "Fill timing includes randomization to mitigate frontrunning risk." That is false today:
   the scheduler fires at boundary + 3 s and `apps/scheduler/src` has no jitter (grep) [confirmed]. The extraction would carry
@@ -91,7 +91,7 @@ CreateTabs.tsx,BuyDcaCard.tsx}` (new); `apps/web/src/hooks/useProtocol.ts` (`use
 - AC6 `grep -rn 'functionName: "createPlan"' apps/web/src` returns exactly `useCreatePlan.ts` and `create/legacy/page.tsx`.
 - AC7 with `NEXT_PUBLIC_CHAIN=local` the "Buy $DCA" tab is present on /app/create, /app/create/2, /app/buy regardless of router state.
 - AC8 with `NEXT_PUBLIC_CHAIN=robinhood` and a directory whose `dca` is zero (or whose router reverts `quote(usdg→dca)`), the tab is absent with no console errors; with `NEXT_PUBLIC_ENABLE_BUY_TAB=1` it is present.
-- AC9 "Buy $DCA" navigates client-side to /app/buy (mock wallet stays connected); Buy is active in the strip; "Start a plan" returns client-side.
+- AC9 "Buy $DCA" navigates client-side to /app/buy (wallet stays connected); Buy is active in the strip; "Start a plan" returns client-side.
 - AC10 /app/buy on the fork: 100 USDG shows ≈ 997 mDCA (`quote(usdg, dca, 100e6) = 996999999999997057815`); Buy runs "Approve USDG" (skipped when allowance suffices) then `router.swap` with `minOut = quote × 9950 / 10000`; USDG `balanceOf` −100e6, DCA `balanceOf` up by the swapped amount; balances refresh without reload.
 - AC11 rejecting the swap leaves the dialog in error state with "Try again"; no spinner remains on the strip or card.
 - AC12 requests to /app/create/2 and /app/buy with `x-vercel-ip-country: US` redirect to /restricted (middleware matcher `/app/:path*`).

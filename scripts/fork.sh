@@ -11,6 +11,7 @@
 #
 # Besides Hourly / Daily / Weekly / Monthly the local stack has a TestVault with a short epoch (TEST_EPOCH_MINUTES,
 # default 2) and three seeded plans, so `pnpm scheduler` has an epoch to advance every couple of minutes.
+# Before deploying it installs the canonical Multicall3 at 0xcA11…CA11, so reads batch like on Robinhood Chain.
 #
 #   pnpm fork                        # start anvil, deploy the local stack, write apps/{web,scheduler}/.env.local
 #   PORT=8546 pnpm fork              # run on a different port
@@ -49,6 +50,16 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 cast chain-id --rpc-url "$RPC" >/dev/null || { echo "Anvil did not come up"; exit 1; }
+
+# The canonical Multicall3, as on Robinhood Chain (scripts/multicall3.runtime.hex is its runtime code there, identical
+# to Ethereum's), so the app batches contract reads into one aggregate3 eth_call here too. env-from-deployment checks
+# for it before writing NEXT_PUBLIC_LOCAL_MULTICALL3=1.
+MULTICALL3=0xcA11bde05977b3631167028862bE2a173976CA11
+MULTICALL3_CODEHASH=0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891
+log "Installing Multicall3 at ${MULTICALL3}"
+cast rpc anvil_setCode "$MULTICALL3" "$(tr -d '\n' < "$ROOT/scripts/multicall3.runtime.hex")" --rpc-url "$RPC" >/dev/null
+# keccak of the code rather than `cast codehash`: a forked anvil answers eth_getProof with the empty hash after setCode.
+[[ "$(cast keccak "$(cast code "$MULTICALL3" --rpc-url "$RPC")")" == "$MULTICALL3_CODEHASH" ]] || { echo "Multicall3 install failed: unexpected code at ${MULTICALL3}"; exit 1; }
 
 # Pull the 6 role wallets straight from anvil's own "Available Accounts" / "Private Keys" banner
 # (mnemonic "test test ... junk") rather than hardcoding them. (mapfile/readarray needs bash 4+,
@@ -107,6 +118,8 @@ ${BOLD}Fork is ready.${RST}  In other terminals:   pnpm dev              →  ht
 ${DIM}test1-3 also hold 100 WETH and 60,000 \$DCA each. Deployer owns/admins the protocol; treasury is feeRecipient.
 Test vault ${TEST_VAULT} (${TEST_EPOCH_MINUTES}-minute epochs) holds three deployer-owned plans: NVDA 100, AAPL 50, TSLA 25 USDG/epoch.
 Public Anvil test keys — never use them with real funds.${RST}
+
+${BOLD}MetaMask:${RST} after every fresh fork, Settings → Advanced → "Clear activity tab data" (anvil restarts reuse the same nonces).
 
 ${BOLD}Leave this terminal open — Anvil is running here.${RST} Ctrl-C stops the fork and all state vanishes.
 MSG

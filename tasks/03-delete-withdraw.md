@@ -69,7 +69,7 @@ withdrawal too — nothing moves (mitigation: pre-read `isEpochPending` and omit
 user may reject; `unsupported` → error; both need the `useTxSequence` fallback. Non-atomic: never use viem's
 `experimental_fallback` (continues past a rejected call); the mock connector runs `wallet_sendCalls` as a sequential
 `eth_sendTransaction` loop with no receipt wait, reports `atomic:false`, and advertises no capability for 31337 → the
-atomic path is untestable on the app's own test wallet. `waitForCallsStatus` must branch on `status === 'failure'` and
+atomic path was untestable on the removed test wallet. `waitForCallsStatus` must branch on `status === 'failure'` and
 check every receipt. Partial execution under non-atomic batching = today's mined-prefix state (funds in wallet, plan
 listed); no ordering strands funds. Non-owner bundles revert `NotPlanOwner`; reentrancy guard is per call. [hypothesis]
 EIP-7702 delegated EOA keeps its own `msg.sender` on the specific wallet.
@@ -131,8 +131,9 @@ and the size spike. (b) not adopted; revisit only after a real wallet on 4663 re
 Honesty on the report: on-chain fund loss is refuted; the UX diagnosis is a code-reading hypothesis until reproduced.
 
 ## Interim UI safeguard (ship now) — Phase 1
-0. **Repro task (30 min, first)**: on the fork with the mock wallet and the latency proxy, dismiss the Remove modal
-   mid-sequence, reject the prune (`?reject=1` on step 4), re-click; record what the row shows; attach to this section.
+0. **Repro task (30 min, first)**: on the fork with MetaMask (test1 imported, RPC → the proxy) and the latency proxy,
+   dismiss the Remove modal mid-sequence, reject the prune (in MetaMask, on step 4), re-click; record what the row
+   shows; attach to this section.
 1. `useTx.ts`: `retry(steps?: TxStep[])` (replace `runRef.current.steps` for indices ≥ `failedAt`, keep done phases via
    the existing logic at 90) — additive only; `errorName` comes from 02's `describeTxError` (no local decoder).
 2. `TxFlowDialog.tsx`: a trailing `detail` slot per `FlowStep` for the per-step amounts (`plans/page.tsx:646-650`).

@@ -1,10 +1,12 @@
 "use client";
 
-import { useWriteContract, useWaitForTransactionReceipt, usePublicClient, useAccount } from "wagmi";
+import { useWriteContract, useWaitForTransactionReceipt, usePublicClient, useAccount, useConfig } from "wagmi";
+import { getConnectorClient } from "wagmi/actions";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Abi, Address, Hash, PublicClient } from "viem";
+import type { Abi, Address, Hash, PublicClient, Transaction, TransactionReceipt } from "viem";
 import { useToast } from "@/components/Toast";
-import { describeTxError, isReceiptTimeout, STILL_PENDING_COPY } from "@/lib/txErrors";
+import { conflictCopy, describeTxError, isReceiptTimeout, STILL_PENDING_COPY, type SendConflict } from "@/lib/txErrors";
+import { lastMinedOf, noteMined, waitForWalletNonce } from "@/lib/walletSync";
 
 // Loosely typed on purpose: callers pass `{ address, abi, functionName, args, value? }` for any contract.
 export type TxParams = { address: Address; abi: Abi; functionName: string; args?: readonly unknown[]; value?: bigint };
@@ -21,15 +23,20 @@ export const ROW_RECEIPT_TIMEOUT_MS = 180_000;
  * Gas limit = estimate × 1.25 + 100k. Vault calls that touch the boost strategy accrue Morpho interest for the
  * seconds since the market was last touched; an estimate taken against a block where that accrual already
  * happened is cheaper than the real execution one block later, and the exact estimate then runs out. Unused gas
- * is refunded, so padding costs nothing. Estimation failures fall through to writeContract's own simulation
- * so the user still sees the revert reason.
+ * is refunded, so padding costs nothing.
+ *
+ * An estimate that reverts with a decoded custom error ("EnforcedPause", "ZeroAmount", …) is thrown: the call
+ * would revert on chain too, so the step fails here with its reason instead of sending a transaction that burns
+ * gas for nothing. Any other failure (an RPC hiccup, an undecodable revert) falls through to the wallet's own
+ * estimate, as before.
  */
 async function gasWithBuffer(client: PublicClient | undefined, params: TxParams, account?: Address): Promise<bigint | undefined> {
   if (!client || !account) return undefined;
   try {
     const est = await client.estimateContractGas({ ...params, account } as never);
     return est + est / 4n + 100_000n;
-  } catch {
+  } catch (e) {
+    if (describeTxError(e).errorName) throw e;
     return undefined;
   }
 }
@@ -136,17 +143,52 @@ export type TxStep = { label: string; params: TxParams };
  * Where one step of a sequence is: waiting its turn → in the wallet → broadcast and waiting for the receipt
  * → mined (or failed, with the reason). `hash` is set as soon as the wallet returns it. `errorName` is the
  * decoded custom-error name when a step reverted with one ("EpochInProgress").
+ *
+ * `note` replaces "Confirm in your wallet…" while a signing step is still held back for the wallet to catch up.
+ * `conflict` is set when the wallet refused the send over its nonce; `maybeSent` with it when the account's
+ * transaction count moved since the prompt (or could not be read), so the step may have gone through anyway and must
+ * not be offered as a blind "Try again".
  */
 export type TxStepPhase = "todo" | "signing" | "mining" | "done" | "error";
-export type TxStepState = { label: string; phase: TxStepPhase; hash?: Hash; error?: string; errorName?: string };
+export type TxStepState = {
+  label: string;
+  phase: TxStepPhase;
+  hash?: Hash;
+  error?: string;
+  errorName?: string;
+  note?: string;
+  conflict?: SendConflict;
+  maybeSent?: boolean;
+};
 
 /**
- * `waiting` is set when the current step's receipt has not arrived within viem's 180 s: the step stays
- * "mining", `running` stays true (so nothing can be resent), and `keepWaiting()` re-arms the wait on the
- * same hash. A slow network is never reported as a failure.
+ * `waiting` is set when the current step was sent but its receipt could not be had — viem's 180 s ran out, or the
+ * RPC failed while polling: the step stays "mining", `running` stays true (so nothing can be resent), and
+ * `keepWaiting()` re-arms the wait on the same hash. A slow network is never reported as a failure.
+ *
+ * `syncing` is set while the next step is held back until the wallet has caught up with the last one (see
+ * `waitForWalletNonce`). Nothing has been sent for that step yet, so `cancel()` may end the run there.
  */
-type SeqState = { running: boolean; step: number; total: number; label?: string; error: string | null; done: boolean; steps: TxStepState[]; waiting: boolean };
-const IDLE: SeqState = { running: false, step: 0, total: 0, error: null, done: false, steps: [], waiting: false };
+type SeqState = {
+  running: boolean;
+  step: number;
+  total: number;
+  label?: string;
+  error: string | null;
+  done: boolean;
+  steps: TxStepState[];
+  waiting: boolean;
+  syncing: boolean;
+};
+const IDLE: SeqState = { running: false, step: 0, total: 0, error: null, done: false, steps: [], waiting: false, syncing: false };
+
+export const WALLET_SYNC_COPY = "Waiting for your wallet to catch up with the last step…";
+
+/** Our node's pending transaction count for the account, or `undefined` when it cannot be read. */
+function pendingCount(client: PublicClient, address?: Address): Promise<number | undefined> {
+  if (!address) return Promise.resolve(undefined);
+  return client.getTransactionCount({ address, blockTag: "pending" }).catch(() => undefined);
+}
 
 /**
  * Runs several writes one after another, waiting for each receipt (the vault has no multicall, so
@@ -154,66 +196,161 @@ const IDLE: SeqState = { running: false, step: 0, total: 0, error: null, done: f
  * `retry()` picks up again from that step, keeping the receipts of the ones already mined. A step whose
  * receipt is merely slow is not a failure: the sequence flags `waiting` and `retry()` / `keepWaiting()`
  * wait on the same hash again instead of sending anything.
+ *
+ * Nonces are left to the wallet, but a step that follows one of this account's own mined transactions (the
+ * previous step, or a flow in another sequence within the last two minutes) is not prompted until the wallet's own
+ * transaction count shows that transaction (`waitForWalletNonce`): a wallet a block behind signs the old nonce again
+ * and the node refuses it ("nonce too low"). A send refused over its nonce is never re-prompted automatically; the
+ * account's count on our node decides whether the step can be offered again (see the catch).
  */
 export function useTxSequence(onDone?: (lastHash?: Hash) => void) {
   const { writeContractAsync } = useWriteContract();
   const client = usePublicClient();
+  const config = useConfig();
   const { address } = useAccount();
   const [state, setState] = useState<SeqState>(IDLE);
   // The steps of the current run and where it stopped, for `retry`; `waitingHash` when it stopped on a slow receipt.
   const runRef = useRef<{ steps: TxStep[]; failedAt: number; waitingHash?: Hash } | null>(null);
+  // Held synchronously while a run loops, so a second `run` / `retry` / `keepWaiting` in the same tick (a
+  // double-click before the re-render) is ignored instead of starting a second loop and a second wallet prompt.
+  const activeRef = useRef(false);
+  // Set while a step is being prepared (estimate, wallet-sync wait); aborting it ends the run before the prompt.
+  const syncRef = useRef<AbortController | null>(null);
 
   const runFrom = useCallback(
     async (steps: TxStep[], from: number, resumeHash?: Hash) => {
-      if (!client || steps.length === 0) return;
-      runRef.current = { steps, failedAt: -1 };
-      setState((s) => ({
-        running: true,
-        waiting: false,
-        step: from,
-        total: steps.length,
-        label: steps[from].label,
-        error: null,
-        done: false,
-        // Steps before `from` are the ones a previous run already mined; `from` itself keeps its hash when resuming a wait.
-        steps: steps.map((st, i) =>
-          (i < from && s.steps[i]?.phase === "done") || (i === from && resumeHash && s.steps[i]) ? s.steps[i] : { label: st.label, phase: "todo" },
-        ),
-      }));
+      if (!client || steps.length === 0 || activeRef.current) return;
+      activeRef.current = true;
+      const chainId = client.chain.id;
       let lastHash: Hash | undefined;
-      for (let i = from; i < steps.length; i++) {
-        const patch = (p: Partial<TxStepState>) =>
-          setState((s) => ({ ...s, step: i, label: steps[i].label, steps: s.steps.map((x, j) => (j === i ? { ...x, ...p } : x)) }));
-        let hash: Hash | undefined = i === from ? resumeHash : undefined;
-        try {
-          if (!hash) {
-            patch({ phase: "signing" });
-            const gas = await gasWithBuffer(client, steps[i].params, address);
-            hash = await writeContractAsync({ ...steps[i].params, gas } as never);
-            patch({ phase: "mining", hash });
-          }
-          const receipt = await client.waitForTransactionReceipt({ hash });
-          if (receipt.status !== "success") throw new Error(`${steps[i].label} reverted`);
-          lastHash = hash;
-          patch({ phase: "done" });
-        } catch (e) {
-          if (hash && isReceiptTimeout(e)) {
-            // Sent but not mined yet: hold here, keep the hash, let the user re-arm the wait. Never resend.
-            runRef.current = { steps, failedAt: i, waitingHash: hash };
-            setState((s) => ({ ...s, step: i, label: steps[i].label, waiting: true }));
+      try {
+        runRef.current = { steps, failedAt: -1 };
+        setState((s) => ({
+          running: true,
+          waiting: false,
+          syncing: false,
+          step: from,
+          total: steps.length,
+          label: steps[from].label,
+          error: null,
+          done: false,
+          // Steps before `from` are the ones a previous run already mined; `from` itself keeps its hash when resuming a wait.
+          steps: steps.map((st, i) =>
+            (i < from && s.steps[i]?.phase === "done") || (i === from && resumeHash && s.steps[i]) ? s.steps[i] : { label: st.label, phase: "todo" },
+          ),
+        }));
+        for (let i = from; i < steps.length; i++) {
+          const patch = (p: Partial<TxStepState>) =>
+            setState((s) => ({ ...s, step: i, label: steps[i].label, steps: s.steps.map((x, j) => (j === i ? { ...x, ...p } : x)) }));
+          const syncing = (on: boolean) =>
+            setState((s) => ({ ...s, syncing: on, steps: s.steps.map((x, j) => (j === i ? { ...x, note: on ? WALLET_SYNC_COPY : undefined } : x)) }));
+          let hash: Hash | undefined = i === from ? resumeHash : undefined;
+          // Set once the network has answered for `hash`; until then a failure is never "not sent" (see the catch).
+          let receipt: TransactionReceipt | undefined;
+          // Our node's pending count for the account just before the prompt, for judging a send refused over its nonce.
+          let countBefore: number | undefined;
+          try {
+            if (!hash) {
+              patch({ phase: "signing" });
+              const prev = address ? lastMinedOf(chainId, address) : undefined;
+              const sync = new AbortController();
+              syncRef.current = sync;
+              // Alongside the estimate, so a wallet that is already in step costs nothing: its count is read through the
+              // connector (the wallet's own view), and a wallet that cannot be reached is not waited for.
+              const walletSynced =
+                prev && address
+                  ? getConnectorClient(config, { assertChainId: false })
+                      .then((wallet) => waitForWalletNonce(wallet, address, prev, { signal: sync.signal, onSlow: () => syncing(true) }))
+                      .catch(() => false)
+                  : undefined;
+              const cancelled = new Promise<undefined>((r) => sync.signal.addEventListener("abort", () => r(undefined), { once: true }));
+              let prepared: [bigint | undefined, number | undefined, unknown] | undefined;
+              try {
+                prepared = await Promise.race([Promise.all([gasWithBuffer(client, steps[i].params, address), pendingCount(client, address), walletSynced]), cancelled]);
+              } catch (e) {
+                sync.abort(); // the estimate named a revert: stop the wallet-sync wait too
+                throw e;
+              } finally {
+                syncRef.current = null;
+              }
+              if (!prepared) {
+                // Closed while held back for the wallet: nothing was sent for this step, the run just ends.
+                runRef.current = null;
+                setState(IDLE);
+                return;
+              }
+              const gas = prepared[0];
+              countBefore = prepared[1];
+              if (prev) syncing(false);
+              hash = await writeContractAsync({ ...steps[i].params, gas } as never);
+              patch({ phase: "mining", hash });
+            }
+            // A step the wallet cancelled or replaced (same nonce, other calldata) never ran, even though viem hands
+            // back the replacement's receipt; only a repriced (sped-up) copy of the same call counts as this step.
+            let replaced: string | undefined;
+            let replacement: Transaction | undefined;
+            // A receipt carries no nonce: read the transaction alongside the receipt wait, for the next prompt.
+            const sent = client.getTransaction({ hash }).catch(() => undefined);
+            receipt = await client.waitForTransactionReceipt({
+              hash,
+              onReplaced: (r) => {
+                replacement = r.transaction;
+                if (r.reason !== "repriced") replaced = r.reason;
+              },
+            });
+            // Whatever happens next (replaced, reverted), the mined transaction has used its nonce. A sped-up or
+            // replacing copy has its own hash; this node may not have known the original yet, so read it again then.
+            const mined = replacement ?? (await sent) ?? (await client.getTransaction({ hash: receipt.transactionHash }).catch(() => undefined));
+            if (mined) noteMined(chainId, receipt.from, { nonce: mined.nonce, hash: receipt.transactionHash });
+            if (replaced) throw new Error(`${replaced === "cancelled" ? "Cancelled" : "Replaced"} in your wallet — this step did not run.`);
+            if (receipt.status !== "success") {
+              // A mined revert carries no reason: replay the call against its block to name it where possible.
+              let reason: unknown = new Error(`${steps[i].label} reverted`);
+              try {
+                await client.simulateContract({ ...steps[i].params, account: address, blockNumber: receipt.blockNumber } as never);
+              } catch (e) {
+                if (describeTxError(e).errorName) reason = e;
+              }
+              throw reason;
+            }
+            // A sped-up copy mined under its own hash: follow that one (explorer link, receipt reads, `onDone`).
+            hash = receipt.transactionHash;
+            lastHash = hash;
+            patch({ phase: "done", hash });
+          } catch (e) {
+            if (hash && !receipt) {
+              // Sent, but no receipt yet — a timeout or the RPC failing while polling. Either way it may still land:
+              // hold here, keep the hash, let the user re-arm the wait. Never resend.
+              runRef.current = { steps, failedAt: i, waitingHash: hash };
+              setState((s) => ({ ...s, step: i, label: steps[i].label, waiting: true }));
+              return;
+            }
+            const d = describeTxError(e);
+            let error = d.title;
+            let maybeSent: boolean | undefined;
+            if (d.conflict && !hash) {
+              // Refused over its nonce, no hash. The words alone do not prove nothing went out (a node says "nonce too
+              // low" to a rebroadcast of a transaction that already mined too): only an unchanged count on our node
+              // says nothing from the account landed or queued since the prompt. Never re-prompted on its own.
+              const countAfter = d.conflict === "already-sent" || countBefore === undefined ? undefined : await pendingCount(client, address);
+              maybeSent = countAfter === undefined || countAfter !== countBefore;
+              error = conflictCopy(d.conflict, !maybeSent);
+            }
+            runRef.current = { steps, failedAt: i };
+            patch({ phase: "error", error, errorName: d.errorName, conflict: d.conflict, maybeSent });
+            setState((s) => ({ ...s, running: false, waiting: false, syncing: false, error: `${steps[i].label}: ${error}` }));
             return;
           }
-          const d = describeTxError(e);
-          runRef.current = { steps, failedAt: i };
-          patch({ phase: "error", error: d.title, errorName: d.errorName });
-          setState((s) => ({ ...s, running: false, waiting: false, error: `${steps[i].label}: ${d.title}` }));
-          return;
         }
+        setState((s) => ({ ...s, running: false, waiting: false, done: true, step: steps.length }));
+      } finally {
+        activeRef.current = false;
       }
-      setState((s) => ({ ...s, running: false, waiting: false, done: true, step: steps.length }));
+      // Reached only when every step mined (the failure and waiting paths return above); released first, so
+      // `onDone` may start the next run.
       onDone?.(lastHash);
     },
-    [client, address, writeContractAsync, onDone],
+    [client, config, address, writeContractAsync, onDone],
   );
 
   const run = useCallback((steps: TxStep[]) => runFrom(steps, 0), [runFrom]);
@@ -249,9 +386,15 @@ export function useTxSequence(onDone?: (lastHash?: Hash) => void) {
     },
     [runFrom, onDone],
   );
+  /**
+   * Ends a run that is still preparing its next step (`syncing`: held back for the wallet); nothing has been sent for
+   * that step, and the run ends as if reset. Once the wallet has been prompted it no longer applies.
+   */
+  const cancel = useCallback(() => syncRef.current?.abort(), []);
   const reset = useCallback(() => {
+    syncRef.current?.abort();
     runRef.current = null;
     setState(IDLE);
   }, []);
-  return { ...state, run, retry, keepWaiting, reset };
+  return { ...state, run, retry, keepWaiting, cancel, reset };
 }

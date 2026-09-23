@@ -114,7 +114,7 @@ Option A (extend the fixed `Entry` with `hourly`, `vaults()` → `address[4]`) �
 - AC6 `forge build --sizes`: `HourlyVault` ≤ 24,576 B (expected ≈ 24,49x); `ContractSizes.t.sol` covers it.
 - AC7 `fees.json` has `hourlyPurchaseFeeBps: 90`; `forge script script/Deploy.s.sol` dry run does not revert on the config read.
 - AC8 scheduler dry-run logs a `vault hourly` line with epoch 1h and next boundary ≤ 1h, with zero changes under `apps/scheduler/src/` (excluding regenerated ABIs).
-- AC9 browser (client-side nav, mock wallet): "Every" menu lists hour/day/week/month(/test); an hourly NVDA plan shows "per hour" on /app/plans and an "Hourly" filter on plans and activity.
+- AC9 browser (client-side nav, MetaMask with test1 imported, RPC → :8545 or the proxy): "Every" menu lists hour/day/week/month(/test); an hourly NVDA plan shows "per hour" on /app/plans and an "Hourly" filter on plans and activity.
 - AC10 `grep -rn "daily, weekly or monthly\|Three vaults\|three vaults\|three frequency" apps/web/src contracts README.md scripts` has no hit that omits hourly.
 - AC11 hourly test: a page reverting `PriceFeedStale` leaves `nextPlanIndex(stock, id) == 0` and `isEpochDue == true`; after the boundary `nextPlanIndex(stock, id+1) == 0` and `isEpochPending == false`.
 - AC12 the PR carries the cost table with the `gas-sim.sh` run (or an explicit note that `RH_RPC` was unavailable).
