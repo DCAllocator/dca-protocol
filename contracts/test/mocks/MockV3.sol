@@ -49,6 +49,16 @@ contract MockV3Pool {
         return (sqrtPriceX96, 0, 0, 0, 0, 0, true);
     }
 
+    /// @dev Flat oracle at tick 0 (the pool never moves), so a TWAP-vs-spot guard always passes here.
+    function observe(uint32[] calldata secondsAgos)
+        external
+        pure
+        returns (int56[] memory tickCumulatives, uint160[] memory liq)
+    {
+        tickCumulatives = new int56[](secondsAgos.length);
+        liq = new uint160[](secondsAgos.length);
+    }
+
     function midOut(bool zeroForOne, uint256 amountIn) public view returns (uint256) {
         if (zeroForOne) return Math.mulDiv(Math.mulDiv(amountIn, sqrtPriceX96, Q96), sqrtPriceX96, Q96);
         return Math.mulDiv(Math.mulDiv(amountIn, Q96, sqrtPriceX96), Q96, sqrtPriceX96);

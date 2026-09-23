@@ -60,7 +60,9 @@ A user opens a **plan** inside a frequency **vault** (Daily / Weekly / Monthly):
 
 **Boost** (`src/boost/`, `src/libraries/BoostLib.sol`) — each vault has an owner-set ERC-4626 `boostStrategy`; `MorphoBlueStrategy` is an ERC-4626 over one Morpho Blue market (deposits restricted to the vaults, withdrawals bounded by the market's liquidity, `supplyRatePerSecond()` for the live APY). Boosted plans' idle USDG lives in that one strategy position, split by vault-internal shares. The pool mutations live in `BoostLib`, a **linked external library** (delegatecall on the vault's storage) — that is what keeps `PlanVault` under the EIP-170 limit.
 
-**Periphery** — `Zap` (ETH/WETH ⇄ USDG, deposit ETH as USDG into a plan), `ClaimHelper` (read-only aggregation: positions with boosted balances and earnings, claimables, fee previews), `TwapOracle` (mean-tick helper for keepers).
+**Periphery** — `Zap` (ETH/WETH ⇄ USDG, deposit ETH as USDG into a plan), `ClaimHelper` (read-only aggregation: positions with boosted balances and earnings, claimables, fee previews), `TwapOracle` (mean-tick helper for keepers and the FeeReceiver's price guard).
+
+**FeeReceiver** (`src/treasury/FeeReceiver.sol`) — the vaults' `feeRecipient`. Every fee lands there; operators split each token **70% → treasury wallet, 30% → `$DCA` buyback + burn** (constants). The 30% can only leave through the router into `$DCA` that is burned in the same transaction (or a Stock Token reserve into USDG/WETH first); there is no rescue or withdraw. Every swap is floored at `quote × (1 − maxSlippageBps)` and every V3-style pool on the path must trade within `guardMaxTicks` of its 30-minute TWAP. Reviewed in [`audit/AUDIT-FeeReceiver.md`](audit/AUDIT-FeeReceiver.md).
 
 **`$DCA`** — read as a **spot balance at execution / claim time** (never at plan creation). `dca == address(0)` disables perks. `MockDCA` exists for tests and local stacks only; the production script refuses to deploy it.
 
@@ -103,6 +105,8 @@ All fees are in **bps** (`uint16`), hard-capped at **90 bps** in `FeeMath.MAX_FE
 Other tolerances (not fees): `swapSlippageBps` (minOut = quote × (1 − 0.50%), also the floor for any route override), `keeperTipBps` (share of purchase fees paid to whoever calls `advanceEpoch`, default 0, max 50%). Minimums: `minAmountPerEpoch` / `minDeposit` (10 USDG). Dust: `dustSweepMinUsdg` (1 USDG) — `usdgDust` is forwarded to `feeRecipient` during `advanceEpoch` once it reaches this; `wethDust` whenever non-zero; `sweepDust()` (owner / feeManager) forces it.
 
 Fee math is exact integer arithmetic, rounds down in the user's favour, and is fuzzed (`test/unit/FeeMath.t.sol`). There is **no fee on boost yield**; the withdraw fee applies to boosted balances like any other idle USDG.
+
+**Where fees go.** `feeRecipient` on every vault is the `FeeReceiver`. Per token, `distribute(token)` (operator) forwards 70% of what arrived since the last split to the treasury wallet and books 30% into `buybackReserve[token]`; `buyback(token, amount, minOut)` swaps reserve into `$DCA` through the router and burns it (`burn(uint256)` if the token has one, else `0x…dEaD`); `convert(stock, USDG|WETH, …)` turns a Stock Token reserve (claim fees) into a base-token reserve first. `pending(token)`, `buybackReserve(token)` and `totalBurned()` are the views the app reads. `FEE_RECIPIENT` in `.env` is the treasury wallet; the receiver is deployed by `Deploy.s.sol` whenever `DCA` is set.
 
 ---
 
@@ -259,6 +263,7 @@ contracts/                Foundry project (Forge / Anvil)
     vault/                 VaultTypes, PlanVault, DailyVault, WeeklyVault, MonthlyVault, VaultDirectory
     periphery/             Zap, ClaimHelper
     keeper/                EpochKeeper
+    treasury/              FeeReceiver (70% treasury / 30% $DCA buyback + burn)
   test/
     unit/ fuzz/ invariant/ fork/ audit/ mocks/   (mocks/TestVault.sol = short-epoch vault for local stacks only;
                                               mocks/MockMorpho.sol = Morpho Blue lender surface with real accrual)
@@ -300,7 +305,7 @@ pnpm dev:test-vault              # terminal 3: http://localhost:3000, with the t
 | Role | Anvil account | Gets |
 |---|---|---|
 | `deployer` | 0 | deploys + owns/admins every contract; USDG |
-| `treasury` | 1 | `feeRecipient` — where protocol fees accrue; USDG |
+| `treasury` | 1 | the FeeReceiver's treasury wallet (70% of every fee; the vaults' `feeRecipient` is the FeeReceiver); USDG |
 | `test1` / `test2` / `test3` | 2 / 3 / 4 | funded wallets for interacting with the protocol; USDG, WETH, 60k mDCA |
 | `bot` | 5 | the scheduler's wallet — only pays gas for `EpochKeeper.run` |
 
