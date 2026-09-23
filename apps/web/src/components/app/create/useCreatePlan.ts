@@ -78,6 +78,9 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
   const zapQuote = useQuote(dir?.router, dir?.weth, dir?.usdg, ethNet && ethNet > 0n ? ethNet : undefined);
   const upfrontUsdg = pay === "USDG" ? (upfrontWei !== undefined ? upfrontWei - feeOf(upfrontWei, depositFeeBps) : undefined) : zapQuote.data?.amountOut;
   const buysCovered = upfrontUsdg !== undefined && perBuyWei && perBuyWei > 0n ? Number(upfrontUsdg / perBuyWei) : undefined;
+  // The vault spends min(balance, perBuy) each period, so a remainder is one last, smaller buy: `runs` counts it.
+  const lastBuyUsdg = upfrontUsdg !== undefined && perBuyWei && perBuyWei > 0n ? upfrontUsdg % perBuyWei : undefined;
+  const runs = buysCovered !== undefined ? buysCovered + (lastBuyUsdg && lastBuyUsdg > 0n ? 1 : 0) : undefined;
 
   const allowance = useReadContract({
     address: dir?.usdg,
@@ -166,6 +169,10 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
     if (wasDone) setUpfront("");
   };
 
+  // When the last buy lands, if nothing is paused or topped up: one epoch per run after the first buy.
+  const firstBuyAt = info?.nextEpochStart;
+  const lastBuyAt = runs && firstBuyAt !== undefined && info?.epochLength ? firstBuyAt + BigInt((runs - 1) * info.epochLength) : undefined;
+
   const monthly = perBuyWei ? (perBuyWei * BigInt(Math.round(buysPerMonthOf(kind, info?.epochLength) * 100))) / 100n : 0n;
   const feeBps = user.effectiveFeeBps ?? info?.fees?.purchaseFeeBps;
   /** Error line under the funding box; undefined when the funding amount is fine (or empty). */
@@ -174,12 +181,19 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
     : fundingTooSmall
       ? `A plan needs at least ${fmtUsd(minDeposit)}${pay === "ETH" ? " worth of ETH" : ""} to start.`
       : undefined;
-  /** How far the funding goes: "covers N buys", or that the first buy takes whatever is there; undefined until funded. */
+  /**
+   * Funded with less than one buy (per-buy amount > what the plan will hold). The vault does not hold a short balance
+   * back — each period it spends min(balance, per-buy amount) — so the first buy takes all of it, smaller than asked,
+   * and the plan then sits empty, buying nothing, until it is topped up. Worth a warning, not a block: the plan is
+   * valid and the user may mean to top it up.
+   */
+  const underfunded = fundedEnough && upfrontUsdg !== undefined && !!perBuyWei && upfrontUsdg < perBuyWei;
+  /** How far the funding goes: "covers N buys", or "less than one buy" (see `underfunded`); undefined until funded. */
   const coverage =
     buysCovered !== undefined && buysCovered > 0
       ? `covers ${buysCovered.toLocaleString()} ${buysCovered === 1 ? "buy" : "buys"}`
-      : fundedEnough && upfrontUsdg !== undefined
-        ? "first buy spends what is there"
+      : underfunded
+        ? "less than one buy"
         : undefined;
 
   return {
@@ -219,8 +233,16 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
     fundShare,
     zapQuote,
     fundedEnough,
+    underfunded,
     fundHint,
     coverage,
+    buysCovered,
+    lastBuyUsdg,
+    runs,
+    firstBuyAt,
+    lastBuyAt,
+    // $DCA held by the connected wallet (holder perks)
+    dcaBal: user.dca,
     // boost
     boost,
     setBoost,

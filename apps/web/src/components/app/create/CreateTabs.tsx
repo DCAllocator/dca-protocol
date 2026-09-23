@@ -6,10 +6,10 @@ import { useDirectory, useBuyDcaRoute } from "@/hooks/useProtocol";
 import { BUY_DCA_TAB_FORCED } from "@/lib/config";
 
 /**
- * "Start a plan" | "Buy $DCA" strip above the create card and the buy card. Styled like `Segmented`, but the
- * options are `next/link`s: client-side navigation keeps the wallet session (the local test wallet drops on a
- * full reload), and the active tab follows the URL rather than local state. "Start a plan" points back at
- * whichever create variant the visitor came from (/app/create/2 stays on /app/create/2).
+ * "Start a plan" | "Buy $DCA" strip above the create card and the buy card. Plain text tabs, the active one on a
+ * faint fill; the options are `next/link`s: client-side navigation keeps the wallet session, and the active tab
+ * follows the URL rather than local state. "Start a plan" points back at whichever create variant the visitor
+ * came from (/app/create/2 stays on /app/create/2).
  *
  * The "Buy $DCA" tab shows when BUY_DCA_TAB_FORCED (local anvil, or NEXT_PUBLIC_ENABLE_BUY_TAB) or when the
  * router quotes USDG → $DCA (`useBuyDcaRoute`). While that first probe is in flight the slot is reserved
@@ -26,12 +26,14 @@ export function CreateTabs() {
   const buyEnabled = onBuy || BUY_DCA_TAB_FORCED || route.available;
   const buyPending = !buyEnabled && route.isLoading;
 
+  // Deliberately quiet (no track, no border, no inverted pill): the strip is wayfinding, not a control competing
+  // with the card's one lime button.
   const cls = (active: boolean) =>
-    `inline-flex h-[30px] items-center rounded-[7px] px-3 text-[13px] font-medium transition-colors ${active ? "bg-ink text-surface-0" : "text-ink-2 hover:text-ink"}`;
+    `inline-flex h-[28px] items-center rounded-md px-2.5 text-[13px] font-medium transition-colors ${active ? "bg-surface-3 text-ink" : "text-ink-3 hover:text-ink-2"}`;
 
   return (
     <nav aria-label="Create or buy" className="mb-3 flex justify-center">
-      <div className="inline-flex gap-0.5 rounded-lg border border-line bg-surface-3 p-[3px]">
+      <div className="inline-flex gap-1">
         <Link href={startHref} className={cls(!onBuy)} aria-current={!onBuy ? "page" : undefined}>
           Start a plan
         </Link>
@@ -40,7 +42,7 @@ export function CreateTabs() {
             Buy $DCA
           </Link>
         ) : buyPending ? (
-          <span className={`${cls(false)} text-ink-3`} aria-hidden>
+          <span className={`${cls(false)} opacity-50`} aria-hidden>
             Buy $DCA
           </span>
         ) : null}

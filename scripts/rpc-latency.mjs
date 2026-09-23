@@ -5,11 +5,13 @@
  * and tested end to end. No dependencies.
  *
  *   latency ± jitter  every RPC call takes this long (ms)
- *   sign              the test wallet takes this long to "sign" each eth_sendTransaction (ms)
+ *   sign              each eth_sendTransaction is held this long before it is forwarded, like a wallet prompt (ms)
  *   blockTime         seconds between blocks (anvil interval mining); 0 = mine each tx at once (anvil's default),
  *                     "manual" = mine nothing until `curl localhost:8555/__latency/mine`
- *   reject            share (0-1) of sends answered "User rejected the request." (4001) once the sign delay is up
- *   revert            share (0-1) of sends given a gas limit that runs out → mined, receipt status "reverted"
+ *   reject            share (0-1) of eth_sendTransaction calls answered "User rejected the request." (4001) once the
+ *                     sign delay is up
+ *   revert            share (0-1) of eth_sendTransaction calls given a gas limit that runs out → mined, receipt
+ *                     status "reverted"
  *   drop              share (0-1) of sent txs evicted from the mempool → never mined (needs blockTime ≠ 0)
  *
  *   pnpm latency                          # preset "realistic" on :8555, forwarding to anvil on :8545
@@ -17,8 +19,9 @@
  *   pnpm latency chaos drop=0 sign=1500   # a preset plus overrides
  *   PORT=8556 UPSTREAM=http://127.0.0.1:8546 pnpm latency
  *
- * Point the app at it with NEXT_PUBLIC_LOCAL_RPC=http://127.0.0.1:8555 (`pnpm dev:latency` does that, on :3004),
- * then change the knobs live, without restarting either:
+ * Point the app at it with NEXT_PUBLIC_LOCAL_RPC=http://127.0.0.1:8555 (`pnpm dev:latency` does that, on :3004) and
+ * the browser wallet's network RPC too (MetaMask: http://127.0.0.1:8555, chain id 31337), then change the knobs
+ * live, without restarting either:
  *
  *   curl 'localhost:8555/__latency'                        # settings + counters
  *   curl 'localhost:8555/__latency?preset=slow'
@@ -27,9 +30,10 @@
  *
  * blockTime switches the mining mode of the anvil node itself, so every client of that node (other dev servers,
  * the scheduler) sees the same block cadence. On exit the proxy puts anvil back on automine if that is how it
- * found it. sign / reject / revert act on the local "Use test wallet", which sends eth_sendTransaction through the
- * app's RPC; a browser wallet signs by itself and broadcasts over its own RPC, so only latency and blockTime reach
- * it (and drop, if the wallet's network is pointed at this proxy too).
+ * found it. sign / reject / revert only act on eth_sendTransaction senders, i.e. accounts the node signs for
+ * (anvil-unlocked accounts, e.g. `cast send --unlocked --rpc-url http://127.0.0.1:8555`). A browser wallet signs by
+ * itself and broadcasts a raw tx over its own network RPC, so only latency, blockTime and drop reach it — and latency
+ * and drop only if that RPC is this proxy (blockTime changes anvil itself, so it applies either way).
  */
 import http from "node:http";
 
@@ -73,7 +77,7 @@ function parse(pairs, base) {
 const describe = (c) =>
   [
     `rpc ${c.latency}±${c.jitter} ms`,
-    `wallet ${c.sign} ms`,
+    `sign ${c.sign} ms`,
     c.blockTime === "manual" ? "manual mining" : c.blockTime ? `a block every ${c.blockTime}s` : "instant mining",
     ...SHARES.filter((k) => c[k]).map((k) => `${k} ${Math.round(c[k] * 100)}%`),
   ].join(" · ");

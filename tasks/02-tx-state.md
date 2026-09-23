@@ -94,7 +94,9 @@ labels, and allows two concurrent writes from one wallet. Rejected unless siblin
 
 ## Acceptance criteria
 Setup: latency proxy `pnpm latency` (:8555 → anvil) + `pnpm dev:latency` (:3004) if the baseline commit lands; else the
-in-page fetch patch. Connect "Use test wallet" on /app/plans via client-side navigation.
+in-page fetch patch. Connect MetaMask with test1 imported (RPC → :8545 or the proxy) on /app/plans; the proxy's
+`sign`/`reject`/`revert` only reach `eth_sendTransaction` senders (`cast send --unlocked`), so with MetaMask hold or reject
+the prompt yourself.
 - AC1 `sign=4000`, click "Pause plan": for 4 s Claim shows "Claim" and Boost shows its label (no Spinner in either); a pause indicator spins; other rows unchanged.
 - AC2 `sign=4000`, click Boost: spinner only inside Boost.
 - AC3 successful Boost: within 2 s of the receipt a toast containing "Boosted" appears outside the `<tr>`, auto-dismisses ≤ ~6 s or on its control; row shows boosted after refetch.
@@ -117,7 +119,7 @@ in-page fetch patch. Connect "Use test wallet" on /app/plans via client-side nav
   with `EpochInProgress` data from `PlanVaultAbi` → `errorName`; plain `Error("")` → "Transaction reverted"; MetaMask
   "User denied" string); `hooks/useTx.test.tsx` (pendingKey set before estimation resolves; one toast per hash; thrown
   error → one toast + reset; `write()` never rejects); `components/Toast.test.tsx` (stacking, timers, a11y attrs).
-- e2e-manual: AC1–AC13 through the latency proxy in the browser pane (rows E1–E4 of the checklist).
+- e2e-manual: AC1–AC13 through the latency proxy in a browser with MetaMask (rows E1–E4 of the checklist).
 
 ## Dependencies and conflicts
 - Depends on 01 (branch base). Produces `useToast` and `describeTxError` for 03 and 05 — lands first.

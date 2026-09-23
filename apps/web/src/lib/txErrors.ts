@@ -10,6 +10,7 @@ import { BaseError, ContractFunctionRevertedError, UserRejectedRequestError, Wai
  * - `errorName` is the decoded custom-error name of a mined or simulated revert ("EpochInProgress"), so
  *   callers can branch on it instead of matching strings in `title`.
  * - `rejected` / `timedOut` flag the two "not a failure" cases.
+ * - `conflict` is set when the wallet or node refused the send over its nonce (see `sendConflictOf`).
  */
 export type TxErrorDescription = {
   kind: "warn" | "error";
@@ -18,7 +19,17 @@ export type TxErrorDescription = {
   errorName?: string;
   rejected: boolean;
   timedOut: boolean;
+  conflict?: SendConflict;
 };
+
+/**
+ * A send refused over its nonce, before any hash came back:
+ * - `stale-nonce`: the nonce was already used ("nonce too low"): the wallet was a step behind. Also what a node says
+ *   to a rebroadcast of a transaction that already mined, so on its own it does not prove nothing was sent.
+ * - `nonce-in-use`: another pending transaction holds the nonce ("replacement transaction underpriced").
+ * - `already-sent`: this very transaction is already in the pool ("already known"): it WAS sent.
+ */
+export type SendConflict = "stale-nonce" | "nonce-in-use" | "already-sent";
 
 export const REJECTED_COPY = "You rejected this in your wallet.";
 export const STILL_PENDING_COPY = "Still pending — check your wallet or the explorer.";
@@ -57,10 +68,68 @@ export function isReceiptTimeout(err: unknown): boolean {
   return false;
 }
 
+// Word boundaries: "unknown transaction type" is not "already sent".
+const ALREADY_SENT_RE = /\balready known\b|already imported|\bknown transaction\b/;
+const NONCE_IN_USE_RE = /replacement transaction underpriced|replacement fee too low/;
+const STALE_NONCE_RE = /nonce too low|nonce has already been used/;
+
+/** Every message along the cause chain, lower-cased: the node's own words sit a few causes down. */
+function causeText(err: unknown): string {
+  const out: string[] = [];
+  let e: unknown = err;
+  for (let i = 0; e && i < 12; i++) {
+    if (typeof e === "string") {
+      out.push(e);
+      break;
+    }
+    if (typeof e !== "object") break;
+    const x = e as { cause?: unknown; details?: unknown; shortMessage?: unknown; message?: unknown; data?: { message?: unknown } };
+    for (const s of [x.details, x.shortMessage, x.message, x.data?.message]) if (typeof s === "string") out.push(s);
+    e = x.cause;
+  }
+  return out.join("\n").toLowerCase();
+}
+
+/**
+ * Names a send the wallet or node refused over its nonce, by the node's words anywhere in the cause chain. Not by
+ * viem's class: `NonceTooLowError` also covers "already known", which means the opposite (the transaction IS in the
+ * pool), and MetaMask's -32603 arrives dressed as a `ContractFunctionRevertedError` whose reason is the raw
+ * "RPC 0x7a69 Custom eth_sendRawTransaction: nonce too low". The most careful reading wins when several match.
+ */
+export function sendConflictOf(err: unknown): SendConflict | undefined {
+  const text = causeText(err);
+  if (ALREADY_SENT_RE.test(text)) return "already-sent";
+  if (NONCE_IN_USE_RE.test(text)) return "nonce-in-use";
+  if (STALE_NONCE_RE.test(text)) return "stale-nonce";
+  return undefined;
+}
+
+/** On its own, a conflict does not say whether anything went out: the copy never claims nothing was sent. */
+const CONFLICT_COPY: Record<SendConflict, string> = {
+  "stale-nonce": "Your wallet was a step behind the network. Check its activity before trying again.",
+  "nonce-in-use": "Another transaction from your wallet is still pending. Check its activity before trying again.",
+  "already-sent": "Your wallet says this was already sent. Check its activity before trying again.",
+};
+
+/**
+ * A conflict's copy once the caller has checked the account's transaction count. `nothingSent` only when the count
+ * is unchanged since just before the prompt: nothing from the account landed or queued, so the step can be sent again.
+ * Otherwise (or for `already-sent`, which is always sent) it may have gone through.
+ */
+export function conflictCopy(conflict: SendConflict, nothingSent: boolean): string {
+  if (conflict === "already-sent" || !nothingSent) return "Your wallet may already have sent this. Check its activity before trying again.";
+  return conflict === "stale-nonce"
+    ? "Your wallet was a step behind, so nothing was sent."
+    : "Another transaction from your wallet is still pending, so nothing was sent. Try again once it confirms.";
+}
+
 /** Turns whatever a write or receipt wait threw into product copy. Never throws itself. */
 export function describeTxError(err: unknown): TxErrorDescription {
   if (isUserRejection(err)) return { kind: "warn", title: REJECTED_COPY, rejected: true, timedOut: false };
   if (isReceiptTimeout(err)) return { kind: "warn", title: STILL_PENDING_COPY, rejected: false, timedOut: true };
+  // Before the revert branch: MetaMask's "nonce too low" comes back as a ContractFunctionRevertedError.
+  const conflict = sendConflictOf(err);
+  if (conflict) return { kind: "warn", title: CONFLICT_COPY[conflict], conflict, rejected: false, timedOut: false };
 
   if (err instanceof BaseError) {
     const revert = err.walk((e) => e instanceof ContractFunctionRevertedError) as ContractFunctionRevertedError | null;

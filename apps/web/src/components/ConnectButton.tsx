@@ -2,14 +2,17 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useAccount, useConnect, useDisconnect, useSwitchChain, type Connector } from "wagmi";
+import { ProviderNotFoundError, useAccount, useConnect, useDisconnect, useSwitchChain, type Connector } from "wagmi";
 import { activeChain } from "@/lib/chain";
 import { short } from "@/lib/format";
 
-/** Discovered wallets first (they carry an icon); fall back to the generic connector only when nothing was found. */
+/** Real browser wallets only (type "injected": EIP-6963 discovered ones plus the generic fallback), so nothing that
+ * signs without a wallet prompt can ever be listed or one-click connected. Discovered wallets first (they carry an
+ * icon); fall back to the generic connector only when nothing was found. */
 function pickableConnectors(connectors: readonly Connector[]): Connector[] {
-  const discovered = connectors.filter((c) => c.id !== "injected");
-  return discovered.length > 0 ? discovered : connectors.filter((c) => c.id === "injected");
+  const wallets = connectors.filter((c) => c.type === "injected");
+  const discovered = wallets.filter((c) => c.id !== "injected");
+  return discovered.length > 0 ? discovered : wallets;
 }
 
 export function ConnectButton({ className = "" }: { className?: string }) {
@@ -50,9 +53,11 @@ export function ConnectButton({ className = "" }: { className?: string }) {
 
   if (!isConnected || !address) {
     const list = pickableConnectors(connectors);
+    // A failed connect reopens the menu, the only place its error is shown: otherwise the one-click path (a single
+    // wallet, or no extension at all, where the generic connector throws ProviderNotFoundError) fails silently.
     const choose = (c: Connector) => {
       setOpen(false);
-      connect({ connector: c });
+      connect({ connector: c }, { onError: () => setOpen(true) });
     };
     return (
       <>
@@ -82,7 +87,13 @@ export function ConnectButton({ className = "" }: { className?: string }) {
                   {c.name}
                 </button>
               ))}
-              {connectError && <div className="px-3 py-1.5 text-[12px] text-bad">{connectError.message.split("\n")[0]}</div>}
+              {connectError && (
+                <div className="px-3 py-1.5 text-[12px] text-bad">
+                  {connectError instanceof ProviderNotFoundError
+                    ? "No wallet extension detected — install MetaMask or Rabby."
+                    : connectError.message.split("\n")[0]}
+                </div>
+              )}
             </div>,
             document.body,
           )}

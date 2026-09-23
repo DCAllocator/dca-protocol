@@ -53,8 +53,8 @@ a buy form. Pick (A):
    `isConnected && chainId === activeChain.id` (guard as `ConnectButton.tsx:93`); `useWatchAsset`; params via a pure
    `watchAssetParamsFor(stock, origin)` in `apps/web/src/lib/watchAsset.ts` (`symbol.slice(0, 11)`, `image =
    origin + tickerIconUrl(symbol, "light")` when `window` exists); outcomes → `useToast` (02): `true` → "Added {symbol} to
-   your wallet", `false` → "Not added", throw → `describeTxError` copy. Never inline in a row. `connector?.id ===
-   TEST_WALLET_ID` → hide (default; Q16). Icon: add `"wallet"` to `IconName` (`ui.tsx:520`) or reuse `"plus"`.
+   your wallet", `false` → "Not added", throw → `describeTxError` copy. Never inline in a row. (No test-wallet branch:
+   the mock connector was removed; Q16 resolved.) Icon: add `"wallet"` to `IconName` (`ui.tsx:520`) or reuse `"plus"`.
 5. Placement: (a) `create/page.tsx:258-272` after `tickerName(...)` where the price used to be; (b) `plans/page.tsx:344-355`
    under the symbol cell (`p.stock`, `symbol`, `stockDecimals` already in scope) — this insertion lands after 03-P1 merges.
 6. Optional RPC hygiene (same PR): `plans/page.tsx:48-49` build `priceTokens` from the distinct `p.stock` of the user's
@@ -78,7 +78,7 @@ a buy form. Pick (A):
 - AC6 web typecheck passes with `PriceMap` no longer imported by either create page.
 - AC7 "Add to wallet" is visible on the selected-stock line and in each /app/plans row when connected on the active chain; hidden when disconnected or on another chain.
 - AC8 MetaMask on anvil 31337: click opens the add-token dialog pre-filled (address, ≤ 11-char symbol, 18 decimals); confirm → success toast; decline → "Not added"; close (4001) → rejection copy; no inline error in any path.
-- AC9 with the local test wallet the click neither throws nor claims a real wallet was updated; no console errors.
+- AC9 dropped: there is no local test wallet any more.
 - AC10 no button inside any `role="option"` row.
 - AC11 (optional step 6) /app/plans with positions in 2 stocks issues 2 quote calls per refetch instead of 142.
 
@@ -86,7 +86,7 @@ a buy form. Pick (A):
 - contract: none (router tests already cover `NoRoute`/impact cap).
 - unit (if vitest): `lib/watchAsset.test.ts` (`type: "ERC20"`, symbol ≤ 11, decimals passthrough, absolute light-variant image, image omitted without origin).
 - typecheck gate.
-- e2e-manual: checklist rows E7–E8 (picker without prices; no quote calls on /app/create and /; test-wallet button state; plan-row button; USD values unchanged) and a MetaMask-extension pass for AC8 recording whether the SVG logo renders.
+- e2e-manual: checklist rows E7–E8 (picker without prices; no quote calls on /app/create and /; plan-row button; USD values unchanged) and a MetaMask-extension pass for AC8 recording whether the SVG logo renders.
 
 ## Dependencies and conflicts
 - Consumes `useToast` and `describeTxError` from 02 → branch after 02 merges (price removal could start earlier but the button needs the toast).

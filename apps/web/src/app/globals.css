@@ -445,6 +445,44 @@ body {
   }
 }
 
+/* stock ticker tape (components/app/StockTicker.tsx): two identical strips slide left by half the track, so the
+   second lands exactly where the first began; the duration is set inline from the measured width (constant px/s).
+   Hover pauses; reduced motion stops it and leaves a scrollable strip without the duplicate. */
+@keyframes ticker-scroll {
+  to {
+    transform: translateX(-50%);
+  }
+}
+@keyframes ticker-live {
+  50% {
+    opacity: 0.3;
+  }
+}
+.ticker-track {
+  animation: ticker-scroll 40s linear infinite;
+}
+.ticker:hover .ticker-track {
+  animation-play-state: paused;
+}
+.ticker-viewport {
+  mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent);
+}
+.ticker-live {
+  animation: ticker-live 2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ticker-track,
+  .ticker-live {
+    animation: none;
+  }
+  .ticker-viewport {
+    overflow-x: auto;
+  }
+  .ticker-track > ul + ul {
+    display: none;
+  }
+}
+
 /* ---------- first-load splash (components/Splash.tsx) ----------
    Hidden unless the <head> bootstrap (lib/splash.ts) sets <html data-splash>. The badge is the logo drawn
    live: a lime disc (512-unit viewbox, --u per unit) whose coins pop in and fan out, then tick one slot right

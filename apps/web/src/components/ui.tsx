@@ -223,8 +223,11 @@ export function Toggle({ checked, onChange, disabled = false, ariaLabel }: { che
   );
 }
 
-/** Small ⓘ that reveals `text` on hover / focus. */
-export function Tip({ text, className = "" }: { text: string; className?: string }) {
+/**
+ * Small ⓘ that reveals `text` on hover / focus. The bubble is centred over the icon; `align="end"` hangs it from the
+ * icon's right edge instead, for an icon sitting at the right edge of a card (a centred bubble would spill out).
+ */
+export function Tip({ text, className = "", align = "center" }: { text: string; className?: string; align?: "center" | "end" }) {
   return (
     <span className={`group relative inline-flex ${className}`}>
       <button type="button" tabIndex={0} aria-label={text} className="inline-flex text-ink-3 hover:text-ink focus:text-ink">
@@ -232,7 +235,7 @@ export function Tip({ text, className = "" }: { text: string; className?: string
       </button>
       <span
         role="tooltip"
-        className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-20 w-64 -translate-x-1/2 rounded-lg border border-line-strong bg-surface-3 px-3 py-2 text-left text-[12px] leading-relaxed font-normal text-ink-2 opacity-0 shadow-pop transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+        className={`pointer-events-none absolute bottom-[calc(100%+8px)] z-20 w-64 ${align === "end" ? "-right-1" : "left-1/2 -translate-x-1/2"} rounded-lg border border-line-strong bg-surface-3 px-3 py-2 text-left text-[12px] leading-relaxed font-normal text-ink-2 opacity-0 shadow-pop transition-opacity group-hover:opacity-100 group-focus-within:opacity-100`}
       >
         {text}
       </span>

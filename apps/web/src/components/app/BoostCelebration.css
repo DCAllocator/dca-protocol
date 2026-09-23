@@ -1,0 +1,1054 @@
+/* ---------- Boost: the Boost dialog's hero (components/app/BoostCelebration.tsx) and boosted plan rows ----------
+   The Boost dialog's header is a 128px hero from its first frame, so the card never changes height when it lands:
+     running, waiting  the armed mark: a dim disc and grey bolt in an unlit gauge, with one lime comet chasing round
+                       the track (the wallet and network wait reads as charging); title and status centred under it
+     error             the same mark, comet hidden
+     done (ms from the confirmation)
+       0      CHARGE: the comet fades; the gauge fills clockwise on an ease-in (about t², 560 ms); its twelve ticks
+              light faster and faster; motes are drawn in; the bolt flickers warm; the glow builds
+       400    STRAIN: the mark buzzes (±1.5px)
+       560    SQUAT: the disc drops to 0.86, the gauge and ticks to 0.94
+       620    DISCHARGE: a flash, a lens flare across the header, two shockwaves, 8 streaks and 4 embers; the spent
+              ticks fire outward; the lime disc lands with an overshoot; the gauge kicks; the glow flares and
+              settles; the running title is blown away. At 660 the bolt pops in, lime-ink.
+       700    SLAM: the BOOSTED plate drops in from 1.7x (impact about 865 ms, echo ring at 860)
+       900    the line rises and its APY rolls up like an odometer (the digits settle left to right by about 1620)
+       1040   a sheen crosses the plate. At rest by about 1.6 s.
+       1100+  idle: a bright arc circles the charged ring every 5.2 s and the glow breathes on 3.2 s
+   Base rules are resting styles, and every resting style is an end state (burst layers rest at opacity 0). All motion
+   lives in the `no-preference` block, so reduced motion gets the end state with short opacity fades and nothing else.
+   Only transform and opacity move, plus the gauge's stroke-dashoffset for 560 ms. The component mirrors CHARGE_MS
+   and DISCHARGE_AT for the tick, mote, spark and ember delays, and the odometer's 900 ms start: keep them in step. */
+:root {
+  --boost-hot: var(--color-lime); /* gauge, ticks, comet, waves, the warm bolt, the echo */
+  --boost-spark: var(--color-lime);
+  --boost-orbit: #f3ffc4;
+  --boost-track: var(--color-line-strong);
+  --boost-glow: rgb(204 255 0 / 0.36);
+  --boost-glow-soft: rgb(204 255 0 / 0.09);
+  --boost-flash-core: #fbffe6;
+  --boost-flash-mid: rgb(204 255 0 / 0.55);
+  --boost-flare: rgb(204 255 0 / 0.85);
+  --boost-flare-core: #f6ffd6;
+  --boost-flare-halo: rgb(204 255 0 / 0.14);
+  --boost-wave-glow: 0 0 6px rgb(204 255 0 / 0.45);
+  --boost-disc-shadow: 0 0 0 1px rgb(204 255 0 / 0.45), 0 0 18px rgb(204 255 0 / 0.3);
+  --boost-plate-shadow: 0 6px 18px -8px rgb(204 255 0 / 0.65);
+  --boost-lit-rest: 0.6;
+  /* My plans: boosted rows */
+  --boost-row-edge: var(--color-lime);
+  --boost-row-edge-glow: 0 0 8px rgb(204 255 0 / 0.55);
+  --boost-row-wash: rgb(204 255 0 / 0.05);
+  --boost-row-flash: rgb(204 255 0 / 0.1);
+  --boost-badge-ring: var(--color-surface-2);
+  --boost-badge-glow: 0 0 8px rgb(204 255 0 / 0.35);
+}
+/* Light register: lime is 1.3:1 on white, so lines and sparks take an olive-lime that reads (the gauge is 3.3:1),
+   glows go a step deeper, and the lime fills (disc, plate, badge) get a hairline edge. Lime-ink text is unchanged. */
+:root[data-theme="light"] {
+  --boost-hot: #7a9a00;
+  --boost-spark: #8fb300;
+  --boost-orbit: #5f7d00;
+  --boost-glow: rgb(170 214 0 / 0.42);
+  --boost-glow-soft: rgb(170 214 0 / 0.13);
+  --boost-flash-core: #ecff9e;
+  --boost-flash-mid: rgb(190 240 0 / 0.55);
+  --boost-flare: rgb(143 179 0 / 0.55);
+  --boost-flare-core: #a7d100;
+  --boost-flare-halo: rgb(190 240 0 / 0.22);
+  --boost-wave-glow: 0 0 6px rgb(143 179 0 / 0.3);
+  --boost-disc-shadow: inset 0 0 0 1px rgb(95 125 0 / 0.28), 0 4px 14px -4px rgb(95 125 0 / 0.45);
+  --boost-plate-shadow: inset 0 0 0 1px rgb(95 125 0 / 0.25), 0 5px 14px -6px rgb(95 125 0 / 0.5);
+  --boost-lit-rest: 0.85;
+  --boost-row-edge: #8fb300;
+  --boost-row-edge-glow: none;
+  --boost-row-wash: rgb(170 214 0 / 0.1);
+  --boost-row-flash: rgb(204 255 0 / 0.3);
+  --boost-badge-glow: inset 0 0 0 1px rgb(95 125 0 / 0.3);
+}
+
+/* -- the hero: 76px mark, 24px title or plate, 18px line; 128px in all -- */
+.boost-hero {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 128px; /* an error note can wrap to a second line */
+  text-align: center;
+}
+.boost-cluster {
+  position: relative;
+  flex: none;
+  width: 76px;
+  height: 76px;
+}
+.boost-glow {
+  position: absolute;
+  inset: -14px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--boost-glow), var(--boost-glow-soft) 50%, transparent);
+  opacity: 0.75;
+  pointer-events: none;
+}
+/* a hairline of light across the header at the discharge, under the mark */
+.boost-flare {
+  position: absolute;
+  top: 26px;
+  right: 0;
+  left: 0;
+  height: 24px;
+  background:
+    linear-gradient(90deg, transparent, var(--boost-flare) 28%, var(--boost-flare-core) 50%, var(--boost-flare) 72%, transparent) center / 100% 1px no-repeat,
+    radial-gradient(50% 50% at 50% 50%, var(--boost-flare-halo), transparent);
+  opacity: 0;
+  pointer-events: none;
+}
+.boost-wave {
+  --boost-s: 2.1;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  border: 2px solid var(--boost-hot);
+  border-radius: 50%;
+  box-shadow: var(--boost-wave-glow);
+  opacity: 0;
+}
+.boost-wave-2 {
+  --boost-s: 1.8;
+  --boost-o: 0.6;
+  border-width: 1px;
+  box-shadow: none;
+}
+.boost-gauge,
+.boost-ticks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.boost-track {
+  fill: none;
+  stroke: var(--boost-track);
+  stroke-width: 2.5;
+}
+.boost-meter {
+  fill: none;
+  stroke: var(--boost-hot);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-dasharray: 100 200;
+  opacity: var(--boost-lit-rest);
+}
+.boost-tick-track,
+.boost-tick {
+  stroke: var(--boost-track);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.boost-tick {
+  stroke: var(--boost-hot);
+}
+.boost-hero[data-status="done"] .boost-ticks {
+  opacity: 0; /* spent */
+}
+/* comets on the track: the running chase and the idle orbit (head over a faint tail that trails it clockwise) */
+.boost-chase,
+.boost-orbit {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.boost-chase svg,
+.boost-orbit svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.boost-chase circle,
+.boost-orbit circle {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+.boost-chase circle {
+  stroke: var(--boost-hot);
+  stroke-dasharray: 8 92;
+}
+.boost-chase circle:first-child {
+  stroke-dasharray: 26 74;
+  stroke-dashoffset: 18;
+  opacity: 0.3;
+}
+.boost-orbit circle {
+  stroke: var(--boost-orbit);
+  stroke-dasharray: 7 93;
+}
+.boost-orbit circle:first-child {
+  stroke-dasharray: 20 80;
+  stroke-dashoffset: 13;
+  opacity: 0.3;
+}
+.boost-mote,
+.boost-ember {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 3px;
+  margin: -1.5px 0 0 -1.5px;
+  border-radius: 50%;
+  background: var(--boost-hot);
+  opacity: 0;
+}
+.boost-ember {
+  background: var(--boost-spark);
+}
+.boost-spark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 10px;
+  margin: -5px 0 0 -1px;
+  border-radius: 1px;
+  background: linear-gradient(to top, transparent, var(--boost-spark));
+  opacity: 0;
+}
+/* the armed mark (running, waiting, error); spent once done */
+.boost-pre,
+.boost-disc {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  border-radius: 50%;
+}
+.boost-pre {
+  background: var(--color-surface-3);
+  box-shadow: inset 0 0 0 1px var(--color-line-strong);
+  color: var(--color-ink-3);
+}
+.boost-hero[data-status="done"] .boost-pre {
+  opacity: 0;
+}
+.boost-pre > svg,
+.boost-disc > svg {
+  grid-area: 1 / 1;
+  width: 20px;
+  height: 20px;
+}
+.boost-pre > .boost-warm {
+  color: var(--boost-hot);
+  opacity: 0;
+}
+/* the charged mark: the resting hero */
+.boost-disc {
+  background: var(--color-lime);
+  box-shadow: var(--boost-disc-shadow);
+  color: var(--color-lime-ink);
+}
+.boost-flash {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--boost-flash-core) 30%, var(--boost-flash-mid) 60%, transparent);
+  opacity: 0;
+  pointer-events: none;
+}
+/* title slot: the running / error heading, then the plate stamped over the outgoing title */
+.boost-word {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 24px;
+  margin-top: 4px;
+}
+.boost-word > * {
+  grid-area: 1 / 1;
+}
+.boost-title {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.boost-title-out {
+  opacity: 0;
+}
+.boost-stamp {
+  display: inline-grid;
+}
+.boost-stamp > * {
+  grid-area: 1 / 1;
+}
+.boost-echo {
+  border: 1.5px solid var(--boost-hot);
+  border-radius: 6px;
+  opacity: 0;
+  transform: skewX(-10deg);
+}
+.boost-plate {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 12px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--color-lime);
+  box-shadow: var(--boost-plate-shadow);
+  color: var(--color-lime-ink);
+  transform: skewX(-10deg);
+}
+.boost-plate-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: -0.22em; /* the last letter's tracking, so the word centres */
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  transform: skewX(10deg);
+}
+.boost-plate-text > svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+.boost-sheen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 45%;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.75), transparent);
+  opacity: 0;
+  pointer-events: none;
+}
+/* line slot: the wallet / network / error note, then the boosted line */
+.boost-note {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 18px;
+  margin-top: 6px;
+}
+.boost-status {
+  max-width: 100%;
+  color: var(--color-ink-3);
+  font-size: 12.5px;
+  line-height: 18px;
+  text-wrap: balance;
+}
+.boost-line {
+  max-width: 100%;
+  height: 18px;
+  overflow: hidden;
+  color: var(--color-ink-2);
+  font-size: 12.5px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* the APY as an odometer: one 18px window per digit, its strip parked on the digit at rest */
+.boost-apy {
+  display: inline-flex;
+  height: 18px;
+  vertical-align: top;
+}
+.boost-odo {
+  height: 18px;
+  overflow: hidden;
+}
+.boost-roll {
+  display: flex;
+  flex-direction: column;
+  transform: translateY(calc(var(--boost-n) * -18px));
+}
+.boost-roll > span {
+  flex: none;
+  height: 18px;
+}
+
+/* the Boost flow's recap tile (PlanFlowSummary tone "boost"): a faint charge in its top-left corner */
+.boost-summary {
+  background-image: radial-gradient(120% 100% at 0% 0%, var(--boost-row-wash), transparent 65%);
+}
+
+/* -- Unboost: the dialog's 40px done mark, powered down (a grey disc; the charge drains back round the rim) -- */
+.boost-off {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--color-surface-3);
+  box-shadow: inset 0 0 0 1px var(--color-line-strong);
+  color: var(--color-ink-3);
+}
+.boost-off > svg {
+  grid-area: 1 / 1;
+}
+.boost-off-ring {
+  width: 100%;
+  height: 100%;
+}
+.boost-off-ring circle {
+  fill: none;
+  stroke: var(--boost-hot);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 100 200;
+  stroke-dashoffset: 100;
+  opacity: 0;
+}
+.boost-off-bolt {
+  width: 18px;
+  height: 18px;
+}
+.boost-off > .boost-warm {
+  color: var(--boost-hot);
+  opacity: 0;
+}
+
+/* -- My plans: a boosted row. A short lime edge and a faint wash on the Plan cell, a bolt badge on the avatar.
+   `boost-row-flash` (one shot, as the Boost dialog closes over the row): a lime wave runs across the cells left to
+   right, the edge ignites from its centre and the badge pops and throws a ring. The last cell's wave is named
+   `boost-row-flash`; PlanRow clears the flash on that animationend, which fires with or without reduced motion. -- */
+.boost-row > td:first-child {
+  position: relative;
+  background-image: linear-gradient(90deg, var(--boost-row-wash), transparent 80%);
+}
+.boost-row > td:first-child::before {
+  content: "";
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  left: 0;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--boost-row-edge);
+  box-shadow: var(--boost-row-edge-glow);
+}
+.boost-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--color-lime);
+  box-shadow: 0 0 0 2px var(--boost-badge-ring), var(--boost-badge-glow);
+  color: var(--color-lime-ink);
+}
+.boost-badge > svg {
+  width: 9px;
+  height: 9px;
+}
+.boost-badge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid var(--boost-hot);
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+}
+/* the badge's cut-out follows the row's hover fill */
+.tbl tbody tr:hover .boost-badge {
+  --boost-badge-ring: var(--color-surface-3);
+}
+.boost-row-flash > td:not(.stick-r) {
+  position: relative;
+}
+.boost-row-flash > td::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--boost-row-flash);
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* running / waiting: the comet chases round the armed gauge; done: it fades as the charge takes over */
+  .boost-chase {
+    opacity: 0.8;
+    animation: boost-fade-in 400ms ease-out;
+  }
+  .boost-chase svg {
+    animation: boost-spin 1.6s linear infinite;
+  }
+  .boost-hero[data-status="error"] .boost-chase {
+    opacity: 0;
+  }
+  .boost-hero[data-status="done"] .boost-chase {
+    opacity: 0;
+    animation: boost-chase-out 160ms ease-in;
+  }
+  .boost-hero[data-status="done"] .boost-cluster {
+    animation: boost-strain 40ms linear 400ms 4;
+  }
+  .boost-hero[data-status="done"] .boost-gauge {
+    animation: boost-kick 460ms linear 560ms both;
+  }
+  .boost-hero[data-status="done"] .boost-ticks {
+    animation: boost-ticks 980ms linear both;
+  }
+  .boost-hero[data-status="done"] .boost-pre {
+    animation: boost-pre 700ms linear;
+  }
+  .boost-meter {
+    animation:
+      boost-meter 560ms cubic-bezier(0.11, 0, 0.5, 0) backwards,
+      boost-lit 700ms ease-out 620ms backwards;
+  }
+  .boost-tick {
+    animation: boost-tick 100ms ease-out backwards; /* delay set per tick */
+  }
+  .boost-glow {
+    animation:
+      boost-glow 1000ms linear both,
+      boost-breathe 3.2s ease-in-out 1000ms infinite alternate;
+  }
+  .boost-flare {
+    animation: boost-flare 380ms cubic-bezier(0.1, 0.7, 0.3, 1) 620ms;
+  }
+  .boost-wave {
+    animation: boost-wave 520ms cubic-bezier(0.1, 0.75, 0.25, 1) 620ms;
+  }
+  .boost-wave-2 {
+    animation-duration: 480ms;
+    animation-delay: 700ms;
+  }
+  .boost-orbit {
+    animation:
+      boost-orbit-in 500ms ease-out 1100ms forwards,
+      boost-spin 5.2s linear 1100ms infinite;
+  }
+  .boost-mote {
+    animation: boost-mote 260ms cubic-bezier(0.5, 0, 0.9, 0.5); /* rotate + delay set per mote */
+  }
+  .boost-spark {
+    animation: boost-spark 480ms cubic-bezier(0.15, 0.85, 0.3, 1); /* rotate, --boost-d + delay set per spark */
+  }
+  .boost-ember {
+    animation: boost-ember 680ms cubic-bezier(0.1, 0.7, 0.3, 1);
+  }
+  .boost-pre > .boost-warm {
+    animation: boost-warm 620ms linear both;
+  }
+  .boost-disc {
+    animation: boost-disc 380ms linear 620ms backwards;
+  }
+  .boost-disc > svg {
+    animation: boost-bolt 380ms cubic-bezier(0.34, 1.56, 0.64, 1) 660ms backwards;
+  }
+  .boost-flash {
+    animation: boost-flash 340ms ease-out 620ms;
+  }
+  .boost-title-out {
+    animation: boost-blown 110ms ease-out 620ms backwards;
+  }
+  .boost-plate {
+    animation: boost-slam 300ms linear 700ms backwards;
+  }
+  .boost-echo {
+    animation: boost-echo 400ms cubic-bezier(0.1, 0.7, 0.3, 1) 860ms;
+  }
+  .boost-sheen {
+    animation: boost-sheen 520ms cubic-bezier(0.4, 0, 0.2, 1) 1040ms;
+  }
+  .boost-line {
+    animation: boost-rise 320ms cubic-bezier(0.2, 0.8, 0.2, 1) 900ms backwards;
+  }
+  .boost-roll {
+    animation: boost-roll 480ms cubic-bezier(0.2, 0.7, 0.15, 1) 900ms backwards; /* duration set per digit */
+  }
+
+  .boost-off {
+    animation: boost-off-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  .boost-off-ring circle {
+    animation: boost-drain 760ms cubic-bezier(0.45, 0, 0.25, 1) 140ms backwards;
+  }
+  .boost-off > .boost-warm {
+    animation: boost-cool 700ms ease-out 140ms backwards;
+  }
+
+  .boost-row-flash > td::after {
+    animation: boost-row-wave 900ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  .boost-row-flash > td:nth-child(2)::after {
+    animation-delay: 45ms;
+  }
+  .boost-row-flash > td:nth-child(3)::after {
+    animation-delay: 90ms;
+  }
+  .boost-row-flash > td:nth-child(4)::after {
+    animation-delay: 135ms;
+  }
+  .boost-row-flash > td:nth-child(5)::after {
+    animation-delay: 180ms;
+  }
+  .boost-row-flash > td:nth-child(6)::after {
+    animation-delay: 225ms;
+  }
+  .boost-row-flash > td:nth-child(7)::after {
+    animation-delay: 270ms;
+  }
+  .boost-row-flash > td:last-child::after {
+    animation-name: boost-row-flash;
+  }
+  .boost-row-flash > td:first-child::before {
+    animation: boost-edge 640ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  .boost-row-flash .boost-badge {
+    animation: boost-badge 560ms cubic-bezier(0.34, 1.56, 0.64, 1) 120ms both;
+  }
+  .boost-row-flash .boost-badge::after {
+    animation: boost-badge-ring 700ms cubic-bezier(0.1, 0.7, 0.3, 1) 280ms;
+  }
+}
+
+/* Reduced motion: the charged end state arrives as a short cross-fade, and the row flash is a tint that fades in
+   place (no sweep, no pop), which still ends on `boost-row-flash`. */
+@media (prefers-reduced-motion: reduce) {
+  .boost-hero[data-status="done"] .boost-pre {
+    animation: boost-fade-out 240ms ease-out;
+  }
+  .boost-disc,
+  .boost-meter,
+  .boost-glow,
+  .boost-stamp,
+  .boost-line {
+    animation: boost-fade-in 240ms ease-out backwards;
+  }
+  .boost-row-flash > td::after {
+    animation: boost-row-wave 900ms ease-out;
+  }
+  .boost-row-flash > td:last-child::after {
+    animation-name: boost-row-flash;
+  }
+}
+
+@keyframes boost-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes boost-fade-out {
+  from {
+    opacity: 1;
+  }
+}
+@keyframes boost-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes boost-chase-out {
+  from {
+    opacity: 0.8;
+  }
+}
+@keyframes boost-strain {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  25% {
+    translate: 1.5px -1px;
+  }
+  50% {
+    translate: -1px 1.5px;
+  }
+  75% {
+    translate: -1.5px -0.5px;
+  }
+}
+/* 560 squat · 620 bottom · 767 kick · 1020 settled */
+@keyframes boost-kick {
+  0% {
+    transform: scale(1);
+    animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.4);
+  }
+  13% {
+    transform: scale(0.94);
+    animation-timing-function: cubic-bezier(0.2, 0.9, 0.3, 1);
+  }
+  45% {
+    transform: scale(1.09);
+    animation-timing-function: cubic-bezier(0.4, 0, 0.4, 1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+/* 0-560 hold · 560-620 squat · 620-980 fire outward and vanish */
+@keyframes boost-ticks {
+  0%,
+  57.1% {
+    opacity: 1;
+    transform: scale(1);
+    animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.4);
+  }
+  63.3% {
+    opacity: 1;
+    transform: scale(0.94);
+    animation-timing-function: cubic-bezier(0.15, 0.85, 0.3, 1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.4);
+  }
+}
+/* 0-560 hold · 560-620 squat · 620-700 gone under the flash */
+@keyframes boost-pre {
+  0%,
+  80% {
+    opacity: 1;
+    transform: scale(1);
+    animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.4);
+  }
+  88.6% {
+    opacity: 1;
+    transform: scale(0.86);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+@keyframes boost-meter {
+  from {
+    stroke-dashoffset: 100;
+  }
+}
+@keyframes boost-lit {
+  from {
+    opacity: 1;
+  }
+}
+@keyframes boost-tick {
+  from {
+    opacity: 0;
+  }
+}
+/* 0-560 build · 560-620 inhale · 680 flare · 1000 settled */
+@keyframes boost-glow {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+    animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.5);
+  }
+  56% {
+    opacity: 0.5;
+    transform: scale(0.85);
+    animation-timing-function: ease-in;
+  }
+  62% {
+    opacity: 0.42;
+    transform: scale(0.8);
+    animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  68% {
+    opacity: 1;
+    transform: scale(1.12);
+    animation-timing-function: cubic-bezier(0.3, 0, 0.3, 1);
+  }
+  100% {
+    opacity: 0.75;
+    transform: scale(1);
+  }
+}
+@keyframes boost-breathe {
+  from {
+    opacity: 0.75;
+    transform: scale(1);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1.07);
+  }
+}
+@keyframes boost-flare {
+  0% {
+    opacity: 0;
+    transform: scaleX(0.1);
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scaleX(1);
+  }
+}
+@keyframes boost-wave {
+  from {
+    opacity: var(--boost-o, 0.95);
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 0;
+    transform: scale(var(--boost-s));
+  }
+}
+@keyframes boost-orbit-in {
+  to {
+    opacity: 1;
+  }
+}
+@keyframes boost-mote {
+  0% {
+    opacity: 0;
+    transform: translateY(-47px) scale(0.6);
+  }
+  35% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-31px) scale(1);
+  }
+}
+@keyframes boost-spark {
+  0% {
+    opacity: 0;
+    transform: translateY(-20px) scaleY(0.4);
+  }
+  12% {
+    opacity: 1;
+    transform: translateY(-25px) scaleY(1.6);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(calc(var(--boost-d) * -1)) scaleY(0.3);
+  }
+}
+@keyframes boost-ember {
+  0% {
+    opacity: 0;
+    transform: translateY(-24px) scale(1);
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(calc(var(--boost-d) * -1)) scale(0.4);
+  }
+}
+/* the filament warming: uneven, then steady just before it lets go */
+@keyframes boost-warm {
+  0% {
+    opacity: 0;
+  }
+  24% {
+    opacity: 0.3;
+  }
+  32% {
+    opacity: 0.12;
+  }
+  52% {
+    opacity: 0.55;
+  }
+  58% {
+    opacity: 0.3;
+  }
+  78% {
+    opacity: 0.85;
+  }
+  84% {
+    opacity: 0.6;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes boost-disc {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+    animation-timing-function: cubic-bezier(0.2, 0.9, 0.3, 1);
+  }
+  10% {
+    opacity: 1;
+  }
+  45% {
+    transform: scale(1.14);
+    animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1);
+  }
+  75% {
+    transform: scale(0.97);
+    animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes boost-bolt {
+  from {
+    opacity: 0;
+    transform: scale(0.3) rotate(-18deg);
+  }
+}
+@keyframes boost-flash {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  16% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.9);
+  }
+}
+@keyframes boost-blown {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.12);
+  }
+}
+/* ease-in to the impact frame, a hair past it, then settle */
+@keyframes boost-slam {
+  0% {
+    opacity: 0;
+    transform: skewX(-10deg) translateY(-6px) scale(1.7);
+    animation-timing-function: cubic-bezier(0.55, 0, 1, 0.45);
+  }
+  55% {
+    opacity: 1;
+    transform: skewX(-10deg) translateY(1px) scale(0.94);
+    animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  100% {
+    opacity: 1;
+    transform: skewX(-10deg) translateY(0) scale(1);
+  }
+}
+@keyframes boost-echo {
+  from {
+    opacity: 0.8;
+    transform: skewX(-10deg) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: skewX(-10deg) scale(1.28, 1.9);
+  }
+}
+@keyframes boost-sheen {
+  from {
+    opacity: 1;
+    transform: translateX(-110%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(240%);
+  }
+}
+@keyframes boost-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes boost-roll {
+  from {
+    transform: translateY(0);
+  }
+}
+@keyframes boost-off-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+}
+@keyframes boost-drain {
+  0% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 100;
+  }
+}
+@keyframes boost-cool {
+  from {
+    opacity: 1;
+  }
+}
+@keyframes boost-row-wave {
+  20% {
+    opacity: 1;
+  }
+}
+@keyframes boost-row-flash {
+  20% {
+    opacity: 1;
+  }
+}
+@keyframes boost-edge {
+  from {
+    opacity: 0;
+    transform: scaleY(0);
+  }
+  40% {
+    opacity: 1;
+  }
+}
+@keyframes boost-badge {
+  from {
+    transform: scale(0) rotate(-40deg);
+  }
+}
+@keyframes boost-badge-ring {
+  from {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.3);
+  }
+}
+/* ---------- end Boost ---------- */

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { parseEther, parseUnits } from "viem";
-import type { Stock } from "@/hooks/useProtocol";
-import { StockAvatar, Icon, Tip } from "@/components/ui";
+import { TOP_STOCKS, type Stock } from "@/hooks/useProtocol";
+import { useStockMarket, fmtPrice, fmtCap, fmtChange } from "@/hooks/useStockMarket";
+import { StockAvatar, Icon, Tip, Modal } from "@/components/ui";
 import { fmtUsd } from "@/lib/format";
 import { tickerName } from "@/lib/tickers";
 import { BOOST, VAULT_META, type VaultKind } from "@/lib/config";
@@ -14,13 +15,31 @@ import type { Order, Pay } from "./useCreatePlan";
  * else that picks a stock). Nothing here knows about the plan model: every piece is driven by props.
  */
 
-/** One field box of the card: label top-left, whatever the field needs beneath, an optional error line. */
-export function Box({ label, tip, children, className = "", error }: { label: string; tip?: string; children: ReactNode; className?: string; error?: string }) {
+/**
+ * One field box of the card: label top-left (with an optional ⓘ beside it), an optional `aside` at the top right
+ * (a mode switch, an ⓘ that belongs to a right-hand control), whatever the field needs beneath, an optional error line.
+ */
+export function Box({
+  label,
+  tip,
+  aside,
+  children,
+  className = "",
+  error,
+}: {
+  label: string;
+  tip?: string;
+  aside?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  error?: string;
+}) {
   return (
     <div className={`rounded-xl border border-line bg-surface-3 px-3.5 py-3.5 transition-colors focus-within:border-line-strong sm:px-4 ${className}`}>
-      <div className="mb-2 flex items-center gap-1 text-[12.5px] text-ink-3">
+      <div className="mb-2 flex min-h-[18px] items-center gap-1 text-[12.5px] text-ink-3">
         {label}
         {tip && <Tip text={tip} />}
+        {aside && <span className="ml-auto flex items-center">{aside}</span>}
       </div>
       {children}
       {error && <div className="mt-2 text-[12.5px] text-bad">{error}</div>}
@@ -79,9 +98,22 @@ export function Coin({ unit }: { unit: Pay }) {
 /**
  * Trigger + menu; closes on outside click, Escape or `close()` from the content. The default trigger is a
  * token pill hanging its menu from the right edge; `plain` is bare text on the box's own background, as
- * tall as the amount line it sits beside, with the menu hanging from the left.
+ * tall as the amount line it sits beside, with the menu hanging from the left. `align` overrides the side
+ * the menu hangs from (a plain trigger near the right edge must hang its menu from the right).
  */
-export function Dropdown({ trigger, children, width = "w-72", plain = false }: { trigger: ReactNode; children: (close: () => void) => ReactNode; width?: string; plain?: boolean }) {
+export function Dropdown({
+  trigger,
+  children,
+  width = "w-72",
+  plain = false,
+  align,
+}: {
+  trigger: ReactNode;
+  children: (close: () => void) => ReactNode;
+  width?: string;
+  plain?: boolean;
+  align?: "left" | "right";
+}) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -114,7 +146,7 @@ export function Dropdown({ trigger, children, width = "w-72", plain = false }: {
         <Icon name="chevron" size={14} className={`text-ink-3 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
-        <div className={`menu absolute top-[calc(100%+6px)] max-h-80 overflow-y-auto ${plain ? "left-0" : "right-0"} ${width}`} role="listbox">
+        <div className={`menu absolute top-[calc(100%+6px)] max-h-80 overflow-y-auto ${(align ?? (plain ? "left" : "right")) === "left" ? "left-0" : "right-0"} ${width}`} role="listbox">
           {children(() => setOpen(false))}
         </div>
       )}
@@ -177,6 +209,156 @@ export function StockPicker({ stocks, value, onSelect }: { stocks: Stock[]; valu
         </>
       )}
     </Dropdown>
+  );
+}
+
+/**
+ * The stock picker as a dialog (/app/create/2's "On" row opens it): a search box, the largest stocks as pills, then
+ * every approved stock as a row with its ticker, name, price, 24 h change and market cap. Ordered by live on-chain
+ * market cap (/api/stock-market); until that answers — or if it is down — the snapshot order `stocks` arrives in
+ * stands and the numbers show dashes, so picking never waits on prices. Enter picks the first match.
+ */
+export function StockPickerDialog({
+  open,
+  onClose,
+  stocks,
+  value,
+  onSelect,
+  pillCount = TOP_STOCKS,
+}: {
+  open: boolean;
+  onClose: () => void;
+  stocks: Stock[];
+  value: string;
+  onSelect: (address: string) => void;
+  pillCount?: number;
+}) {
+  const { quoteOf, ready } = useStockMarket();
+  const [query, setQuery] = useState("");
+  const input = useRef<HTMLInputElement>(null);
+
+  // Fresh search every time it opens; focus it only with a mouse / trackpad (on a phone the keyboard would cover the list).
+  useEffect(() => {
+    if (!open) return;
+    setQuery("");
+    if (window.matchMedia("(pointer: fine)").matches) requestAnimationFrame(() => input.current?.focus());
+  }, [open]);
+
+  const ranked = useMemo(() => {
+    const cap = (s: Stock) => quoteOf(s.symbol)?.marketCap ?? -1;
+    return stocks
+      .map((s, i) => ({ s, i }))
+      .sort((a, b) => cap(b.s) - cap(a.s) || a.i - b.i)
+      .map((x) => x.s);
+  }, [stocks, quoteOf]);
+  const nameOf = (s: Stock) => {
+    const mapped = tickerName(s.symbol);
+    return mapped !== s.symbol ? mapped : (quoteOf(s.symbol)?.name ?? s.symbol);
+  };
+  const pills = (ready ? ranked.filter((s) => (quoteOf(s.symbol)?.marketCap ?? 0) > 0) : ranked).slice(0, pillCount);
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? ranked
+        .filter((s) => s.symbol.toLowerCase().includes(q) || nameOf(s).toLowerCase().includes(q))
+        // An exact ticker ("F", "ON", "NOW") beats every name that merely contains the letters.
+        .sort((a, b) => Number(b.symbol.toLowerCase() === q) - Number(a.symbol.toLowerCase() === q))
+    : ranked;
+  const pick = (address: string) => {
+    onSelect(address);
+    onClose();
+  };
+  const cols = "grid-cols-[minmax(0,1fr)_84px_60px] sm:grid-cols-[minmax(0,1fr)_92px_68px]";
+
+  return (
+    <Modal open={open} onClose={onClose} title="Select a stock" width="max-w-[440px]">
+      <label className="relative -mt-1 block">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="pointer-events-none absolute top-1/2 left-3 h-[15px] w-[15px] -translate-y-1/2 text-ink-3" aria-hidden>
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+        </svg>
+        <input
+          ref={input}
+          className="input h-11 pl-9"
+          placeholder="Search name or ticker"
+          aria-label="Search stocks"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && filtered[0]) pick(filtered[0].address);
+          }}
+        />
+      </label>
+
+      {!q && pills.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5" aria-label="Largest by market cap">
+          {pills.map((s) => {
+            const active = s.address === value;
+            return (
+              <button
+                key={s.address}
+                type="button"
+                onClick={() => pick(s.address)}
+                className={`inline-flex h-7 items-center gap-1.5 rounded-full border pr-2.5 pl-1 text-[12px] font-medium transition-colors ${
+                  active ? "border-lime bg-lime/10 text-ink" : "border-line text-ink-2 hover:border-line-strong hover:text-ink"
+                }`}
+              >
+                <StockAvatar symbol={s.symbol} size={20} />
+                {s.symbol}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className={`mt-4 grid ${cols} gap-3 px-2 text-[10.5px] font-medium tracking-[0.08em] text-ink-3 uppercase`} aria-hidden>
+        <span>Stock</span>
+        <span className="text-right">Price · 24h</span>
+        <span className="text-right">Mkt cap</span>
+      </div>
+      {/* Fixed height, not max-height: the dialog must not jump around while the results shrink under the search. */}
+      <div role="listbox" aria-label="Stocks" className="-mx-5 mt-2 h-[min(52vh,440px)] overflow-y-auto border-t border-line px-3 py-1.5">
+        {filtered.length === 0 ? (
+          <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">No stocks match &ldquo;{query}&rdquo;.</div>
+        ) : (
+          filtered.map((s) => {
+            const quote = quoteOf(s.symbol);
+            const selected = s.address === value;
+            const change = quote?.change24h;
+            return (
+              <button
+                key={s.address}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onClick={() => pick(s.address)}
+                className={`grid w-full ${cols} items-center gap-3 rounded-lg px-2 py-2.5 text-left transition-colors hover:bg-surface-3 ${selected ? "bg-surface-3" : ""}`}
+              >
+                <span className="flex min-w-0 items-center gap-3">
+                  <StockAvatar symbol={s.symbol} size={32} />
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-1.5 text-[14px] font-semibold text-ink">
+                      {s.symbol}
+                      {selected && <Icon name="check" size={13} className="text-lime-text" />}
+                    </span>
+                    <span className="block truncate text-[12px] text-ink-3">{nameOf(s)}</span>
+                  </span>
+                </span>
+                <span className="text-right">
+                  <span className="num block text-[13px] text-ink">{fmtPrice(quote?.price)}</span>
+                  <span className={`num block text-[11px] ${change === undefined || change === null ? "text-ink-3" : change >= 0 ? "text-good" : "text-bad"}`}>
+                    {fmtChange(change)}
+                  </span>
+                </span>
+                <span className="num text-right text-[13px] text-ink-2">{fmtCap(quote?.marketCap)}</span>
+              </button>
+            );
+          })
+        )}
+      </div>
+      <p className="mt-3 text-[11px] leading-normal text-ink-3">
+        {ready ? "Prices and on-chain market caps via CoinGecko, refreshed every minute. Plans buy at the on-chain price when each buy runs." : "Loading prices…"}
+      </p>
+    </Modal>
   );
 }
 

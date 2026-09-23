@@ -31,12 +31,14 @@
   "include": [
     "**/*.ts",
     "**/*.tsx",
+    ".next-buildcheck/types/**/*.ts",
     ".next-flagtest/types/**/*.ts",
+    ".next-latency/types/**/*.ts",
     ".next-test-vault/types/**/*.ts",
+    ".next-wallet/types/**/*.ts",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next-buildcheck/types/**/*.ts",
-    ".next-latency/types/**/*.ts"
+    ".next-nonce/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
