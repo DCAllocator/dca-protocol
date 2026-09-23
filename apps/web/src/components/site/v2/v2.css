@@ -1,0 +1,84 @@
+/* /v2 landing helpers. Scoped by class prefix (v2-*) so nothing here touches the app or the current landing. */
+
+/* ticker tape: two copies of the row, translated by exactly one row width */
+@keyframes v2-tape {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.v2-tape {
+  display: flex;
+  width: max-content;
+  animation: v2-tape var(--v2-tape-s, 60s) linear infinite;
+}
+.v2-tape-mask {
+  mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
+}
+.v2-tape-wrap:hover .v2-tape {
+  animation-play-state: paused;
+}
+
+/* live dot */
+@keyframes v2-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgb(204 255 0 / 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgb(204 255 0 / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(204 255 0 / 0);
+  }
+}
+.v2-live {
+  animation: v2-pulse 2s ease-out infinite;
+}
+
+/* burn glow behind the counter */
+.v2-glow {
+  background: radial-gradient(60% 60% at 50% 40%, rgb(204 255 0 / 0.16), transparent 70%);
+}
+
+/* hairline grid, top-left biased (the current landing's is top-right) */
+.v2-grid {
+  background-image: linear-gradient(to right, var(--color-line) 1px, transparent 1px), linear-gradient(to bottom, var(--color-line) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse at top left, black 10%, transparent 65%);
+}
+
+/* the big number: mono, tight, no widows */
+.v2-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* flow arrows between the three machine stages */
+@keyframes v2-flow {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 24px 0;
+  }
+}
+.v2-flow {
+  background-image: linear-gradient(to right, var(--color-lime-text) 0 40%, transparent 40% 100%);
+  background-size: 24px 2px;
+  background-repeat: repeat-x;
+  background-position: 0 0;
+  height: 2px;
+  opacity: 0.7;
+  animation: v2-flow 1.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2-tape,
+  .v2-live,
+  .v2-flow {
+    animation: none;
+  }
+}
