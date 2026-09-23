@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
+import { Splash } from "@/components/Splash";
+import { SPLASH_BOOTSTRAP } from "@/lib/splash";
 import { THEME_BOOTSTRAP } from "@/lib/theme-bootstrap";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
@@ -14,13 +16,15 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    // data-theme is written by the bootstrap script before paint (see lib/theme-bootstrap.ts), so the server's
-    // <html> and the hydrated one legitimately differ by that one attribute.
+    // data-theme and data-splash are written by the bootstrap scripts before paint (lib/theme-bootstrap.ts,
+    // lib/splash.ts), so the server's <html> and the hydrated one legitimately differ by those attributes.
     <html lang="en" data-scroll-behavior="smooth" className={inter.variable} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
+        <script dangerouslySetInnerHTML={{ __html: SPLASH_BOOTSTRAP }} />
       </head>
       <body>
+        <Splash />
         <Providers>{children}</Providers>
       </body>
     </html>

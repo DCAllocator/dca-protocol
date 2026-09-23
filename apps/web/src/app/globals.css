@@ -444,6 +444,304 @@ body {
   }
 }
 
+/* ---------- first-load splash (components/Splash.tsx) ----------
+   Hidden unless the <head> bootstrap (lib/splash.ts) sets <html data-splash>. The badge is the logo drawn
+   live: a lime disc (512-unit viewbox, --u per unit) whose coins pop in and fan out, then tick one slot right
+   on a clock, a fresh coin sliding in behind as the front one leaves through the rim, while a ticker rolls
+   under it in step. Only transform and opacity move, so it all runs on the compositor while the page parses
+   and hydrates. data-splash="out" is the exit: the coins shoot forward, the badge swells as an iris opens
+   from its centre onto the page, which settles back from a slight zoom. */
+@property --splash-r {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+.splash {
+  display: none;
+}
+html[data-splash] body {
+  overflow-x: clip;
+}
+html[data-splash] .splash {
+  --tick: 900ms;
+  --tick-delay: 1200ms;
+  --tick-ease: cubic-bezier(0.7, 0, 0.2, 1);
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: var(--color-surface-0);
+}
+.splash-stage {
+  position: relative;
+}
+.splash-glow {
+  position: absolute;
+  inset: -110%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgb(204 255 0 / 0.13), rgb(204 255 0 / 0.04) 55%, transparent);
+  animation: splash-glow 1.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.splash-badge {
+  --b: clamp(104px, 24vmin, 136px);
+  --u: calc(var(--b) / 512);
+  position: relative;
+  width: var(--b);
+  height: var(--b);
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--color-lime);
+  animation:
+    splash-pop 620ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    splash-thump var(--tick) var(--tick-delay) infinite;
+}
+.splash-coins,
+.splash-strip {
+  position: absolute;
+  inset: 0;
+}
+.splash-strip {
+  animation: splash-tick var(--tick) var(--tick-ease) var(--tick-delay) infinite;
+}
+/* coin k sits at slot x = 96 + 80k (slot 0 waits behind the rim); a 200-unit disc in a 16-unit lime ring */
+.splash-coin {
+  --k: 0;
+  position: absolute;
+  top: calc(var(--u) * 140);
+  left: calc(var(--u) * (80 * var(--k) - 20));
+  width: calc(var(--u) * 232);
+  height: calc(var(--u) * 232);
+  border: calc(var(--u) * 16) solid var(--color-lime);
+  border-radius: 50%;
+  background: var(--color-lime-ink) padding-box;
+  animation: splash-fan 1s cubic-bezier(0.34, 1.4, 0.64, 1) 180ms both;
+}
+.splash-coin:nth-child(1) {
+  opacity: 0;
+  animation: splash-enter var(--tick) var(--tick-ease) var(--tick-delay) infinite backwards;
+}
+.splash-coin:nth-child(2) {
+  --k: 1;
+}
+.splash-coin:nth-child(3) {
+  --k: 2;
+}
+.splash-coin:nth-child(4) {
+  --k: 3;
+  animation:
+    splash-fan 1s cubic-bezier(0.34, 1.4, 0.64, 1) 180ms both,
+    splash-leave var(--tick) var(--tick-delay) infinite;
+}
+.splash-meta {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  margin-top: 28px;
+  translate: -50% 0;
+  animation: splash-rise 700ms cubic-bezier(0.2, 0.8, 0.2, 1) 420ms both;
+}
+.splash-ticker {
+  height: 16px;
+  overflow: hidden;
+  font: 500 11.5px/16px var(--font-mono);
+  letter-spacing: 0.18em;
+  color: var(--color-ink-2);
+}
+.splash-tape {
+  animation: splash-roll calc(var(--tick) * 6) var(--tick-ease) var(--tick-delay) infinite;
+}
+.splash-tape li {
+  height: 16px;
+  padding-left: 0.18em; /* balances the trailing letter-spacing so the ticker centres */
+  text-align: center;
+}
+.splash-track {
+  width: 72px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--color-line);
+}
+/* a transition rather than an animation, so the exit can finish it from wherever it has got to */
+.splash-bar {
+  height: 100%;
+  background: var(--color-lime-text);
+  transform: scaleX(0.9);
+  transform-origin: left;
+  transition: transform 3.2s cubic-bezier(0.1, 0.6, 0.2, 1) 500ms;
+}
+@starting-style {
+  .splash-bar {
+    transform: scaleX(0);
+  }
+}
+
+html[data-splash="out"] .splash {
+  pointer-events: none;
+  -webkit-mask-image: radial-gradient(circle, transparent var(--splash-r), #000 calc(var(--splash-r) + 1px));
+  mask-image: radial-gradient(circle, transparent var(--splash-r), #000 calc(var(--splash-r) + 1px));
+  animation: splash-x-iris 720ms cubic-bezier(0.65, 0, 0.35, 1) 200ms both;
+}
+html[data-splash="out"] .splash-coins {
+  animation: splash-x-coins 300ms cubic-bezier(0.6, 0, 0.9, 0.4) forwards;
+}
+html[data-splash="out"] .splash-badge {
+  animation: splash-x-badge 700ms cubic-bezier(0.5, 0, 0.2, 1) 80ms forwards;
+}
+html[data-splash="out"] .splash-bar {
+  transform: scaleX(1);
+  transition: transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+html[data-splash="out"] .splash-meta,
+html[data-splash="out"] .splash-glow {
+  animation: splash-x-fade 220ms ease-out 120ms forwards;
+}
+html[data-splash="out"] body > :not(.splash) {
+  transform-origin: 50% 50vh;
+  animation: splash-x-page 1s cubic-bezier(0.2, 0.7, 0.2, 1) 200ms backwards;
+}
+
+@keyframes splash-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+}
+@keyframes splash-glow {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+@keyframes splash-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+/* the stacked coins pop as one at slot 1, then deal out to slots 1-3 */
+@keyframes splash-fan {
+  0% {
+    transform: translateX(calc(var(--u) * (1 - var(--k)) * 80)) scale(0);
+  }
+  35% {
+    transform: translateX(calc(var(--u) * (1 - var(--k)) * 80)) scale(1);
+    animation-timing-function: cubic-bezier(0.2, 0.9, 0.1, 1);
+  }
+  100% {
+    transform: translateX(0) scale(1);
+  }
+}
+/* one tick: the row slides a slot right, then holds. Every coin is identical, so the snap back at the loop
+   is invisible: the new coin fades up from behind, the front one fades out past the rim. */
+@keyframes splash-tick {
+  0% {
+    transform: translateX(0);
+  }
+  55%,
+  100% {
+    transform: translateX(calc(var(--u) * 80));
+  }
+}
+@keyframes splash-enter {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  55%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes splash-leave {
+  0% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+/* the badge gives a little as each tick lands */
+@keyframes splash-thump {
+  0%,
+  32% {
+    scale: 1;
+  }
+  46% {
+    scale: 0.965;
+  }
+  60%,
+  100% {
+    scale: 1;
+  }
+}
+/* six tickers, one per tick; the tape repeats its first ticker so the loop restarts seamlessly */
+@keyframes splash-roll {
+  0% {
+    transform: translateY(0);
+  }
+  9.17%,
+  16.67% {
+    transform: translateY(-16px);
+  }
+  25.83%,
+  33.33% {
+    transform: translateY(-32px);
+  }
+  42.5%,
+  50% {
+    transform: translateY(-48px);
+  }
+  59.17%,
+  66.67% {
+    transform: translateY(-64px);
+  }
+  75.83%,
+  83.33% {
+    transform: translateY(-80px);
+  }
+  92.5%,
+  100% {
+    transform: translateY(-96px);
+  }
+}
+@keyframes splash-x-iris {
+  75% {
+    opacity: 1;
+  }
+  to {
+    --splash-r: 80vmax;
+    opacity: 0;
+  }
+}
+/* the coins launch out through the rim; the badge swells while the iris hollows it into a thinning ring */
+@keyframes splash-x-coins {
+  to {
+    transform: translateX(calc(var(--u) * 480));
+  }
+}
+@keyframes splash-x-badge {
+  to {
+    transform: scale(2.2);
+  }
+}
+@keyframes splash-x-fade {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes splash-x-page {
+  from {
+    transform: scale(1.04);
+  }
+}
+
 /* landing helpers */
 @utility container-x {
   @apply mx-auto w-full max-w-6xl px-6;
