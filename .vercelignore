@@ -1,0 +1,20 @@
+# `vercel deploy` from the repo root (scripts/share.sh); the Vercel project's root directory is apps/web. Upload only
+# what installing the pnpm workspace and building the web app needs.
+.git
+.claude
+.vercel
+node_modules
+**/node_modules
+contracts
+audit
+tasks
+research
+*.patch
+apps/web/.next
+apps/web/.next-*
+apps/web/tsconfig.tsbuildinfo
+apps/scheduler/dist
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.local.example

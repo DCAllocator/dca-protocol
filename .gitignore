@@ -28,3 +28,6 @@ contracts/deployments/31337.json
 contracts/cache/*/31337/
 .claude/launch.json
 apps/scheduler/dist/
+
+# Vercel CLI link (vercel link)
+.vercel
