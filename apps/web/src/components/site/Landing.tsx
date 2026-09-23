@@ -3,26 +3,14 @@ import { Wordmark } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { PerkThreshold } from "@/components/site/Live";
 import { BoostTeaser, LaunchAppLink, PlansPreview, StockGrid } from "@/components/site/LandingLive";
-import { BUY_DCA_URL, DOCS_PATH, PRODUCTION_VAULT_KINDS, VAULT_META } from "@/lib/config";
+import { BuyDcaLink as BuyDca } from "@/components/BuyDcaLink";
+import { DOCS_PATH, PRODUCTION_VAULT_KINDS, VAULT_META } from "@/lib/config";
 
 /*
  * Token-first landing page. The old product-first page lives on at /legacy (components/site/Sections.tsx).
  * Copy rules agreed for this page: no fee percentages, no buyback amounts, no buyback timing.
+ * "Buy $DCA" (BUY_DCA_URL, off-site when https) is the shared components/BuyDcaLink.tsx.
  */
-
-const BUY_EXTERNAL = /^https?:\/\//.test(BUY_DCA_URL);
-
-function BuyDca({ className = "btn-primary" }: { className?: string }) {
-  return BUY_EXTERNAL ? (
-    <a href={BUY_DCA_URL} target="_blank" rel="noreferrer" className={className}>
-      Buy $DCA
-    </a>
-  ) : (
-    <Link href={BUY_DCA_URL} className={className}>
-      Buy $DCA
-    </Link>
-  );
-}
 
 export function LandingNav() {
   const links: [string, string][] = [
@@ -249,7 +237,7 @@ export function Protocol() {
     {
       n: "01",
       t: "Pick a stock and a rhythm",
-      d: "NVDA, AAPL, TSLA, SPY, GLD and many more. Daily, weekly or monthly buys, and how much to spend each time (from $10).",
+      d: "NVDA, AAPL, TSLA, SPY, GLD and many more. Hourly, daily, weekly or monthly buys, and how much to spend each time (from $10).",
     },
     {
       n: "02",
@@ -263,6 +251,7 @@ export function Protocol() {
     },
   ];
   const vaults = {
+    hourly: { when: "every hour", who: "The finest averaging there is: a small buy every hour, around the clock." },
     daily: { when: "every day", who: "For people who never want to think about entry price again." },
     weekly: { when: "every Monday", who: "The classic pay-day cadence. One buy a week." },
     monthly: { when: "every 30 days", who: "Bigger, rarer buys at the lowest fee." },
@@ -295,6 +284,7 @@ export function Protocol() {
                   <div className="text-[16px] font-semibold text-ink">
                     {VAULT_META[k].label}
                     {k === "weekly" && <span className="chip-lime ml-2 align-[2px]">popular</span>}
+                    {k === "hourly" && <span className="chip ml-2 align-[2px]">fastest</span>}
                   </div>
                   <div className="text-[11.5px] text-ink-3">{vaults[k].when}</div>
                 </div>

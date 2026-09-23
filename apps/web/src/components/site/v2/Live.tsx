@@ -251,7 +251,7 @@ export function FeeReceiverCard() {
         <div className="grid grid-cols-1 items-stretch gap-2 px-4 pt-4 sm:grid-cols-[1fr_16px_1fr_16px_1fr] sm:gap-0">
           <div className={`${node} border-line bg-surface-2`}>
             <div className="text-[11px] font-semibold tracking-[0.06em] text-ink uppercase">Plans buy stock</div>
-            <div className="mt-0.5 text-[11px] leading-snug text-ink-3">one pooled swap per stock · 00:00 UTC</div>
+            <div className="mt-0.5 text-[11px] leading-snug text-ink-3">one pooled swap per stock · every epoch</div>
           </div>
           <div className="hidden items-center sm:flex">
             <span className="v2-flow w-full" />
@@ -348,7 +348,7 @@ export function ConstantsStrip() {
         [pct(V2.maxFeeBps), "max fee, in bytecode", "MAX_FEE_BPS = 90"],
         ["1B", "$DCA supply, fixed, no mint", "1,000,000,000 · Pons"],
         ["0", "proxies or upgrade paths", "contracts/src"],
-        ["3", "rhythms: daily, weekly, monthly", "PlanVault"],
+        ["4", "rhythms: hourly, daily, weekly, monthly", "PlanVault"],
         [stocks, "Stock Tokens listed", m.stocks > 0 ? "StockRegistry, live" : "CoinGecko snapshot"],
       ];
   return (
@@ -486,7 +486,7 @@ export function LatestBurns() {
   );
 }
 
-/** FeeReceiver · burn address · $DCA · the three vaults. */
+/** FeeReceiver · burn address · $DCA · the four vaults. */
 export function AddressRow({ compact = false }: { compact?: boolean }) {
   const m = useMachine();
   const d = m.dir;
@@ -494,6 +494,7 @@ export function AddressRow({ compact = false }: { compact?: boolean }) {
     ? [
         ["$DCA", d && !isZero(d.dca) ? d.dca : undefined],
         ["FeeReceiver", m.fr.address],
+        ["Hourly", d?.hourly],
         ["Daily", d?.daily],
         ["Weekly", d?.weekly],
         ["Monthly", d?.monthly],
@@ -562,7 +563,7 @@ export function PlanSummaryLine() {
 export function VaultTable() {
   const m = useMachine();
   const t = usePerkThresholds();
-  const when = { daily: "00:00 UTC, every day", weekly: "Monday 00:00 UTC", monthly: "every 30 days" } as const;
+  const when = { hourly: "every hour, on the hour", daily: "00:00 UTC, every day", weekly: "Monday 00:00 UTC", monthly: "every 30 days" } as const;
   const any = m.byKind.weekly ?? m.byKind.daily;
   const withdraw = any?.fees?.withdrawFeeBps ?? 25;
   const claim = any?.fees?.claimFeeBps ?? 25;
@@ -582,7 +583,7 @@ export function VaultTable() {
             </tr>
           </thead>
           <tbody>
-            {(["daily", "weekly", "monthly"] as const).map((k) => {
+            {(["hourly", "daily", "weekly", "monthly"] as const).map((k) => {
               const bps = m.byKind[k]?.fees?.purchaseFeeBps ?? VAULT_META[k].defaultFeeBps;
               return (
                 <tr key={k}>

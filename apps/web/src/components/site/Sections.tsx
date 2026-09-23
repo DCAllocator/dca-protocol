@@ -41,7 +41,7 @@ export function HowItWorks() {
     {
       n: "01",
       t: "Pick a stock and a rhythm",
-      d: "NVDA, AAPL, TSLA, SPY, QQQ and more. Choose daily, weekly or monthly buys and how much to spend each time.",
+      d: "NVDA, AAPL, TSLA, SPY, QQQ and more. Choose hourly, daily, weekly or monthly buys and how much to spend each time.",
     },
     {
       n: "02",
@@ -73,6 +73,7 @@ export function HowItWorks() {
 
 export function Vaults() {
   const copy = {
+    hourly: { tag: "Fastest", who: "The finest averaging there is: a small buy every hour, around the clock." },
     daily: { tag: "Smoothest", who: "For people who never want to think about entry price again." },
     weekly: { tag: "Most popular", who: "The classic pay-day cadence. One buy a week, fee in the middle." },
     monthly: { tag: "Lowest fee", who: "Bigger, rarer buys at the lowest fee we offer." },
@@ -82,8 +83,8 @@ export function Vaults() {
       <div className="container-x py-20">
         <p className="eyebrow">Vaults</p>
         <h2 className="h-section mt-3 max-w-xl">Choose how often. We handle the rest.</h2>
-        <p className="lede mt-3 max-w-2xl">Three vaults, one job each. The fee is taken per buy — nothing on the way in, and never a surprise.</p>
-        <div className="mt-10 grid gap-4 md:grid-cols-3">
+        <p className="lede mt-3 max-w-2xl">Four vaults, one job each. The fee is taken per buy — nothing on the way in, and never a surprise.</p>
+        <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {PRODUCTION_VAULT_KINDS.map((k) => (
             <div key={k} className={`rounded-lg border p-6 ${k === "weekly" ? "border-lime bg-surface-3" : "border-line bg-surface-3"}`}>
               <div className="flex items-center justify-between">
@@ -159,7 +160,7 @@ export function Perks() {
               </span>
               <span className="text-[16px] font-semibold text-ink">Half the purchase fee</span>
             </div>
-            <p className="mt-2 text-[14px] text-ink-2">0.75% becomes 0.37%, 0.50% becomes 0.25%, 0.25% becomes 0.12% — on every buy, in every vault.</p>
+            <p className="mt-2 text-[14px] text-ink-2">0.90% becomes 0.45%, 0.75% becomes 0.37%, 0.50% becomes 0.25%, 0.25% becomes 0.12% — on every buy, in every vault.</p>
           </div>
         </div>
       </div>
@@ -170,8 +171,8 @@ export function Perks() {
 export function Faq() {
   const qa = [
     ["What am I actually buying?", "Robinhood Stock Tokens: on-chain tokens that track the price of a listed stock. They give you economic exposure to the stock, not shares or shareholder rights."],
-    ["When do purchases happen?", "Daily plans buy at 00:00 UTC every day, weekly plans on Monday 00:00 UTC, monthly plans every 30 days. If a buy is ever missed it is skipped — you are never charged twice."],
-    ["What does it cost?", "One fee per buy: 0.75% daily, 0.50% weekly, 0.25% monthly. Withdrawing idle funds or claiming stock costs 0.25%. Depositing is free. Every fee is capped at 0.90% in the contract."],
+    ["When do purchases happen?", "Hourly plans buy every hour on the hour (UTC), around the clock, daily plans at 00:00 UTC every day, weekly plans on Monday 00:00 UTC, monthly plans every 30 days. If a buy is ever missed it is skipped — you are never charged twice."],
+    ["What does it cost?", "One fee per buy: 0.90% hourly, 0.75% daily, 0.50% weekly, 0.25% monthly. Withdrawing idle funds or claiming stock costs 0.25%. Depositing is free. Every fee is capped at 0.90% in the contract."],
     ["Can I stop or get my money back?", "Yes. Pause a plan, change the amount, or withdraw idle USDG at any time. Stock you have already bought is yours to claim."],
     ["Can I pay with ETH?", "Yes. ETH is converted to USDG the moment you deposit it, with a 0.5% price tolerance, so the plan always holds USDG. Withdrawals are paid in USDG."],
     ["Is there a minimum?", "Each buy is at least $10, and a plan needs at least $10 to start (or to top up). That keeps tiny plans from clogging the shared buy for everyone."],
