@@ -38,7 +38,7 @@
 
 | File | LoC | Runtime size | Role |
 |---|---|---|---|
-| `src/vault/PlanVault.sol` (+ Daily/Weekly/Monthly) | 1,011 | 23,604 B (972 B under EIP-170) | Plans, deposits, epochs, fees, boost accounting |
+| `src/vault/PlanVault.sol` (+ Daily/Weekly/Monthly) | 1,011 | 23,604 B at audit time (972 B under EIP-170); now ~24.2 KB, 371–416 B under — see §11 | Plans, deposits, epochs, fees, boost accounting |
 | `src/libraries/BoostLib.sol` | 206 | 4,322 B (linked, delegatecalled) | Boost pool share maths, strategy calls |
 | `src/boost/MorphoBlueStrategy.sol`, `src/libraries/MorphoLib.sol`, `src/interfaces/IMorpho.sol` | 172 / 71 / 64 | 8,392 B | ERC-4626 over one Morpho Blue market |
 | `src/router/AggregatorRouter.sol`, `IAggregatorRouter.sol` | 317 / 68 | 8,749 B | Allow-listed best-of-N routing, impact cap |
@@ -395,6 +395,29 @@ assert the fixed behaviour); tests marked `test_KNOWN_*` document what is still 
 
 **Page semantics (changed after the audit, at the team's request).** A page that cannot be bought no longer *skips* (cursor advanced, plans missed the epoch); it **reverts** with the router's or vault's own error (`NoRoute`, `PriceImpactTooHigh`, `PartialFill`, `InsufficientOutput`, `PriceDeviates`, `QuoteTooSmall`) and the cursor stays, so the operator retries later or with a smaller `limit`. `EpochPageSkipped` no longer exists. To keep one oversized plan from blocking everyone behind it under revert semantics (the v0.1 H-01 shape), pages are now sized on-chain: `maxPageNotional` (vault default 100,000 USDG) with a per-stock override `maxPageNotionalOf[stock]`; a page stops before its USDG notional would exceed the cap (so `limit` is a maximum plan count and pages fit the pools — TWAP over pages without off-chain sizing), and a single plan larger than the cap sits the epoch out with `PlanTooLarge` instead of blocking the page. Size the caps with `forge script script/RouteBench.s.sol` (section 0 prints the largest page each pool fills inside the impact cap) and set them via `PAGE_NOTIONAL_CAPS` at deploy or `setMaxPageNotional` later. Unit tests: `PlanVault.Epoch.t.sol` (`test_pageUnfillable_*`, `test_pageCap_*`); the v0.1 regressions were rewritten for the new semantics. Two operator tools were added: `script/RouteBench.s.sol` (per-pool impact table for 20 → 20M USDG pages, max in-cap page, single vs split routing net of gas; mock or fork mode) and `script/GasSim.s.sol` + `script/gas-sim.sh` (epoch gas per plan count and page size, priced at the live ETH price).
 
-**Price guard operations.** Before mainnet: map every approved stock to its Chainlink feed (`PRICE_FEEDS`), confirm the feed heartbeat (staleness default 25 h) and whether a sequencer uptime feed exists on Robinhood Chain (`SEQUENCER_FEED`), and monitor `PriceDeviates` reverts in the keeper logs — a persistent one means the tolerance or the feed needs attention, not the pool. `PlanVault` is now 24,491 B (85 B under EIP-170; `setFees`, dust sweeping, skim and rescue already live in `VaultAdminLib`): the next vault change must move more code into a linked library.
+**Price guard operations.** Before mainnet: map every approved stock to its Chainlink feed (`PRICE_FEEDS`), confirm the feed heartbeat (staleness default 25 h) and whether a sequencer uptime feed exists on Robinhood Chain (`SEQUENCER_FEED`), and monitor `PriceDeviates` reverts in the keeper logs — a persistent one means the tolerance or the feed needs attention, not the pool. `PlanVault` was then 24,491 B (85 B under EIP-170); after the exit paths moved into `PlanExitLib` (§11) the margins are Hourly 373 / Daily 373 / Weekly 372 / Monthly 371 / TestVault 416 B. Every further vault change should still go into a linked library; `test/unit/ContractSizes.t.sol` enforces the limit.
 
 **ABI / integration impact** (apps must regenerate their ABIs): `IPlanVault` gained `skim`, `setPriceFeed`, `setPriceGuard`, `priceFeed`, `priceGuard`, `Skimmed`, `PriceFeedSet`, `PriceGuardSet`, `BoostDepositLost`, `NotSkimmable`, `RouterMismatch`, `NotOwner`, `PriceDeviates`, `PriceFeedMissing`, `PriceFeedStale`, `SequencerDown`, `InvalidFeed`; `IPlanVault` also gained `setMaxPageNotional`, `maxPageNotional`, `maxPageNotionalOf`, `MaxPageNotionalSet`, `PlanTooLarge`, `QuoteTooSmall` and lost `EpochPageSkipped`; `IAggregatorRouter` gained `PriceImpactTooHigh`, `PartialFill`; `MorphoBlueStrategy.decimals()` is 12; the vaults link three libraries (`BoostLib`, `VaultAdminLib`, `PriceGuardLib`). Local anvil deployments predate these changes and must be redeployed. Product-visible changes: a router swap either fills in full or reverts; a page too large for the pool is skipped (auto) or refused (override) — operators should page with `limit`; the claim-fee tier is the one held at purchase time.
+
+---
+
+## 11. Post-audit additions — pending review (2026-09-23)
+
+The following code was written after this audit and has **not** been independently reviewed. Only the internal review notes below apply to it.
+
+| Code | What | Status |
+|---|---|---|
+| `src/libraries/PlanExitLib.sol` (2,306 B, links `BoostLib`) + `PlanVault.closePlan` | The exit paths (`withdrawIdle`, `claim`, `prunePlan`, new `closePlan`) moved into a linked library; `closePlan(planId)` (`nonReentrant onlyPlanOwner`) unboosts, pays idle USDG to the caller, claims accrued stock to the recipient and unindexes, emitting `PlanClosed(planId, owner, usdgOut, stockOut, unindexed)`. Mid-epoch (page cursor open) a still-indexed plan is paused and stays indexed (`unindexed = false`) until `prunePlan` / a later `closePlan`; the record persists and a later deposit re-indexes it. | **Pending review** |
+| `src/vault/HourlyVault.sol` | 1 h epochs aligned to the hour (UTC, 24/7), 90 bps default purchase fee (the inclusive `FeeMath` cap — irreversible upward for that deployment), `HOURLY_FEED_MAX_STALENESS` at deploy. Directory order `[hourly, daily, weekly, monthly]`, `vaults()` returns `address[4]`. | **Pending review** |
+
+Sizes (`forge build --sizes`, runtime margin under EIP-170): Hourly 373, Daily 373, Weekly 372, Monthly 371, TestVault 416 B. `forge test`: 480 passing.
+
+**Internal review of `closePlan` (fixed in place):**
+- **CP-01 (Low, fixed)** — deferred unindex applied to plans that were already unindexed; now only a still-indexed plan is parked. Regression: `test_closePlan_alreadyUnindexed_whilePending_doesNotParkAndReportsUnindexed`.
+- **CP-02 (Info, fixed)** — the `Claimed` event recipient is cached before transfers. PoC: `test_reentryFromStockToken_recipientSwitch_claimedEventNamesTheActualPayee`.
+- **CP-02' (Info, fixed)** — the Reentrancy PoC now enforces that `PlanExitLib` dispatches exactly the four pinned selectors `f67c66ae` / `95a29d5f` / `b0d178d8` / `da5ac5e9`.
+- **CP-03 (Info)** — frontend consumer note: hide a row on `PlanClosed` or `PlanIndexed(false)`, un-hide on `PlanIndexed(true)` or `Deposited` (a re-funded parked plan emits only `Deposited`); "Delete later" only for `PlanClosed(..., false)`.
+- **CEI nuance (Info, accepted)** — in `withdrawIdle`, `totalUsdgIdle` is debited after the USDG transfers (delta returned by `PlanExitLib`, applied by the guarded vault stub). Not externally observable: every fund-touching entry is `nonReentrant` and the unguarded owner setters never read it.
+- **L-06 amplified (accepted)** — a fee recipient blocked on USDG or the stock reverts the whole `closePlan`; single legs remain the fallback; allowlist `FeeReceiver` on USDG and every stock (AUDIT-FeeReceiver R-05).
+
+Tests: PoC suite `test/audit/v0.4/` (`Audit4.ClosePlan.BlockedFeeRecipient`, `.Reentrancy`, `.MidEpoch`); new invariants `closed ⇒ balances zero ∧ (unindexed ∨ paused)` and index-entry consistency probed via storage; GasBench `closePlan` plain 83,866 / boosted 101,190 gas. Deployment: `forge script` auto-links `PlanExitLib` and `BoostLib`; verification needs `--libraries` for both; existing deployments must be redeployed to expose `closePlan`.
