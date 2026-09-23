@@ -9,7 +9,7 @@
 #   bot        account 5   the epoch scheduler's wallet (apps/scheduler) — pays gas for EpochKeeper.run
 # All six get ETH (anvil's genesis funding); the first five get USDG; test1-3 also get WETH and $DCA.
 #
-# Besides Daily / Weekly / Monthly the local stack has a TestVault with a short epoch (TEST_EPOCH_MINUTES,
+# Besides Hourly / Daily / Weekly / Monthly the local stack has a TestVault with a short epoch (TEST_EPOCH_MINUTES,
 # default 2) and three seeded plans, so `pnpm scheduler` has an epoch to advance every couple of minutes.
 #
 #   pnpm fork                        # start anvil, deploy the local stack, write apps/{web,scheduler}/.env.local

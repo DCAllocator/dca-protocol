@@ -8,7 +8,9 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 import {MockWETH} from "../mocks/MockWETH.sol";
 import {MockV3Factory} from "../mocks/MockV3.sol";
 import {MockDCA} from "../mocks/MockDCA.sol";
+import {MockStrategy} from "../mocks/MockStrategy.sol";
 import {TestVault} from "../mocks/TestVault.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {StockRegistry} from "../../src/registries/StockRegistry.sol";
 import {AggregatorRouter} from "../../src/router/AggregatorRouter.sol";
 import {UniV3Adapter} from "../../src/router/adapters/UniV3Adapter.sol";
@@ -151,6 +153,39 @@ contract GasBenchTest is Test {
         console2.log("--- empty page (all plans paused), 1 plan indexed ---");
         console2.log("gas", g0 - gasleft());
         stock;
+    }
+
+    /// @dev One-call exit of a plan that has idle USDG and accrued stock (one fill), plain and boosted (a holding
+    ///      ERC-4626 strategy stands in for Morpho: same call shape, no yield). The boosted row includes the
+    ///      unboost leg (strategy withdraw + share burn); compare with the 3-4 separate transactions it replaces.
+    function test_bench_closePlan() public {
+        (, uint256 jobIdx) = _newStock(2, false);
+        _warm(jobIdx); // both plans filled once: idle + accrued, epoch complete (no deferred unindex)
+        address u0 = _user(0, false);
+        address u1 = _user(1, false);
+        uint256 plain = vault.userPlans(u0)[0];
+        uint256 boosted = vault.userPlans(u1)[0];
+
+        MockStrategy holding = new MockStrategy(IERC20(address(usdg)));
+        vm.prank(owner);
+        vault.setBoostStrategy(address(holding));
+        vm.prank(u1);
+        vault.setPlanBoost(boosted, true);
+
+        vm.prank(u0);
+        uint256 g0 = gasleft();
+        vault.closePlan(plain);
+        uint256 gPlain = g0 - gasleft();
+        vm.prank(u1);
+        g0 = gasleft();
+        vault.closePlan(boosted);
+        uint256 gBoosted = g0 - gasleft();
+        assertEq(vault.getPlan(plain).usdgIdle, 0);
+        assertEq(vault.getPlan(boosted).boostShares, 0);
+
+        console2.log("--- closePlan (idle + accrued, epoch complete) ---");
+        console2.log("plain   gas", gPlain);
+        console2.log("boosted gas", gBoosted);
     }
 
     // ------------------------------------------------------------------

@@ -28,6 +28,11 @@ export const VaultDirectoryAbi = [
         "internalType": "struct VaultDirectory.Entry",
         "components": [
           {
+            "name": "hourly",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
             "name": "daily",
             "type": "address",
             "internalType": "address"
@@ -115,6 +120,11 @@ export const VaultDirectoryAbi = [
         "internalType": "struct VaultDirectory.Entry",
         "components": [
           {
+            "name": "hourly",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
             "name": "daily",
             "type": "address",
             "internalType": "address"
@@ -180,8 +190,8 @@ export const VaultDirectoryAbi = [
     "outputs": [
       {
         "name": "",
-        "type": "address[3]",
-        "internalType": "address[3]"
+        "type": "address[4]",
+        "internalType": "address[4]"
       }
     ],
     "stateMutability": "view"
@@ -196,6 +206,11 @@ export const VaultDirectoryAbi = [
         "indexed": false,
         "internalType": "struct VaultDirectory.Entry",
         "components": [
+          {
+            "name": "hourly",
+            "type": "address",
+            "internalType": "address"
+          },
           {
             "name": "daily",
             "type": "address",

@@ -71,6 +71,12 @@ interface IPlanVault {
     event BoostWithdrawFailed(address indexed stock, uint32 indexed epochId, uint256 usdgRequested, bytes reason);
     event BoostStrategySet(address strategy, uint256 migratedUsdg);
     event PlanIndexed(uint256 indexed planId, address indexed stock, bool indexed active);
+    /// @notice `closePlan` ran: `usdgOut` idle USDG and `stockOut` accrued stock left the vault (gross; the fees
+    ///         are in the accompanying `IdleWithdrawn` / `Claimed`). `unindexed` is false only when an epoch page
+    ///         was pending for the stock and the plan was still in its iteration list: it is then paused and stays
+    ///         indexed until `prunePlan` (or a later `closePlan`) drops it. A plan that is already out of the list
+    ///         (pruned or closed before) reports `unindexed = true` whatever the epoch state.
+    event PlanClosed(uint256 indexed planId, address indexed owner, uint256 usdgOut, uint256 stockOut, bool unindexed);
     event Deposited(uint256 indexed planId, address indexed token, address from, uint256 amount, uint256 fee);
     /// @notice WETH/ETH deposit converted to USDG. `wethRefunded` is any unfilled remainder returned to the depositor.
     event WethZapped(uint256 indexed planId, uint256 wethIn, uint256 usdgOut, uint256 wethRefunded);
@@ -140,6 +146,7 @@ interface IPlanVault {
     function setPlanAmount(uint256 planId, uint96 amountPerEpoch) external;
     function setPlanRecipient(uint256 planId, address recipient) external;
     function prunePlan(uint256 planId) external;
+    function closePlan(uint256 planId) external;
 
     // ------------------------------------------------------------------
     // Epochs

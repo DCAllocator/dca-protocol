@@ -107,6 +107,19 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
+    "name": "closePlan",
+    "inputs": [
+      {
+        "name": "planId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "createPlan",
     "inputs": [
       {
@@ -591,6 +604,38 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
+    "name": "maxPageNotional",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maxPageNotionalOf",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "maxPlansPerTx",
     "inputs": [],
     "outputs": [
@@ -733,6 +778,68 @@ export const PlanVaultAbi = [
         "name": "",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "priceFeed",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "feed",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "maxStaleness",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "feedDecimals",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "stockDecimals",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "priceGuard",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "maxDeviationBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "requireFeed",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "sequencerFeed",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "sequencerGrace",
+        "type": "uint32",
+        "internalType": "uint32"
       }
     ],
     "stateMutability": "view"
@@ -936,6 +1043,24 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
+    "name": "setMaxPageNotional",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setMaxPlansPerTx",
     "inputs": [
       {
@@ -1039,6 +1164,57 @@ export const PlanVaultAbi = [
   },
   {
     "type": "function",
+    "name": "setPriceFeed",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "feed",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "maxStaleness",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setPriceGuard",
+    "inputs": [
+      {
+        "name": "maxDeviationBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "requireFeed",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "sequencerFeed",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "sequencerGrace",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setRouter",
     "inputs": [
       {
@@ -1063,6 +1239,19 @@ export const PlanVaultAbi = [
         "name": "feeHalve",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "skim",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "outputs": [],
@@ -1586,43 +1775,6 @@ export const PlanVaultAbi = [
   },
   {
     "type": "event",
-    "name": "EpochPageSkipped",
-    "inputs": [
-      {
-        "name": "stock",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "epochId",
-        "type": "uint32",
-        "indexed": true,
-        "internalType": "uint32"
-      },
-      {
-        "name": "fromIndex",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "toIndex",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "reason",
-        "type": "bytes",
-        "indexed": false,
-        "internalType": "bytes"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
     "name": "FeeConfigSet",
     "inputs": [
       {
@@ -1751,6 +1903,25 @@ export const PlanVaultAbi = [
   },
   {
     "type": "event",
+    "name": "MaxPageNotionalSet",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "MaxPlansPerTxSet",
     "inputs": [
       {
@@ -1863,6 +2034,43 @@ export const PlanVaultAbi = [
       },
       {
         "name": "boosted",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PlanClosed",
+    "inputs": [
+      {
+        "name": "planId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "owner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "usdgOut",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "stockOut",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "unindexed",
         "type": "bool",
         "indexed": false,
         "internalType": "bool"
@@ -2015,6 +2223,87 @@ export const PlanVaultAbi = [
   },
   {
     "type": "event",
+    "name": "PlanTooLarge",
+    "inputs": [
+      {
+        "name": "planId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "spend",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "cap",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PriceFeedSet",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "feed",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "maxStaleness",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PriceGuardSet",
+    "inputs": [
+      {
+        "name": "maxDeviationBps",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "requireFeed",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      },
+      {
+        "name": "sequencerFeed",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "sequencerGrace",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Rescued",
     "inputs": [
       {
@@ -2047,6 +2336,25 @@ export const PlanVaultAbi = [
         "type": "address",
         "indexed": false,
         "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Skimmed",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -2148,6 +2456,22 @@ export const PlanVaultAbi = [
   },
   {
     "type": "error",
+    "name": "BoostDepositLost",
+    "inputs": [
+      {
+        "name": "deposited",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "credited",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "BoostInUse",
     "inputs": []
   },
@@ -2243,7 +2567,23 @@ export const PlanVaultAbi = [
   },
   {
     "type": "error",
+    "name": "InvalidFeed",
+    "inputs": [
+      {
+        "name": "feed",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "NotKeeper",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotOwner",
     "inputs": []
   },
   {
@@ -2254,6 +2594,17 @@ export const PlanVaultAbi = [
         "name": "planId",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "NotSkimmable",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
       }
     ]
   },
@@ -2335,8 +2686,67 @@ export const PlanVaultAbi = [
   },
   {
     "type": "error",
+    "name": "PriceDeviates",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "minOut",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "floor",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PriceFeedMissing",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PriceFeedStale",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "QuoteTooSmall",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "ReentrancyGuardReentrantCall",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "RouterMismatch",
+    "inputs": [
+      {
+        "name": "router",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
   },
   {
     "type": "error",
@@ -2364,6 +2774,11 @@ export const PlanVaultAbi = [
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "SequencerDown",
+    "inputs": []
   },
   {
     "type": "error",

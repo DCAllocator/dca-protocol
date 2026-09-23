@@ -17,6 +17,10 @@ contract EpochLibHarness {
         return EpochLib.nextBoundary(o, l, t);
     }
 
+    function alignToHour(uint256 t) external pure returns (uint64) {
+        return EpochLib.alignToHour(t);
+    }
+
     function alignToDay(uint256 t) external pure returns (uint64) {
         return EpochLib.alignToDay(t);
     }
@@ -31,6 +35,28 @@ contract EpochLibTest is Test {
 
     function setUp() public {
         h = new EpochLibHarness();
+    }
+
+    function test_alignToHour() public view {
+        assertEq(h.alignToHour(0), 0);
+        assertEq(h.alignToHour(3_599), 0);
+        assertEq(h.alignToHour(3_600), 3_600);
+        assertEq(h.alignToHour(3_601), 3_600);
+        // 1_800_000_000 = 2027-01-15 08:00:00 UTC, already on the hour
+        assertEq(h.alignToHour(1_800_000_000), 1_800_000_000);
+        assertEq(h.alignToHour(1_800_000_000 + 59 minutes + 59 seconds), 1_800_000_000);
+        assertEq(h.alignToHour(1_800_000_000 + 1 hours), 1_800_000_000 + 1 hours);
+        // an hourly alignment never moves a timestamp that a day alignment would leave alone
+        assertEq(h.alignToHour(h.alignToDay(1_800_000_000)), h.alignToDay(1_800_000_000));
+    }
+
+    /// `r % 3600 == 0`, `r <= t`, `t - r < 3600` for every timestamp a chain can produce.
+    function testFuzz_alignToHour(uint256 t) public view {
+        t = bound(t, 0, type(uint64).max);
+        uint64 r = h.alignToHour(t);
+        assertEq(r % 1 hours, 0, "on the hour");
+        assertLe(r, t, "never in the future");
+        assertLt(t - r, 1 hours, "within the same hour");
     }
 
     function test_alignToDay() public view {

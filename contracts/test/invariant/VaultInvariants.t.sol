@@ -113,15 +113,56 @@ contract VaultInvariantsTest is BaseTest {
         for (uint256 s; s < 2; ++s) {
             uint256 cnt = daily.stockPlanCount(st[s]);
             uint256 n = daily.nextPlanId();
-            // count plans that claim to be for this stock and are non-empty: must all be indexed
+            // count plans that claim to be for this stock and are non-empty (boost shares included: a plan with
+            // shares still holds value even when `usdgIdle == 0`): must all be indexed, individually and in total
             uint256 nonEmpty;
             for (uint256 id = 1; id < n; ++id) {
                 Plan memory p = daily.getPlan(id);
                 if (p.stock != st[s]) continue;
-                if (p.usdgIdle > 0 || p.stockAccrued > 0) nonEmpty++;
+                if (p.usdgIdle > 0 || p.stockAccrued > 0 || p.boostShares > 0) {
+                    nonEmpty++;
+                    assertTrue(_isIndexed(daily, id), "a plan holding value is indexed");
+                }
             }
             assertGe(cnt, nonEmpty, "non-empty plans are always indexed");
         }
+    }
+
+    /// closed => balances zero && (unindexed || paused): a `closePlan` leaves nothing behind and either drops the
+    /// plan from iteration or parks it (mid-epoch) so no page ever fills it; the ghost is cleared when the owner
+    /// reopens the plan (deposit) or reconfigures it (pause toggle)
+    function invariant_closedPlansAreEmptyAndInert() public view {
+        uint256 n = daily.nextPlanId();
+        for (uint256 id = 1; id < n; ++id) {
+            if (!handler.closed(id)) continue;
+            Plan memory p = daily.getPlan(id);
+            assertEq(p.usdgIdle, 0, "closed: no idle");
+            assertEq(p.stockAccrued, 0, "closed: no stock");
+            assertEq(p.boostShares, 0, "closed: no shares");
+            assertFalse(p.boosted, "closed: unboosted");
+            assertTrue(!_isIndexed(daily, id) || p.paused, "closed: unindexed or parked");
+        }
+    }
+
+    /// the stock index never holds a plan twice and every indexed plan belongs to the list it sits in: the
+    /// swap-and-pop of close / prune keeps `_stockPlanIndex` and `_stockPlans` in step (probed via storage)
+    function invariant_indexEntriesConsistent() public view {
+        address[2] memory st = [address(nvda), address(aapl)];
+        uint256 n = daily.nextPlanId();
+        uint256 indexedCount;
+        for (uint256 id = 1; id < n; ++id) {
+            if (!_isIndexed(daily, id)) continue;
+            indexedCount++;
+            Plan memory p = daily.getPlan(id);
+            bytes32 raw = vm.load(address(daily), keccak256(abi.encode(id, STOCK_PLAN_INDEX_SLOT)));
+            uint256 pos = uint256(raw) - 1;
+            assertLt(pos, daily.stockPlanCount(p.stock), "index position within its stock's list");
+            // _stockPlans[stock][pos] == id (dynamic array data at keccak(slot of the array))
+            bytes32 arrSlot = keccak256(abi.encode(p.stock, uint256(23)));
+            bytes32 elem = vm.load(address(daily), bytes32(uint256(keccak256(abi.encode(arrSlot))) + pos));
+            assertEq(uint256(elem), id, "list entry points back at the plan");
+        }
+        assertEq(indexedCount, daily.stockPlanCount(st[0]) + daily.stockPlanCount(st[1]), "no orphan list entries");
     }
 
     /// epochs never regress and a plan is never filled twice in one epoch
@@ -157,12 +198,17 @@ contract VaultInvariantsTest is BaseTest {
             handler.withdrawIdle(i, i * 17);
             handler.toggleBoost(i, false);
             handler.prune(i);
+            if (i % 3 == 2) handler.close(i * 5);
+            if (i % 9 == 8) handler.advanceEpoch(i, 1, 1); // opens a cursor: the next close is deferred
+            if (i % 9 == 8) handler.close(i * 7);
         }
         assertGt(handler.epochsRun(), 10, "epochs ran");
         assertGt(handler.swaps(), 10, "swaps happened");
         assertGt(handler.boostToggles(), 10, "boost toggled");
         assertGt(handler.boostedFills(), 3, "boosted plans were filled");
         assertGt(handler.boostWithdrawFailures(), 0, "an illiquid market was hit");
+        assertGt(handler.closes(), 3, "plans were closed");
+        assertGt(handler.deferredCloses(), 0, "a close happened while a page cursor was open (parked plan)");
         assertGt(daily.epochsCompleted(), 0);
         invariant_stockBackedByBalance();
         invariant_idleBackedByBalance();
@@ -171,5 +217,8 @@ contract VaultInvariantsTest is BaseTest {
         invariant_dustBounded();
         invariant_boostPoolConsistent();
         invariant_boostFundsAreLent();
+        invariant_stockIndexConsistent();
+        invariant_closedPlansAreEmptyAndInert();
+        invariant_indexEntriesConsistent();
     }
 }

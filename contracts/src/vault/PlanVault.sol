@@ -13,6 +13,7 @@ import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {BoostLib} from "../libraries/BoostLib.sol";
 import {VaultAdminLib} from "../libraries/VaultAdminLib.sol";
 import {PriceGuardLib} from "../libraries/PriceGuardLib.sol";
+import {PlanExitLib} from "../libraries/PlanExitLib.sol";
 
 import {IPlanVault} from "../interfaces/IPlanVault.sol";
 import {IStockRegistry} from "../interfaces/IStockRegistry.sol";
@@ -40,7 +41,8 @@ import {Plan, FeeConfig, VaultParams, DustState, PriceGuard, PriceFeed} from "./
 ///        owner-set ERC-4626 vault (MorphoBlueStrategy = one Morpho Blue market). The vault keeps ONE strategy
 ///        position and splits it between boosted plans with internal shares (`boostShares`, `totalBoostShares`;
 ///        see BoostLib, a linked external library that holds the pool mutations; VaultAdminLib holds the rarely
-///        used skim / rescue paths for the same size reason). A boosted plan's spendable
+///        used skim / rescue paths and PlanExitLib the exit paths — withdraw, claim, prune, close — for the same
+///        size reason). A boosted plan's spendable
 ///        balance is `usdgIdle + boostValueOf(plan)`; spends and withdrawals take `usdgIdle` first, then pull
 ///        from the strategy. `boostPrincipal` (cost basis) and `boostEarned` (realised yield) track earnings
 ///        per plan. Epoch pages pull the page's boosted spend in one strategy withdrawal; if the strategy
@@ -336,15 +338,11 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     ///         back from the strategy (subject to the market's liquidity). `type(uint256).max` = all. Withdraw
     ///         fee applies. Works while paused.
     function withdrawIdle(uint256 planId, uint256 usdgAmount) external nonReentrant onlyPlanOwner(planId) {
-        // usdgIdle first, then (for boosted plans) the strategy; the library does the checks and debits the plan.
-        uint256 fromIdle;
-        (usdgAmount, fromIdle) = BoostLib.withdrawIdle(_boost, _plans[planId], planId, usdgAmount);
-        totalUsdgIdle -= fromIdle;
-
-        (uint256 net, uint256 fee) = FeeMath.split(usdgAmount, _fees.withdrawFeeBps);
-        if (fee > 0) _usdg.safeTransfer(feeRecipient, fee);
-        _usdg.safeTransfer(msg.sender, net);
-        emit IdleWithdrawn(planId, usdgAmount, fee);
+        // usdgIdle first, then (for boosted plans) the strategy; the library does the checks, debits the plan and
+        // pays msg.sender, and returns the part that came out of usdgIdle.
+        totalUsdgIdle -= PlanExitLib.withdrawIdle(
+            _boost, _plans[planId], planId, usdgAmount, _usdg, feeRecipient, _fees.withdrawFeeBps
+        );
     }
 
     /// @inheritdoc IPlanVault
@@ -352,6 +350,39 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     ///         auto-distribute tier holders (>= autoDistributeThreshold $DCA at claim time). Works while paused.
     function claim(uint256 planId, uint256 amount) external nonReentrant onlyPlanOwner(planId) {
         _claim(planId, amount);
+    }
+
+    /// @inheritdoc IPlanVault
+    /// @notice Withdraw everything and remove the plan in ONE transaction: unboost (if boosted), pay out all idle
+    ///         USDG to the caller (withdraw fee), claim all accrued stock to the recipient (claim fee unless the
+    ///         owner holds the auto-distribute perk), then drop the plan from epoch iteration. Works while paused
+    ///         and after the stock is delisted. An empty or already pruned plan closes without reverting, so the
+    ///         call is idempotent. While an epoch page is pending for the stock the unindex of a still-indexed
+    ///         plan is deferred: the plan is paused and stays indexed (`PlanClosed(..., false)`), and `prunePlan`
+    ///         — or a second `closePlan` — drops it once the epoch is over (a plan already out of the list is
+    ///         never parked). The record persists; a later deposit re-indexes it as a plain
+    ///         (unboosted) plan. Atomic: a strategy that cannot pay the boosted balance back, or a token that
+    ///         refuses `feeRecipient`, reverts the whole close (fall back to the single legs).
+    function closePlan(uint256 planId) external nonReentrant onlyPlanOwner(planId) {
+        Plan storage p = _plans[planId];
+        uint256 fromPool;
+        // pull the boosted balance back into usdgIdle first, yield included (keeps the unboost leg next to
+        // setPlanBoost: the exit library never burns shares)
+        if (p.boosted) (, fromPool) = BoostLib.setPlanBoost(_boost, p, planId, false);
+        uint256 out = PlanExitLib.close(
+            p,
+            planId,
+            totalStockAccrued,
+            userStockAccrued,
+            _stockPlans,
+            _stockPlanIndex,
+            _usdg,
+            feeRecipient,
+            _fees.withdrawFeeBps,
+            _claimFeeBps(p.owner),
+            _isEpochPending(p.stock)
+        );
+        totalUsdgIdle = totalUsdgIdle + fromPool - out;
     }
 
     /// @inheritdoc IPlanVault
@@ -399,10 +430,7 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
     ///         A later deposit re-indexes it automatically.
     function prunePlan(uint256 planId) external nonReentrant {
         Plan storage p = _plans[planId];
-        if (p.owner == address(0)) revert PlanNotFound(planId);
-        if (p.usdgIdle > 0 || p.stockAccrued > 0 || p.boostShares > 0) revert PlanNotEmpty(planId);
-        if (_isEpochPending(p.stock)) revert EpochInProgress(p.stock);
-        _unindex(planId);
+        PlanExitLib.prune(p, planId, _isEpochPending(p.stock), _stockPlans, _stockPlanIndex);
     }
 
     // ==================================================================
@@ -968,24 +996,16 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         if (fee > 0) token.safeTransfer(feeRecipient, fee);
     }
 
+    /// @dev Claim `amount` (`type(uint256).max` = all) of `planId`'s accrued stock through the exit library.
     function _claim(uint256 planId, uint256 amount) internal {
         Plan storage p = _plans[planId];
-        if (amount == type(uint256).max) amount = p.stockAccrued;
-        if (amount == 0) revert ZeroAmount();
-        if (amount > p.stockAccrued) revert InsufficientAccrued(amount, p.stockAccrued);
+        PlanExitLib.claim(p, planId, amount, totalStockAccrued, userStockAccrued, feeRecipient, _claimFeeBps(p.owner));
+    }
 
-        // Spot $DCA balance at claim time, by decision (audit v0.3 L-01 accepted: the perk is meant to be live).
-        uint16 bps = isAutoDistribute(p.owner) ? 0 : _fees.claimFeeBps;
-        (uint256 net, uint256 fee) = FeeMath.split(amount, bps);
-
-        address stock = p.stock;
-        p.stockAccrued -= amount.toUint128();
-        totalStockAccrued[stock] -= amount;
-        userStockAccrued[p.owner][stock] -= amount;
-
-        if (fee > 0) IERC20(stock).safeTransfer(feeRecipient, fee);
-        IERC20(stock).safeTransfer(p.recipient, net);
-        emit Claimed(planId, stock, p.recipient, amount, fee);
+    /// @dev Claim fee for `user`: 0 for auto-distribute tier holders, read as a spot $DCA balance at claim time by
+    ///      decision (audit v0.3 L-01 accepted: the perk is meant to be live).
+    function _claimFeeBps(address user) internal view returns (uint16) {
+        return isAutoDistribute(user) ? 0 : _fees.claimFeeBps;
     }
 
     function _index(uint256 planId, address stock) internal {
@@ -993,19 +1013,6 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
         _stockPlans[stock].push(planId);
         _stockPlanIndex[planId] = _stockPlans[stock].length;
         emit PlanIndexed(planId, stock, true);
-    }
-
-    function _unindex(uint256 planId) internal {
-        uint256 idx = _stockPlanIndex[planId];
-        if (idx == 0) return;
-        address stock = _plans[planId].stock;
-        uint256[] storage arr = _stockPlans[stock];
-        uint256 last = arr[arr.length - 1];
-        arr[idx - 1] = last;
-        _stockPlanIndex[last] = idx;
-        arr.pop();
-        _stockPlanIndex[planId] = 0;
-        emit PlanIndexed(planId, stock, false);
     }
 
     function _isEpochPending(address stock) internal view returns (bool) {

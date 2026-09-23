@@ -6,6 +6,7 @@ import {EpochKeeper} from "../../src/keeper/EpochKeeper.sol";
 import {IPlanVault} from "../../src/interfaces/IPlanVault.sol";
 import {FeeConfig} from "../../src/vault/VaultTypes.sol";
 import {Route} from "../../src/router/IAggregatorRouter.sol";
+import {MockERC20} from "../mocks/MockERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 contract KeeperTest is BaseTest {
@@ -271,5 +272,86 @@ contract KeeperTest is BaseTest {
         vm.prank(owner);
         k.addJob(address(usdg), address(nvda));
         assertEq(k.dueJobs().length, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Hourly vault: the keeper is cadence-generic, jobs on the same stock fire independently
+    // ------------------------------------------------------------------
+
+    /// hourly/nvda and daily/nvda side by side: one hour later only the hourly job is due and runs; the daily job
+    /// is untouched until midnight, when both are due.
+    function test_hourlyAndDailyJobsOnOneStock_onlyHourlyDueAfterAnHour() public {
+        vm.startPrank(owner);
+        hourly.setKeeper(address(k), true);
+        uint256 hourlyJob = k.addJob(address(hourly), address(nvda));
+        vm.stopPrank();
+        _createUsdgPlan(hourly, alice, address(nvda), 100e6, 10_000e6);
+        _createUsdgPlan(daily, bob, address(nvda), 200e6, 1_000e6);
+
+        _nextEpoch(hourly); // one hour later
+        uint256[] memory due = k.dueJobs();
+        assertEq(due.length, 1);
+        assertEq(due[0], hourlyJob);
+        vm.prank(bot);
+        vm.expectEmit(true, true, false, true);
+        emit EpochKeeper.JobRun(address(hourly), address(nvda), true);
+        assertEq(k.runDue(), 1);
+        assertEq(hourly.lastExecutedEpoch(address(nvda)), 1);
+        assertEq(daily.lastExecutedEpoch(address(nvda)), 0, "daily not due");
+        assertEq(hourly.getPlan(1).usdgIdle, 9_900e6);
+        assertEq(daily.getPlan(1).usdgIdle, 1_000e6);
+
+        _nextEpoch(daily); // 00:00 is a boundary for both
+        due = k.dueJobs();
+        assertEq(due.length, 2, "hourly/nvda + daily/nvda; daily/aapl and weekly/nvda have no plans");
+        vm.prank(bot);
+        assertEq(k.runDue(), 2);
+        assertEq(daily.lastExecutedEpoch(address(nvda)), 1);
+        assertEq(hourly.lastExecutedEpoch(address(nvda)), hourly.currentEpochId());
+    }
+
+    /// Chainlink-style batching at hourly scale: 16 hourly jobs (one per liquid stock, as DeployLocal wires) and
+    /// `maxJobsPerUpkeep = 5` drain in exactly 4 `performUpkeep` calls; `checkUpkeep` returns at most 5 indices each
+    /// time and nothing once done.
+    function test_performUpkeep_sixteenHourlyJobsDrainInFourBatches() public {
+        vm.prank(owner);
+        hourly.setKeeper(address(k), true);
+        address[] memory stocks = new address[](16);
+        for (uint256 i; i < 16; ++i) {
+            MockERC20 st =
+                new MockERC20(string.concat("Stock ", vm.toString(i)), string.concat("S", vm.toString(i)), 18);
+            stocks[i] = address(st);
+            router.setRate(address(usdg), address(st), 1e18, 100e6); // 1 share = 100 USDG
+            vm.startPrank(owner);
+            registry.listStock(address(st), string.concat("S", vm.toString(i)), false, true);
+            k.addJob(address(hourly), address(st));
+            vm.stopPrank();
+            _createUsdgPlan(hourly, alice, address(st), 50e6, 1_000e6);
+        }
+        assertEq(k.jobCount(), 3 + 16);
+        vm.prank(owner);
+        k.setMaxJobsPerUpkeep(5);
+
+        vm.warp(hourly.nextEpochStart());
+        assertEq(k.dueJobs().length, 16, "every hourly job is due, the three daily/weekly ones are not");
+        uint256 calls;
+        for (;;) {
+            (bool needed, bytes memory data) = k.checkUpkeep("");
+            if (!needed) break;
+            uint256[] memory batch = abi.decode(data, (uint256[]));
+            assertLe(batch.length, 5);
+            assertEq(batch.length, calls < 3 ? 5 : 1, "5 + 5 + 5 + 1");
+            vm.prank(bot);
+            k.performUpkeep(data);
+            ++calls;
+            assertLe(calls, 4, "must drain in four batches");
+        }
+        assertEq(calls, 4);
+        assertEq(k.dueJobs().length, 0);
+        for (uint256 i; i < 16; ++i) {
+            assertEq(hourly.lastExecutedEpoch(stocks[i]), 1);
+            assertEq(hourly.getPlan(i + 1).usdgIdle, 950e6);
+        }
+        assertEq(hourly.epochsCompleted(), 16);
     }
 }

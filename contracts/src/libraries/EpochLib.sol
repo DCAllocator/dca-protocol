@@ -6,11 +6,16 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 /// @title EpochLib
 /// @notice Epoch arithmetic. Epochs are `origin + n * epochLength` half-open intervals; `epochId = n`.
 /// @dev Alignment policy (deploy script):
+///      - Hourly  : origin = hh:00:00 UTC of the deploy hour   -> fires on the hour, every hour (24/7)
 ///      - Daily   : origin = 00:00 UTC of deploy day          -> fires at 00:00 UTC every day
 ///      - Weekly  : origin = 00:00 UTC of the Monday <= deploy -> fires Monday 00:00 UTC
 ///      - Monthly : origin = 00:00 UTC of deploy day, 30-day epochs (calendar months are not used; see README)
 ///      Epoch 0 is the (partial) epoch containing deployment and is never executed; the first fire is epoch 1.
+///      The tighter the alignment, the shorter the window in which the vault's creation tx must land: `PlanVault`
+///      requires `origin <= now < origin + epochLength` (`BadOrigin`), so a vault aligned with `alignToHour` has
+///      to be created before the next top of the hour — deploy scripts create the hourly vault first.
 library EpochLib {
+    uint256 internal constant HOUR = 1 hours;
     uint256 internal constant DAY = 1 days;
     uint256 internal constant WEEK = 7 days;
     /// @dev Unix epoch (Thursday 1970-01-01) -> Monday 1970-01-05 is +4 days.
@@ -32,6 +37,11 @@ library EpochLib {
     /// @notice Start of the epoch after the one containing `timestamp` (i.e. next fire time).
     function nextBoundary(uint64 origin, uint32 epochLength, uint256 timestamp) internal pure returns (uint256) {
         return epochStart(origin, epochLength, epochAt(origin, epochLength, timestamp) + 1);
+    }
+
+    /// @notice Align `timestamp` down to the top of its hour (hh:00:00 UTC).
+    function alignToHour(uint256 timestamp) internal pure returns (uint64) {
+        return SafeCast.toUint64(timestamp - (timestamp % HOUR));
     }
 
     /// @notice Align `timestamp` down to 00:00 UTC.

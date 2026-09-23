@@ -10,6 +10,7 @@ import {MockMorpho, MockIrm} from "./mocks/MockMorpho.sol";
 import {MorphoBlueStrategy} from "../src/boost/MorphoBlueStrategy.sol";
 import {Id, MarketParams} from "../src/interfaces/IMorpho.sol";
 import {StockRegistry} from "../src/registries/StockRegistry.sol";
+import {HourlyVault} from "../src/vault/HourlyVault.sol";
 import {DailyVault} from "../src/vault/DailyVault.sol";
 import {WeeklyVault} from "../src/vault/WeeklyVault.sol";
 import {MonthlyVault} from "../src/vault/MonthlyVault.sol";
@@ -18,12 +19,14 @@ import {VaultParams, Plan, FeeConfig} from "../src/vault/VaultTypes.sol";
 import {EpochLib} from "../src/libraries/EpochLib.sol";
 import {IPlanVault} from "../src/interfaces/IPlanVault.sol";
 
-/// @dev Shared fixture: tokens, registry, mock router with fixed rates, three vaults, funded users, and a mock
+/// @dev Shared fixture: tokens, registry, mock router with fixed rates, four vaults, funded users, and a mock
 ///      Morpho Blue USDG market (~5% supply APY at 90% utilisation) behind a MorphoBlueStrategy that every
 ///      vault has as its boost strategy. Plans are unboosted unless a test opts in.
 abstract contract BaseTest is Test {
-    // 2027-01-18 00:00:00 UTC is a Monday -> +6h so daily/monthly origin is that day, weekly origin that Monday.
-    uint256 internal constant T0 = 1_800_000_000 + 6 hours; // 1_800_000_000 = 2027-01-15 08:00 UTC (Friday)
+    // 1_800_000_000 = 2027-01-15 08:00:00 UTC (a Friday); T0 = 14:00:00 that day. Daily/monthly origin is that
+    // day's 00:00 (first boundary T0 + 10h), weekly origin the Monday before (2027-01-11), and the hourly origin is
+    // T0 itself (14:00:00 is on the hour; its first boundary is 15:00).
+    uint256 internal constant T0 = 1_800_000_000 + 6 hours;
 
     uint256 internal constant USDG_UNIT = 1e6;
     uint256 internal constant NVDA_PER_USDG_NUM = 1e18; // 1 NVDA = 500 USDG
@@ -49,6 +52,7 @@ abstract contract BaseTest is Test {
     MockERC20 internal aapl;
     StockRegistry internal registry;
     MockRouter internal router;
+    HourlyVault internal hourly;
     DailyVault internal daily;
     WeeklyVault internal weekly;
     MonthlyVault internal monthly;
@@ -93,6 +97,8 @@ abstract contract BaseTest is Test {
             origin: 0,
             purchaseFeeBps: 0
         });
+        p.origin = EpochLib.alignToHour(block.timestamp);
+        hourly = new HourlyVault(p);
         p.origin = EpochLib.alignToDay(block.timestamp);
         daily = new DailyVault(p);
         p.origin = EpochLib.alignToMonday(block.timestamp);
@@ -101,11 +107,13 @@ abstract contract BaseTest is Test {
         monthly = new MonthlyVault(p);
 
         vm.startPrank(owner);
+        hourly.setKeeper(keeper, true);
         daily.setKeeper(keeper, true);
         weekly.setKeeper(keeper, true);
         monthly.setKeeper(keeper, true);
         // The Chainlink price guard (audit v0.3 H-01) is fail-closed by default; it has its own suite
         // (PlanVault.PriceGuard.t.sol, audit/v0.3/Audit3.H01). Everything else runs with it off.
+        hourly.setPriceGuard(300, false, address(0), 0);
         daily.setPriceGuard(300, false, address(0), 0);
         weekly.setPriceGuard(300, false, address(0), 0);
         monthly.setPriceGuard(300, false, address(0), 0);
@@ -140,9 +148,11 @@ abstract contract BaseTest is Test {
 
         strategy = new MorphoBlueStrategy(address(morpho), marketParams, owner);
         vm.startPrank(owner);
+        strategy.setDepositor(address(hourly), true);
         strategy.setDepositor(address(daily), true);
         strategy.setDepositor(address(weekly), true);
         strategy.setDepositor(address(monthly), true);
+        hourly.setBoostStrategy(address(strategy));
         daily.setBoostStrategy(address(strategy));
         weekly.setBoostStrategy(address(strategy));
         monthly.setBoostStrategy(address(strategy));
@@ -154,9 +164,11 @@ abstract contract BaseTest is Test {
         weth.mint(user, 1_000 ether);
         vm.deal(user, 1_000 ether);
         vm.startPrank(user);
+        usdg.approve(address(hourly), type(uint256).max);
         usdg.approve(address(daily), type(uint256).max);
         usdg.approve(address(weekly), type(uint256).max);
         usdg.approve(address(monthly), type(uint256).max);
+        weth.approve(address(hourly), type(uint256).max);
         weth.approve(address(daily), type(uint256).max);
         weth.approve(address(weekly), type(uint256).max);
         weth.approve(address(monthly), type(uint256).max);
@@ -202,6 +214,16 @@ abstract contract BaseTest is Test {
 
     function _plan(PlanVault v, uint256 id) internal view returns (Plan memory) {
         return v.getPlan(id);
+    }
+
+    /// @dev Storage slot of `PlanVault._stockPlanIndex` (`forge inspect DailyVault storage-layout`). The vault
+    ///      exposes no "is this plan indexed" view (bytes), so tests read the mapping directly; a plan is in its
+    ///      stock's iteration list iff its entry is non-zero. `PlanVault.Close.t.sol` pins the slot against the
+    ///      `PlanIndexed` events, so a layout change fails loudly there rather than silently here.
+    uint256 internal constant STOCK_PLAN_INDEX_SLOT = 24;
+
+    function _isIndexed(PlanVault v, uint256 id) internal view returns (bool) {
+        return vm.load(address(v), keccak256(abi.encode(id, STOCK_PLAN_INDEX_SLOT))) != bytes32(0);
     }
 
     /// @dev Expected NVDA for `usdgNet` under the mock rate.

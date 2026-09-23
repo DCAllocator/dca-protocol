@@ -953,6 +953,33 @@ export const AggregatorRouterAbi = [
   },
   {
     "type": "error",
+    "name": "PartialFill",
+    "inputs": [
+      {
+        "name": "hop",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PriceImpactTooHigh",
+    "inputs": [
+      {
+        "name": "impactBps",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ProtocolIdOutOfRange",
     "inputs": [
       {

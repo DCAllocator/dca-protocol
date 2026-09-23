@@ -564,6 +564,99 @@ contract PlanVaultBoostTest is BaseTest {
     }
 
     // ------------------------------------------------------------------
+    // Remove sequence on boosted plans (pins why the frontend's unboost step is load-bearing)
+    // ------------------------------------------------------------------
+
+    /// @dev `withdrawIdle(MAX)` touches the strategy only when the amount exceeds `usdgIdle`, so pool shares whose
+    ///      value floors to zero survive it and keep `prunePlan` reverting `PlanNotEmpty`; only `setPlanBoost(false)`
+    ///      burns them. Construction: a spend that leaves a handful of shares (the burn rounds shares UP against the
+    ///      plan), a partial fill that hands unspent net back as plain idle, and a market loss that floors the
+    ///      remainder's value to zero.
+    function test_removeSequence_boostedDustShares() public {
+        uint256 id = _createBoostedPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        router.setFill(address(usdg), address(nvda), 9_000);
+        _nextEpoch(daily);
+        // spend everything but ~2 units of the boosted balance (valued at this block, like the page will)
+        uint96 nearlyAll = uint96(_boostValue(daily, id) - 2);
+        vm.prank(alice);
+        daily.setPlanAmount(id, nearlyAll);
+        _advance(daily, address(nvda));
+        Plan memory p = daily.getPlan(id);
+        assertGt(p.usdgIdle, 0, "unspent net came back as plain idle");
+        assertGt(p.boostShares, 0, "a few shares survived the spend");
+        assertGt(p.stockAccrued, 0);
+        morpho.mockLoss(marketId, (morpho.market(marketId).totalBorrowAssets * 99) / 100);
+        assertEq(_boostValue(daily, id), 0, "dust shares are worth nothing");
+
+        uint256 before = usdg.balanceOf(alice);
+        vm.startPrank(alice);
+        daily.withdrawIdle(id, type(uint256).max); // pays the idle part only: the pool is never touched
+        daily.claim(id, type(uint256).max);
+        vm.stopPrank();
+        assertEq(usdg.balanceOf(alice) - before, uint256(p.usdgIdle) - (uint256(p.usdgIdle) * 25) / 10_000);
+        p = daily.getPlan(id);
+        assertEq(p.usdgIdle, 0);
+        assertEq(p.stockAccrued, 0);
+        assertGt(p.boostShares, 0, "withdraw-all left the dust shares behind");
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.PlanNotEmpty.selector, id));
+        daily.prunePlan(id);
+
+        vm.prank(alice);
+        daily.setPlanBoost(id, false); // burns them for nothing
+        p = daily.getPlan(id);
+        assertEq(p.boostShares, 0);
+        assertEq(p.boostPrincipal, 0);
+        assertFalse(p.boosted);
+        daily.prunePlan(id);
+        assertEq(daily.stockPlanCount(address(nvda)), 0);
+        _checkInvariants(daily);
+    }
+
+    /// @dev A fully utilised market makes the unboost and the withdraw-all revert wholesale; the idle part is
+    ///      always reachable with an explicit amount, and the sequence completes once liquidity returns.
+    function test_removeSequence_illiquidThenPartial() public {
+        uint256 id = _createBoostedPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        router.setFill(address(usdg), address(nvda), 9_000); // the residual comes back as plain idle
+        _nextEpoch(daily);
+        _advance(daily, address(nvda));
+        Plan memory p = daily.getPlan(id);
+        uint256 idle = p.usdgIdle;
+        assertGt(idle, 0);
+        assertGt(p.boostShares, 0);
+        morpho.mockBorrow(marketId, strategy.liquidity(), borrower);
+
+        vm.startPrank(alice);
+        vm.expectRevert(); // ERC4626ExceededMaxWithdraw: the unboost needs the whole position back
+        daily.setPlanBoost(id, false);
+        vm.expectRevert(); // and so does withdraw-all
+        daily.withdrawIdle(id, type(uint256).max);
+        daily.withdrawIdle(id, idle); // the idle part alone never touches the strategy
+        daily.claim(id, type(uint256).max);
+        vm.stopPrank();
+        p = daily.getPlan(id);
+        assertEq(p.usdgIdle, 0);
+        assertEq(p.stockAccrued, 0);
+        assertGt(p.boostShares, 0, "the lent part is stuck until the market has liquidity");
+        assertTrue(p.boosted);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.PlanNotEmpty.selector, id));
+        daily.prunePlan(id);
+
+        // liquidity returns: unboost, withdraw the rest, prune
+        usdg.mint(borrower, 1_000_000e6);
+        vm.startPrank(borrower);
+        usdg.approve(address(morpho), type(uint256).max);
+        morpho.mockRepay(marketId, 1_000_000e6);
+        vm.stopPrank();
+        vm.startPrank(alice);
+        daily.setPlanBoost(id, false);
+        daily.withdrawIdle(id, type(uint256).max);
+        vm.stopPrank();
+        daily.prunePlan(id);
+        assertEq(daily.stockPlanCount(address(nvda)), 0);
+        _checkInvariants(daily);
+    }
+
+    // ------------------------------------------------------------------
     // Admin: strategy
     // ------------------------------------------------------------------
 

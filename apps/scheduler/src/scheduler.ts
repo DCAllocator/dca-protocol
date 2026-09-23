@@ -238,13 +238,18 @@ export class Scheduler {
         range: s.range,
         spent: `${formatUnits(s.netUsdg, this.usdgDecimals)} USDG`,
         bought: `${formatUnits(s.stockOut, stock?.decimals ?? 18)} ${stock?.symbol ?? ""}`.trim(),
-        skipped: s.skipped.length > 0 ? s.skipped.join("; ") : undefined,
+        tooLarge: s.tooLarge.length > 0 ? s.tooLarge.join("; ") : undefined,
         tips: s.tips > 0n ? `${formatUnits(s.tips, this.usdgDecimals)} USDG` : undefined,
         gas: receipt.gasUsed,
         block: receipt.blockNumber,
         tx: hash,
       });
-      if (s.skipped.length > 0) log.warn(`${label}: page skipped — nobody charged`, { job: index, epoch: s.epochId, reason: s.skipped.join("; ") });
+      if (s.tooLarge.length > 0)
+        log.warn(`${label}: plans above the page notional cap sat this epoch out — not charged`, {
+          job: index,
+          epoch: s.epochId,
+          detail: s.tooLarge.join("; "),
+        });
       if (s.boostFailed.length > 0)
         log.warn(`${label}: boosted plans sat this page out — the boost strategy could not pay (illiquid Morpho market?)`, {
           job: index,
@@ -267,7 +272,7 @@ export class Scheduler {
     let epochId: number | undefined;
     let from: bigint | undefined;
     let to: bigint | undefined;
-    const skipped: string[] = [];
+    const tooLarge: string[] = [];
     const boostFailed: string[] = [];
     let completed = false;
     for (const e of vaultLogs) {
@@ -279,9 +284,14 @@ export class Scheduler {
         from = from === undefined ? e.args.fromIndex : from < e.args.fromIndex ? from : e.args.fromIndex;
         to = to === undefined || e.args.toIndex > to ? e.args.toIndex : to;
       } else if (e.eventName === "EpochExecuted") completed = true;
-      else if (e.eventName === "EpochPageSkipped") {
-        // The purchase for this page could not be quoted / executed: nobody was charged, the cursor advanced.
-        skipped.push(`${e.args.fromIndex}-${e.args.toIndex}: ${describeSkipReason(e.args.reason)}`);
+      else if (e.eventName === "PlanTooLarge") {
+        // One plan's spend alone exceeds the stock's page notional cap (`maxPageNotional[Of]`): it sat this epoch
+        // out (not charged, not marked filled) instead of blocking the plans behind it. A page that cannot be
+        // bought at all no longer emits anything — it reverts and leaves the cursor in place (retry-not-skip),
+        // which surfaces above as a failed simulation.
+        tooLarge.push(
+          `plan ${e.args.planId}: ${formatUnits(e.args.spend, this.usdgDecimals)} > cap ${formatUnits(e.args.cap, this.usdgDecimals)} USDG`,
+        );
       } else if (e.eventName === "BoostWithdrawFailed") {
         // The vault could not pull the page's boosted spend from the strategy: boosted plans were dropped from
         // this page (not charged, not marked filled); unboosted plans were still filled.
@@ -294,7 +304,7 @@ export class Scheduler {
       if (e.eventName === "JobRun") completed = completed || e.args.completed;
       else if (e.eventName === "TipsForwarded") tips += e.args.amount;
     }
-    return { netUsdg, stockOut, plansFilled, epochId, range: from !== undefined ? `${from}-${to}` : undefined, skipped, boostFailed, completed, tips };
+    return { netUsdg, stockOut, plansFilled, epochId, range: from !== undefined ? `${from}-${to}` : undefined, tooLarge, boostFailed, completed, tips };
   }
 
   // ------------------------------------------------------------------
@@ -464,9 +474,9 @@ export function describeError(err: unknown): string {
 const sig = (name: string, args?: readonly unknown[]) => `${name}(${(args ?? []).map(String).join(", ")})`;
 
 /**
- * Reason bytes of an EpochPageSkipped / BoostWithdrawFailed event: the router's or the boost strategy's revert
- * data verbatim (custom error, e.g. `ERC4626ExceededMaxWithdraw` when the Morpho market is illiquid), an
- * `Error(string)`, or a short ASCII tag from the vault (`"quote too small"`).
+ * Reason bytes of a BoostWithdrawFailed event: the boost strategy's revert data verbatim (a custom error, e.g.
+ * `ERC4626ExceededMaxWithdraw` when the Morpho market is illiquid, or a router / vault error when decoding other
+ * revert data), an `Error(string)`, or raw ASCII.
  */
 export function describeSkipReason(raw: `0x${string}` | undefined): string {
   if (!raw || raw === "0x") return "no route";

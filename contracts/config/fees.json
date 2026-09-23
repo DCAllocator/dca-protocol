@@ -2,6 +2,7 @@
   "depositFeeBps": 0,
   "withdrawFeeBps": 25,
   "claimFeeBps": 25,
+  "hourlyPurchaseFeeBps": 90,
   "dailyPurchaseFeeBps": 75,
   "weeklyPurchaseFeeBps": 50,
   "monthlyPurchaseFeeBps": 25,

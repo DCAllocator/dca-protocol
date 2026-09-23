@@ -14,9 +14,11 @@ import {IPlanVault} from "../interfaces/IPlanVault.sol";
 ///      `isOperator` addresses: this contract is registered as a keeper on the vaults (which run with
 ///      `keeperOnly = true`), so an open entry point here would hand that privilege to anyone. Register your
 ///      bot EOAs and the Chainlink Automation forwarder / Gelato dedicated sender as operators.
-///      Cron guidance (UTC): Daily vault fires at 00:00 every day, Weekly at Monday 00:00, Monthly every
-///      30 days from its origin. Poll `checkUpkeep` a few minutes after each boundary; a large stock may
-///      need several `performUpkeep` calls (pagination) — keep polling until `isEpochDue` is false.
+///      Cron guidance (UTC): Hourly vault fires on the hour, every hour; Daily at 00:00 every day, Weekly at
+///      Monday 00:00, Monthly every 30 days from its origin. Poll `checkUpkeep` a few minutes after each
+///      boundary; a large stock may need several `performUpkeep` calls (pagination) — keep polling until
+///      `isEpochDue` is false. With an hourly vault every approved stock is due every hour, so size
+///      `maxJobsPerUpkeep` / the bot's `MAX_PAGES_PER_JOB` for that job count, not the daily one.
 ///      Vault keeper tips (if enabled) land here and are forwarded to the operator who called.
 ///
 ///      V2 hook point: a Uniswap V4 afterSwap hook could call `vault.advanceEpoch(stock, ...)` directly

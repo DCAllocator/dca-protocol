@@ -231,4 +231,129 @@ contract PlanVaultPriceGuardTest is BaseTest {
         daily.depositWETH(id, 1 ether, 0);
         assertEq(daily.getPlan(id).usdgIdle, 4_000e6);
     }
+
+    // ------------------------------------------------------------------
+    // Hourly vault: the staleness window is per (vault, stock), so the hourly vault can run a tighter one. With a
+    // feed that stops updating (a market close), a window shorter than the gap turns the guard into a market-hours
+    // filter: stale hours revert `PriceFeedStale`, the page is retried until the hour ends, then that hour is gone.
+    // 90 bps fee: 200 USDG -> 198.2 net; the floor scales with the net amount so the fair-pool cases still pass.
+    // ------------------------------------------------------------------
+
+    uint256 internal constant HOURLY_NET = 198.2e6;
+
+    function _guardHourly(uint32 staleness) internal {
+        vm.startPrank(owner);
+        hourly.setPriceFeed(address(nvda), address(feed), staleness);
+        hourly.setPriceGuard(300, true, address(0), 0);
+        vm.stopPrank();
+    }
+
+    /// AC11 (first half): T+1h fills (feed 1 h old < 2 h), T+3h reverts `PriceFeedStale` leaving the cursor at 0
+    /// and the epoch still due; a refreshed feed lets the retry fill inside the same hour.
+    function test_hourly_staleFeed_revertsCursorStaysAndRetryFills() public {
+        _guardHourly(2 hours);
+        uint256 id = _createUsdgPlan(hourly, alice, address(nvda), 200e6, 1_000e6);
+        // feed.updatedAt == T0 (setUp); T0 + 1h: fresh enough
+        vm.warp(T0 + 1 hours);
+        assertTrue(_advance(hourly, address(nvda)));
+        assertEq(hourly.getPlan(id).stockAccrued, _nvdaFor(HOURLY_NET));
+        // T0 + 3h: 3 h old > 2 h window
+        vm.warp(T0 + 3 hours);
+        uint32 epoch = hourly.currentEpochId();
+        assertEq(epoch, 3);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.PriceFeedStale.selector, address(nvda)));
+        hourly.advanceEpoch(address(nvda), 0, "");
+        assertEq(hourly.nextPlanIndex(address(nvda), epoch), 0, "page not consumed");
+        assertTrue(hourly.isEpochDue(address(nvda)), "still due: the hour is retried, not skipped");
+        assertFalse(hourly.isEpochPending(address(nvda)));
+        assertEq(hourly.getPlan(id).usdgIdle, 800e6, "nobody charged");
+        // the feed updates (the market opened): the operator's retry fills the same hour
+        feed.set(500e8);
+        assertTrue(_advance(hourly, address(nvda)));
+        assertEq(hourly.getPlan(id).stockAccrued, 2 * _nvdaFor(HOURLY_NET));
+        assertEq(hourly.lastExecutedEpoch(address(nvda)), 3);
+    }
+
+    /// AC11 (second half): an hour that stayed stale to its end is gone — the next boundary opens epoch id+1 at
+    /// cursor 0 with nothing pending, and epoch id is never executed (missed epochs are not caught up).
+    function test_hourly_staleWholeHour_isSkippedNotCaughtUp() public {
+        _guardHourly(2 hours);
+        uint256 id = _createUsdgPlan(hourly, alice, address(nvda), 200e6, 1_000e6);
+        vm.warp(T0 + 3 hours);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.PriceFeedStale.selector, address(nvda)));
+        hourly.advanceEpoch(address(nvda), 0, "");
+        vm.warp(T0 + 3 hours + 59 minutes + 59 seconds); // still stale at the end of the hour
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.PriceFeedStale.selector, address(nvda)));
+        hourly.advanceEpoch(address(nvda), 0, "");
+        vm.warp(T0 + 4 hours);
+        assertEq(hourly.currentEpochId(), 4);
+        assertEq(hourly.nextPlanIndex(address(nvda), 4), 0);
+        assertFalse(hourly.isEpochPending(address(nvda)));
+        assertTrue(hourly.isEpochDue(address(nvda)), "epoch 4 is due in its own right");
+        feed.set(500e8);
+        assertTrue(_advance(hourly, address(nvda)));
+        assertEq(hourly.lastExecutedEpoch(address(nvda)), 4);
+        assertEq(hourly.getPlan(id).usdgIdle, 800e6, "epoch 3 was never charged");
+        assertEq(hourly.epochsCompleted(), 1);
+    }
+
+    /// With the deploy default (25 h) instead, the same off-hours feed is accepted: the buy fills at the last
+    /// close price — the trade-off HOURLY_FEED_MAX_STALENESS exists for.
+    function test_hourly_defaultStaleness_fillsOffHoursAtLastClose() public {
+        _guardHourly(90_000);
+        uint256 id = _createUsdgPlan(hourly, alice, address(nvda), 200e6, 1_000e6);
+        vm.warp(T0 + 3 hours);
+        assertTrue(_advance(hourly, address(nvda)), "3 h old feed is inside the 25 h window");
+        assertEq(hourly.getPlan(id).stockAccrued, _nvdaFor(HOURLY_NET));
+        // ... but a pool that drifted from the last close is still refused
+        vm.warp(T0 + 4 hours);
+        router.setRate(address(usdg), address(nvda), 1e18, 800e6);
+        vm.prank(keeper);
+        vm.expectPartialRevert(IPlanVault.PriceDeviates.selector);
+        hourly.advanceEpoch(address(nvda), 0, "");
+    }
+
+    /// Sequencer grace at hourly scale: a grace period as long as the epoch swallows the whole hour in which the
+    /// sequencer came back — every retry that hour is `SequencerDown`, and the hour is skipped; the next one fills.
+    function test_hourly_sequencerGrace_swallowsTheHourItRestartsIn() public {
+        MockSequencerFeed seq = new MockSequencerFeed();
+        vm.startPrank(owner);
+        hourly.setPriceFeed(address(nvda), address(feed), 90_000);
+        hourly.setPriceGuard(300, true, address(seq), 1 hours);
+        vm.stopPrank();
+        uint256 id = _createUsdgPlan(hourly, alice, address(nvda), 200e6, 1_000e6);
+        // Absolute timestamps throughout: `block.timestamp` read after a `vm.warp` in the same frame may be the
+        // pre-warp value (the optimizer treats TIMESTAMP as call-invariant), see HourlyVault.t.sol.
+        uint256 b1 = hourly.nextEpochStart(); // 15:00
+        vm.warp(b1);
+        seq.set(false, b1); // sequencer back up exactly at the boundary
+        vm.prank(keeper);
+        vm.expectRevert(IPlanVault.SequencerDown.selector);
+        hourly.advanceEpoch(address(nvda), 0, "");
+        vm.warp(b1 + 59 minutes + 59 seconds); // last second of the hour: grace not yet elapsed
+        vm.prank(keeper);
+        vm.expectRevert(IPlanVault.SequencerDown.selector);
+        hourly.advanceEpoch(address(nvda), 0, "");
+        assertEq(hourly.getPlan(id).usdgIdle, 1_000e6, "the 15:00 hour never filled");
+        vm.warp(b1 + 1 hours); // 16:00: grace elapsed, new epoch
+        assertEq(hourly.currentEpochId(), 2);
+        assertTrue(_advance(hourly, address(nvda)));
+        assertEq(hourly.lastExecutedEpoch(address(nvda)), 2);
+        assertEq(hourly.getPlan(id).usdgIdle, 800e6, "charged once, for 16:00");
+        // a shorter grace than the hour lets the same hour recover
+        vm.prank(owner);
+        hourly.setPriceGuard(300, true, address(seq), 10 minutes);
+        uint256 b3 = hourly.nextEpochStart(); // 17:00
+        vm.warp(b3);
+        seq.set(false, b3);
+        vm.prank(keeper);
+        vm.expectRevert(IPlanVault.SequencerDown.selector);
+        hourly.advanceEpoch(address(nvda), 0, "");
+        vm.warp(b3 + 10 minutes);
+        assertTrue(_advance(hourly, address(nvda)));
+        assertEq(hourly.lastExecutedEpoch(address(nvda)), 3);
+    }
 }
