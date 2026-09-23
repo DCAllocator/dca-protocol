@@ -21,6 +21,8 @@ contract MockRouter is IAggregatorRouter {
     address public immutable weth;
     uint16 public maxPriceImpactBps = 150;
     mapping(address => mapping(address => Pair)) public pairs;
+    /// @dev Optional `Route.extra` per pair (e.g. abi.encode(pool) so a FeeReceiver price guard has a pool to read).
+    mapping(address => mapping(address => bytes)) public pathExtra;
     uint256 public swapCount;
     uint256 public lastAmountIn;
     uint256 public lastMinOut;
@@ -60,6 +62,10 @@ contract MockRouter is IAggregatorRouter {
         maxPriceImpactBps = bps;
     }
 
+    function setPathExtra(address tokenIn, address tokenOut, bytes calldata extra) external {
+        pathExtra[tokenIn][tokenOut] = extra;
+    }
+
     function lastPathLength() external view returns (uint256) {
         return lastPath.length;
     }
@@ -83,7 +89,8 @@ contract MockRouter is IAggregatorRouter {
         if (!p.exists) revert NoRoute(tokenIn, tokenOut);
         amountOut = (((amountIn * p.fillBps) / 10_000) * p.num) / p.den; // a real quote simulates the fill
         path = new Route[](1);
-        path[0] = Route({protocol: 1, tokenIn: tokenIn, tokenOut: tokenOut, fee: 3000, extra: ""});
+        path[0] =
+            Route({protocol: 1, tokenIn: tokenIn, tokenOut: tokenOut, fee: 3000, extra: pathExtra[tokenIn][tokenOut]});
         impactBps = p.impactBps;
     }
 

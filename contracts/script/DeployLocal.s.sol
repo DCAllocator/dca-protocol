@@ -28,11 +28,13 @@ import {Zap} from "../src/periphery/Zap.sol";
 import {ClaimHelper} from "../src/periphery/ClaimHelper.sol";
 import {EpochLib} from "../src/libraries/EpochLib.sol";
 import {Route} from "../src/router/IAggregatorRouter.sol";
+import {FeeReceiver} from "../src/treasury/FeeReceiver.sol";
 
 /// @title DeployLocal
 /// @notice Full local stack on anvil: mock USDG/WETH/$DCA/stocks, a mock V3 factory with seeded pools, and the
 ///         real router/adapter/vaults/keeper. Separates roles across anvil's default accounts:
-///         the broadcaster (account 0) owns/admins everything, `TREASURY` (account 1) is `feeRecipient`,
+///         the broadcaster (account 0) owns/admins everything, `TREASURY` (account 1) is the FeeReceiver's treasury
+///         (the vaults' `feeRecipient` is the FeeReceiver itself: 70% treasury / 30% mDCA buyback + burn),
 ///         and `TEST1`/`TEST2`/`TEST3` (accounts 2-4) are funded wallets for interacting with the protocol.
 ///         All five get USDG (ETH is already funded by anvil's genesis); TEST1-3 also get WETH and $DCA.
 ///         `BOT` (account 5) is the scheduler's wallet (apps/scheduler): it only pays gas for `EpochKeeper.run`.
@@ -259,6 +261,17 @@ contract DeployLocal is Script {
         weth.mint(pool, 1_000_000e18);
         _approveBoth(router, 1, pool, address(weth), address(usdg), 500);
 
+        // mDCA/USDG pool at 0.10 USDG per mDCA, approved both ways, so the FeeReceiver can buy back locally.
+        address dcaPool =
+            factory.createPool(address(dca), address(usdg), 3000, _sqrt(address(dca), 1e18, address(usdg), 0.1e6));
+        usdg.mint(dcaPool, 100_000_000e6);
+        dca.mint(dcaPool, 1_000_000_000e18);
+        _approveBoth(router, 1, dcaPool, address(usdg), address(dca), 3000);
+
+        // Fee sink: every vault's feeRecipient. 70% -> `treasury`, 30% -> mDCA buyback + burn (deployer operates).
+        FeeReceiver feeReceiver =
+            new FeeReceiver(address(usdg), address(weth), address(dca), address(router), treasury, deployer);
+
         address[] memory stocks = new address[](SYMBOLS.length);
         for (uint256 i; i < SYMBOLS.length; ++i) {
             MockERC20 st = new MockERC20(string.concat(SYMBOLS[i], " Stock Token"), string.concat(SYMBOLS[i], "st"), 18);
@@ -287,7 +300,7 @@ contract DeployLocal is Script {
             dca: address(dca),
             registry: address(registry),
             router: address(router),
-            feeRecipient: treasury,
+            feeRecipient: address(feeReceiver),
             epochLength: 0,
             origin: 0,
             purchaseFeeBps: 0
@@ -423,6 +436,7 @@ contract DeployLocal is Script {
         j.serialize("claimHelper", address(helper));
         j.serialize("deployer", deployer);
         j.serialize("treasury", treasury);
+        j.serialize("feeReceiver", address(feeReceiver));
         j.serialize("test1", test1);
         j.serialize("test2", test2);
         j.serialize("test3", test3);
@@ -433,6 +447,7 @@ contract DeployLocal is Script {
         console2.log("directory", address(directory));
         console2.log("deployer ", deployer);
         console2.log("treasury ", treasury);
+        console2.log("feeRecv  ", address(feeReceiver));
         console2.log("test1    ", test1);
         console2.log("test2    ", test2);
         console2.log("test3    ", test3);

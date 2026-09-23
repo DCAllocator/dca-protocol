@@ -24,6 +24,7 @@ import {EpochLib} from "../src/libraries/EpochLib.sol";
 import {MorphoBlueStrategy} from "../src/boost/MorphoBlueStrategy.sol";
 import {IMorpho, Id, MarketParams} from "../src/interfaces/IMorpho.sol";
 import {IDCA} from "../src/token/IDCA.sol";
+import {FeeReceiver} from "../src/treasury/FeeReceiver.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
@@ -44,6 +45,11 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 /// The strategy is seeded with `BOOST_SEED_USDG` whole USDG (default 100, paid by the deployer) whose shares are
 /// sent to 0x…dEaD so the share supply is never zero (audit v0.3 M-01). `BOOST_SEED_USDG=0` skips the seed.
 ///
+/// Fees: with `DCA` set, a `FeeReceiver` is deployed and every vault's `feeRecipient` is that contract; operators
+/// (`BUYBACK_OPERATORS`, plus the owner) split what lands there 70% to `FEE_RECIPIENT` (the treasury) and 30% into
+/// $DCA buybacks that are burned. Without a token yet, fees go straight to `FEE_RECIPIENT`; deploy a FeeReceiver
+/// later and `setFeeRecipient` on the three vaults.
+///
 /// Price guard (audit v0.3 H-01): every epoch purchase is floored at the stock's Chainlink reference price less
 /// `PRICE_GUARD_BPS` (default 300). `PRICE_FEEDS="0xstock:0xfeed,..."` (Chainlink AggregatorV3, USD per raw token)
 /// with `FEED_MAX_STALENESS` seconds (default 90000 = 25 h) is set on every vault. The vaults fail closed
@@ -51,7 +57,8 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 /// `SEQUENCER_FEED` / `SEQUENCER_GRACE` (default 3600) wire Chainlink's L2 sequencer uptime feed when available.
 ///
 /// Post-deploy (multisig): call `acceptOwnership()` on registry, router, adapters, vaults, keeper, directory,
-/// boost strategy.
+/// boost strategy, fee receiver. Before the first buyback, make sure every V3 pool on the $DCA route has enough
+/// observation cardinality for the receiver's TWAP window (`pool.increaseObservationCardinalityNext`).
 contract Deploy is Script {
     using stdJson for string;
 
@@ -65,6 +72,7 @@ contract Deploy is Script {
         address uniV4PoolManager;
         address ramsesFactory;
         address[] keepers;
+        address[] buybackOperators;
         string v3Pools;
         address morpho;
         bytes32 morphoMarketId;
@@ -93,6 +101,7 @@ contract Deploy is Script {
         Zap zap;
         ClaimHelper helper;
         MorphoBlueStrategy boostStrategy;
+        FeeReceiver feeReceiver;
     }
 
     function run() external {
@@ -124,6 +133,16 @@ contract Deploy is Script {
         // Approved hops from V3_POOLS="1:0x..,3:0x.." (both directions of each pool).
         _approvePools(o.router, e.v3Pools);
 
+        // Fee sink: 70% treasury / 30% $DCA buyback-and-burn, when there is a token to buy.
+        address feeRecipient = e.feeRecipient;
+        if (e.dca != address(0)) {
+            o.feeReceiver = new FeeReceiver(e.usdg, e.weth, e.dca, address(o.router), e.feeRecipient, deployer);
+            for (uint256 k; k < e.buybackOperators.length; ++k) {
+                o.feeReceiver.setOperator(e.buybackOperators[k], true);
+            }
+            feeRecipient = address(o.feeReceiver);
+        }
+
         // Vaults with aligned origins (epoch 0 contains now; first fire at the next boundary).
         VaultParams memory p = VaultParams({
             owner: deployer,
@@ -132,7 +151,7 @@ contract Deploy is Script {
             dca: e.dca,
             registry: address(o.registry),
             router: address(o.router),
-            feeRecipient: e.feeRecipient,
+            feeRecipient: feeRecipient,
             epochLength: 0,
             origin: 0,
             purchaseFeeBps: 0
@@ -234,6 +253,7 @@ contract Deploy is Script {
             o.keeper.transferOwnership(e.owner);
             o.directory.transferOwnership(e.owner);
             if (address(o.boostStrategy) != address(0)) o.boostStrategy.transferOwnership(e.owner);
+            if (address(o.feeReceiver) != address(0)) o.feeReceiver.transferOwnership(e.owner);
         }
         vm.stopBroadcast();
 
@@ -254,6 +274,7 @@ contract Deploy is Script {
         e.uniV4PoolManager = vm.envOr("UNIV4_POOL_MANAGER", address(0));
         e.ramsesFactory = vm.envOr("RAMSES_FACTORY", address(0));
         e.keepers = vm.envOr("KEEPERS", ",", new address[](0));
+        e.buybackOperators = vm.envOr("BUYBACK_OPERATORS", ",", new address[](0));
         e.v3Pools = vm.envOr("V3_POOLS", string(""));
         e.morpho = vm.envOr("MORPHO", address(0));
         e.morphoMarketId = vm.envOr("MORPHO_MARKET_ID", bytes32(0));
@@ -378,7 +399,9 @@ contract Deploy is Script {
         string memory j = "deployment";
         j.serialize("chainId", block.chainid);
         j.serialize("owner", e.owner);
-        j.serialize("feeRecipient", e.feeRecipient);
+        j.serialize("treasury", e.feeRecipient);
+        j.serialize("feeReceiver", address(o.feeReceiver));
+        j.serialize("feeRecipient", address(o.feeReceiver) != address(0) ? address(o.feeReceiver) : e.feeRecipient);
         j.serialize("usdg", e.usdg);
         j.serialize("weth", e.weth);
         j.serialize("dca", e.dca);

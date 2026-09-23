@@ -9,6 +9,7 @@ Scope: `contracts/src/` contracts as deployed by `contracts/script/Deploy.s.sol`
 | **Owner** (multisig, `Ownable2Step`) | pause; set fees ≤ 90 bps; set `$DCA` thresholds and minimums; set router / fee recipient / keepers / operators / `keeperOnly`; **approve and revoke router hops**; list stocks; rescue foreign tokens | take user idle USDG or accrued stock; set any fee above 0.90%; rescue USDG, WETH or any ever-listed stock; upgrade code (no proxies) |
 | **feeManager** | set fees within caps; force a dust sweep | anything else |
 | **Keepers / operators** | trigger epochs (they are the only ones who can); pick page size and timing; pass a route override that selects among **approved** hops with a `minOut` **no lower than the auto-route's floor** | move funds anywhere but into the vault's own stock purchase; fill worse than the auto-router would; route through an unapproved pool; skip fees; change accounting |
+| **FeeReceiver operators** | choose when and how much of the fee balance to split (70 / 30), convert (stock reserve → USDG / WETH reserve) or buy back (reserve → `$DCA`, burned) | send anything anywhere but the treasury, a reserve or a burn; sell `$DCA`; churn base reserves; go under the quote floor or past the on-path TWAP guard; touch user funds (fees have already left the vaults) |
 | **Router + adapters** (owner-set) | execute swaps honestly over the approved hop list | hold funds between txs (they don't); receive approvals from vaults beyond the router itself; trade a pool the owner did not approve |
 | **Stock Tokens, USDG, WETH** | standard ERC-20 semantics (no fee-on-transfer, no reentrant hooks) | — the registry flags fee-on-transfer and vaults refuse them; `_tryTransfer` tolerates blocklists |
 | **DEX pools** | owner-approved (and, for V3, factory-verified or explicitly registered) | forge callbacks (callback authenticates `msg.sender == verified pool`) |
@@ -122,7 +123,15 @@ Boosted plans' idle USDG sits in `boostStrategy` (`MorphoBlueStrategy`, an ERC-4
 - **Gas estimation.** Calls that touch the strategy accrue Morpho interest for the elapsed seconds; an estimate taken in a block where the market was just touched is cheaper than the real execution. The app pads every estimate (×1.25 + 100k); bots should do the same.
 - **Not yet covered.** No fork test against a live Morpho Blue deployment yet (the mock reproduces Morpho's share maths and accrual; `test/fork/` is the place for it once Robinhood Chain has a market).
 
-### 12. Out of scope / not protected
+### 12. FeeReceiver — fee split and `$DCA` buyback (new, reviewed)
+
+**What it holds.** Every vault fee, the moment it is taken. Nothing user-owned: a fee that reached the receiver has already been charged. The worst case for users is therefore unchanged by this contract; the assets at risk are the protocol's 70% (treasury) and 30% (buyback reserve).
+
+**What protects the 30%.** The reserve can only leave through the owner-approved router into `$DCA` that is burned in the same transaction (a Stock Token reserve may first become a USDG / WETH reserve). No rescue, sweep or withdraw exists; the split is a pair of constants. Operators are gated (`onlyOperator`) and price-bounded twice: `minOut ≥ quote × (1 − maxSlippageBps)` (default 50 bps, cap 500) and, because that quote is taken in the same transaction and cannot see a sandwich (§2), an **on-path TWAP guard** — every V3 / Ramses pool on the quoted path must have its spot tick within `guardMaxTicks` (300 ≈ 3%) of its `guardWindow` (30 min) TWAP or the swap reverts. Hops with no oracle (Uniswap V4) are refused unless the owner opts in. Approvals are per call and reset; outputs are measured on the receiver's own balance. Invariants: `balance ≥ reserve` per token, treasury receives exactly Σ 70%, reserve ledger balances, bought `$DCA` never lingers — `test/invariant/FeeReceiverInvariants.t.sol` at CI depth with `fail_on_revert`.
+
+**Residuals** (full list in [`audit/AUDIT-FeeReceiver.md`](audit/AUDIT-FeeReceiver.md) §4): the owner key can drain the reserve via `setRouter` / `setGuard(0)` (same trust as §8); holding a manipulated price for the whole TWAP window bounds a single buyback's loss at ≈ `guardMaxTicks + maxSlippageBps`, so keep buybacks small and pass a reference `minOut`; V4-only routes re-open the §2 residual; a token with no approved route keeps its reserve until a hop is approved; §7's allowlisting applies to the receiver (as claim-fee recipient) and the treasury (as `distribute` recipient); pools on the buyback route need observation cardinality for the window. Monitor `TreasurySet`, `RouterSet`, `OperatorSet`, `GuardSet`, `MaxSlippageSet`, and `PriceDeviates` / `UnguardedHop` reverts.
+
+### 13. Out of scope / not protected
 
 - Loss of value from the underlying stock or from USDG.
 - Front-end compromise (the UI is not the protocol; contracts are permissionless and verifiable).
