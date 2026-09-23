@@ -16,6 +16,7 @@ import {Id, MarketParams} from "../src/interfaces/IMorpho.sol";
 import {StockRegistry} from "../src/registries/StockRegistry.sol";
 import {AggregatorRouter} from "../src/router/AggregatorRouter.sol";
 import {UniV3Adapter} from "../src/router/adapters/UniV3Adapter.sol";
+import {HourlyVault} from "../src/vault/HourlyVault.sol";
 import {DailyVault} from "../src/vault/DailyVault.sol";
 import {WeeklyVault} from "../src/vault/WeeklyVault.sol";
 import {MonthlyVault} from "../src/vault/MonthlyVault.sol";
@@ -39,9 +40,9 @@ import {FeeReceiver} from "../src/treasury/FeeReceiver.sol";
 ///         All five get USDG (ETH is already funded by anvil's genesis); TEST1-3 also get WETH and $DCA.
 ///         `BOT` (account 5) is the scheduler's wallet (apps/scheduler): it only pays gas for `EpochKeeper.run`.
 ///
-///         Besides Daily / Weekly / Monthly, a fourth `TestVault` with a `TEST_EPOCH_MINUTES`-minute epoch
+///         Besides Hourly / Daily / Weekly / Monthly, a fifth `TestVault` with a `TEST_EPOCH_MINUTES`-minute epoch
 ///         (default 2) is deployed and given keeper jobs, plus three deployer-owned plans, so the scheduler
-///         has an epoch to advance every couple of minutes instead of once a day. Local stacks only.
+///         has an epoch to advance every couple of minutes instead of once an hour. Local stacks only.
 ///
 ///         Boost: a mock Morpho Blue (`MockMorpho`, real share maths and interest accrual) with a USDG market
 ///         seeded by the deployer and 90% utilised by a phantom borrower, so the market pays ~5% supply APY,
@@ -305,6 +306,10 @@ contract DeployLocal is Script {
             origin: 0,
             purchaseFeeBps: 0
         });
+        // Hourly first, as in Deploy.s.sol: its BadOrigin window closes at the next top of the hour (anvil's clock
+        // is the wall clock, so a slow deploy near :59 would otherwise revert here).
+        vp.origin = EpochLib.alignToHour(block.timestamp);
+        HourlyVault hourly = new HourlyVault(vp);
         vp.origin = EpochLib.alignToDay(block.timestamp);
         DailyVault daily = new DailyVault(vp);
         vp.origin = EpochLib.alignToMonday(block.timestamp);
@@ -316,8 +321,8 @@ contract DeployLocal is Script {
         // wallet is an EpochKeeper operator (every execution entry point on the keeper is operator-only).
         EpochKeeper keeper = new EpochKeeper(address(usdg), deployer);
         keeper.setOperator(bot, true);
-        PlanVault[3] memory vaults = [PlanVault(daily), PlanVault(weekly), PlanVault(monthly)];
-        for (uint256 v; v < 3; ++v) {
+        PlanVault[4] memory vaults = [PlanVault(hourly), PlanVault(daily), PlanVault(weekly), PlanVault(monthly)];
+        for (uint256 v; v < 4; ++v) {
             vaults[v].setKeeper(address(keeper), true);
             for (uint256 s; s < stocks.length; ++s) {
                 keeper.addJob(address(vaults[v]), stocks[s]);
@@ -336,11 +341,12 @@ contract DeployLocal is Script {
         // Price guard (audit v0.3 H-01): a mock Chainlink feed per liquid symbol at the seeded pool price, set on
         // every vault with a long staleness window so the local stack keeps working across restarts.
         {
-            PlanVault[4] memory guarded = [PlanVault(daily), PlanVault(weekly), PlanVault(monthly), PlanVault(testVault)];
+            PlanVault[5] memory guarded =
+                [PlanVault(hourly), PlanVault(daily), PlanVault(weekly), PlanVault(monthly), PlanVault(testVault)];
             for (uint256 i; i < stocks.length; ++i) {
                 // PRICES_USDG are 1e6-scaled USDG per token; the feed quotes USD with 8 decimals
                 MockAggregatorV3 feed = new MockAggregatorV3(8, int256(PRICES_USDG[i] * 100));
-                for (uint256 v; v < 4; ++v) {
+                for (uint256 v; v < 5; ++v) {
                     guarded[v].setPriceFeed(stocks[i], address(feed), 365 days);
                 }
             }
@@ -369,9 +375,9 @@ contract DeployLocal is Script {
         boostStrategy.setDepositor(deployer, true);
         boostStrategy.deposit(100e6, 0x000000000000000000000000000000000000dEaD);
         boostStrategy.setDepositor(deployer, false);
-        PlanVault[4] memory boostVaults =
-            [PlanVault(daily), PlanVault(weekly), PlanVault(monthly), PlanVault(testVault)];
-        for (uint256 v; v < 4; ++v) {
+        PlanVault[5] memory boostVaults =
+            [PlanVault(hourly), PlanVault(daily), PlanVault(weekly), PlanVault(monthly), PlanVault(testVault)];
+        for (uint256 v; v < 5; ++v) {
             boostStrategy.setDepositor(address(boostVaults[v]), true);
             boostVaults[v].setBoostStrategy(address(boostStrategy));
         }
@@ -381,6 +387,7 @@ contract DeployLocal is Script {
         VaultDirectory directory = new VaultDirectory(deployer);
         directory.set(
             VaultDirectory.Entry({
+                hourly: address(hourly),
                 daily: address(daily),
                 weekly: address(weekly),
                 monthly: address(monthly),
@@ -420,6 +427,7 @@ contract DeployLocal is Script {
         j.serialize("registry", address(registry));
         j.serialize("router", address(router));
         j.serialize("uniV3Adapter", address(adapter));
+        j.serialize("hourly", address(hourly));
         j.serialize("daily", address(daily));
         j.serialize("weekly", address(weekly));
         j.serialize("monthly", address(monthly));
@@ -452,6 +460,7 @@ contract DeployLocal is Script {
         console2.log("test2    ", test2);
         console2.log("test3    ", test3);
         console2.log("bot      ", bot);
+        console2.log("hourly   ", address(hourly));
         console2.log("testVault", address(testVault));
         console2.log("testEpoch (s)", uint256(testEpochLength));
         console2.log("morpho   ", address(morpho));

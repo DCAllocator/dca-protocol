@@ -7,6 +7,7 @@
     "dev:test-vault": "pnpm --filter @dca/web dev:test-vault",
     "dev:latency": "pnpm --filter @dca/web dev:latency",
     "latency": "node scripts/rpc-latency.mjs",
+    "abi:check": "node scripts/abi-check.mjs",
     "scheduler": "pnpm --filter @dca/scheduler dev",
     "balance": "pnpm --filter @dca/scheduler balance",
     "transfer": "pnpm --filter @dca/scheduler transfer",

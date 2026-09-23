@@ -394,6 +394,137 @@ contract PlanVaultPlansTest is BaseTest {
         daily.prunePlan(c);
     }
 
+    // ------------------------------------------------------------------
+    // remove sequence (pins the behaviour the frontend's "Withdraw & remove" composes: withdrawIdle(MAX) ->
+    // claim(MAX) -> prunePlan; closePlan is the one-call version of the same legs)
+    // ------------------------------------------------------------------
+
+    function test_removeSequence_plain() public {
+        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        _nextEpoch(daily);
+        _advance(daily, address(nvda)); // one fill: 200 spent, 75 bps fee, 198.5 net -> NVDA accrued
+        Plan memory p = daily.getPlan(id);
+        assertEq(p.usdgIdle, 800e6);
+        uint256 stock = p.stockAccrued;
+        assertEq(stock, _nvdaFor(198.5e6));
+
+        uint256 aliceUsdg = usdg.balanceOf(alice);
+        uint256 treasuryUsdg = usdg.balanceOf(treasury);
+        vm.startPrank(alice);
+        daily.withdrawIdle(id, type(uint256).max);
+        daily.claim(id, type(uint256).max);
+        vm.stopPrank();
+
+        assertEq(usdg.balanceOf(alice) - aliceUsdg, 800e6 - 2e6, "idle back to the caller minus 25 bps");
+        assertEq(usdg.balanceOf(treasury) - treasuryUsdg, 2e6, "withdraw fee to the treasury");
+        uint256 claimFee = (stock * 25) / 10_000;
+        assertEq(nvda.balanceOf(alice), stock - claimFee, "stock to the recipient minus 25 bps");
+        assertEq(nvda.balanceOf(treasury), claimFee, "claim fee to the treasury");
+        p = daily.getPlan(id);
+        assertEq(p.usdgIdle, 0);
+        assertEq(p.stockAccrued, 0);
+        assertEq(p.boostShares, 0);
+        assertEq(daily.stockPlanCount(address(nvda)), 1, "empty but still indexed until pruned");
+
+        vm.expectEmit(true, true, true, true);
+        emit IPlanVault.PlanIndexed(id, address(nvda), false);
+        daily.prunePlan(id);
+        assertEq(daily.stockPlanCount(address(nvda)), 0);
+        assertEq(daily.getPlan(id).owner, alice, "the record persists (a deposit re-indexes it)");
+    }
+
+    function test_removeSequence_midEpoch() public {
+        uint256 a = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        _createUsdgPlan(daily, bob, address(nvda), 200e6, 1_000e6);
+        uint256 c = _createUsdgPlan(daily, carol, address(nvda), 200e6, 1_000e6);
+        _nextEpoch(daily);
+        vm.prank(keeper);
+        daily.advanceEpoch(address(nvda), 1, ""); // page 1 of 3: alice filled, cursor open
+        assertTrue(daily.isEpochPending(address(nvda)));
+
+        // withdraw and claim are never blocked by an open cursor
+        vm.startPrank(alice);
+        daily.withdrawIdle(a, type(uint256).max);
+        daily.claim(a, type(uint256).max);
+        vm.stopPrank();
+        Plan memory p = daily.getPlan(a);
+        assertEq(p.usdgIdle, 0);
+        assertEq(p.stockAccrued, 0);
+        // only the prune is: its swap-and-pop would move a plan across the page cursor
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.EpochInProgress.selector, address(nvda)));
+        daily.prunePlan(a);
+        assertEq(daily.stockPlanCount(address(nvda)), 3, "the emptied plan stays indexed");
+
+        // a plan emptied before its page is simply skipped by that page
+        vm.prank(carol);
+        daily.withdrawIdle(c, type(uint256).max);
+        vm.prank(keeper);
+        daily.advanceEpoch(address(nvda), 0, "");
+        assertFalse(daily.isEpochPending(address(nvda)));
+        assertEq(daily.getPlan(c).stockAccrued, 0, "nothing bought for an empty plan");
+        assertEq(daily.getPlan(c).lastEpochId, 0, "not marked filled");
+
+        daily.prunePlan(a);
+        daily.prunePlan(c);
+        assertEq(daily.stockPlanCount(address(nvda)), 1);
+    }
+
+    function test_removeSequence_whilePausedAndDelisted() public {
+        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        _nextEpoch(daily);
+        _advance(daily, address(nvda));
+        vm.startPrank(owner);
+        daily.pause();
+        registry.setApproved(address(nvda), false);
+        vm.stopPrank();
+
+        uint256 before = usdg.balanceOf(alice);
+        vm.startPrank(alice);
+        daily.withdrawIdle(id, type(uint256).max);
+        daily.claim(id, type(uint256).max);
+        vm.stopPrank();
+        assertEq(usdg.balanceOf(alice) - before, 800e6 - 2e6, "exit works while paused and delisted");
+        assertGt(nvda.balanceOf(alice), 0);
+        daily.prunePlan(id);
+        assertEq(daily.stockPlanCount(address(nvda)), 0);
+
+        // the way back in stays closed while the stock is delisted
+        vm.prank(owner);
+        daily.unpause();
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.StockNotPurchasable.selector, address(nvda)));
+        daily.depositUSDG(id, 100e6);
+    }
+
+    function test_removeSequence_nonOwner() public {
+        uint256 id = _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
+        _nextEpoch(daily);
+        _advance(daily, address(nvda));
+        Plan memory before = daily.getPlan(id);
+
+        vm.startPrank(bob);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.NotPlanOwner.selector, id));
+        daily.setPlanBoost(id, false);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.NotPlanOwner.selector, id));
+        daily.withdrawIdle(id, type(uint256).max);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.NotPlanOwner.selector, id));
+        daily.claim(id, type(uint256).max);
+        // prune is permissionless but only ever drops an EMPTY plan
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.PlanNotEmpty.selector, id));
+        daily.prunePlan(id);
+        vm.stopPrank();
+
+        // an unknown id reads as "not yours", never as "not found", on the owner-gated legs
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.NotPlanOwner.selector, 99));
+        daily.withdrawIdle(99, type(uint256).max);
+
+        Plan memory later = daily.getPlan(id);
+        assertEq(later.usdgIdle, before.usdgIdle);
+        assertEq(later.stockAccrued, before.stockAccrued);
+        assertEq(daily.stockPlanCount(address(nvda)), 1);
+    }
+
     function test_noReceive_rejectsStrayEth() public {
         vm.prank(alice);
         (bool ok,) = address(daily).call{value: 1 ether}("");

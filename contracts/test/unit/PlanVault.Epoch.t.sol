@@ -40,6 +40,77 @@ contract PlanVaultEpochTest is BaseTest {
         assertEq(monthly.epochLength(), 30 days);
     }
 
+    // ------------------------------------------------------------------
+    // Hourly replays: the same scheduling rules with a 1-hour epoch (HourlyVault.t.sol has the 24-boundary day)
+    // ------------------------------------------------------------------
+
+    function test_hourly_epochOne_dueAtTopOfHour() public {
+        _createUsdgPlan(hourly, alice, address(nvda), 200e6, 1_000e6);
+        assertEq(hourly.origin() % 1 hours, 0);
+        assertEq(hourly.epochLength(), 1 hours);
+        uint256 next = hourly.nextEpochStart();
+        assertEq(next % 1 hours, 0, "hourly fires on the hour");
+        assertEq(next, T0 + 1 hours);
+        vm.warp(next - 1);
+        assertFalse(hourly.isEpochDue(address(nvda)));
+        vm.warp(next);
+        assertTrue(hourly.isEpochDue(address(nvda)));
+        assertEq(hourly.currentEpochId(), 1);
+        // the daily vault on the same stock is untouched by the hourly boundary
+        assertEq(daily.currentEpochId(), 0);
+    }
+
+    function test_hourly_fill_defaultFeeAndAccrual() public {
+        uint256 id = _createUsdgPlan(hourly, alice, address(nvda), 200e6, 1_000e6);
+        _nextEpoch(hourly);
+        // 200 USDG spend, 0.90% fee = 1.8 USDG, net 198.2 -> 0.3964 NVDA
+        uint256 expectedStock = _nvdaFor(198.2e6);
+        vm.expectEmit(true, true, false, true);
+        emit IPlanVault.PlanFilled(id, 1, 200e6, 1.8e6, expectedStock, false);
+        vm.expectEmit(true, true, false, true);
+        emit IPlanVault.EpochExecuted(address(nvda), 1);
+        _advance(hourly, address(nvda));
+        Plan memory p = hourly.getPlan(id);
+        assertEq(p.usdgIdle, 800e6);
+        assertEq(p.stockAccrued, expectedStock);
+        assertEq(p.lastEpochId, 1);
+        assertEq(usdg.balanceOf(treasury), 1.8e6, "purchase fee to treasury");
+        assertEq(hourly.totalNotionalUsdg(), 198.2e6);
+    }
+
+    function test_hourly_missedEpochsAreSkippedNotCaughtUp() public {
+        uint256 id = _createUsdgPlan(hourly, alice, address(nvda), 200e6, 1_000e6);
+        vm.warp(hourly.nextEpochStart() + 3 hours); // keeper was down for 3 hours
+        assertEq(hourly.currentEpochId(), 4);
+        _advance(hourly, address(nvda));
+        assertEq(hourly.getPlan(id).usdgIdle, 800e6, "charged exactly one spend");
+        assertEq(hourly.lastExecutedEpoch(address(nvda)), 4);
+        assertFalse(hourly.isEpochDue(address(nvda)));
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IPlanVault.EpochNotDue.selector, address(nvda), 4));
+        hourly.advanceEpoch(address(nvda), 0, "");
+    }
+
+    /// A page cursor left open at hh:00 is abandoned at (hh+1):00: the next hour starts at index 0 and the plans
+    /// the keeper never reached simply miss that hour. Same rule as daily, one hour instead of one day.
+    function test_hourly_pagination_abandonedPageRestartsNextEpoch() public {
+        uint256 a = _createUsdgPlan(hourly, alice, address(nvda), 100e6, 1_000e6);
+        uint256 b = _createUsdgPlan(hourly, bob, address(nvda), 100e6, 1_000e6);
+        _nextEpoch(hourly);
+        vm.prank(keeper);
+        hourly.advanceEpoch(address(nvda), 1, ""); // only alice
+        assertTrue(hourly.isEpochPending(address(nvda)));
+        assertEq(hourly.nextPlanIndex(address(nvda), 1), 1);
+        _nextEpoch(hourly); // keeper never finished epoch 1
+        assertEq(hourly.currentEpochId(), 2);
+        assertFalse(hourly.isEpochPending(address(nvda)), "the old cursor is not the current epoch's");
+        assertEq(hourly.nextPlanIndex(address(nvda), 2), 0);
+        vm.prank(keeper);
+        assertTrue(hourly.advanceEpoch(address(nvda), 0, ""));
+        assertEq(hourly.getPlan(a).usdgIdle, 800e6, "alice: epoch 1 + epoch 2");
+        assertEq(hourly.getPlan(b).usdgIdle, 900e6, "bob: missed epoch 1, filled epoch 2");
+    }
+
     function test_cannotRunTwiceInEpoch() public {
         _createUsdgPlan(daily, alice, address(nvda), 200e6, 1_000e6);
         _nextEpoch(daily);

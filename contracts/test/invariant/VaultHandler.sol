@@ -38,6 +38,13 @@ contract VaultHandler is Test {
     uint256 public boostedFills;
     uint256 public boostToggles;
     uint256 public boostWithdrawFailures;
+    uint256 public closes;
+    uint256 public deferredCloses;
+
+    /// @dev Ghost: plans whose last owner action was a successful `closePlan` (cleared by anything that reopens
+    ///      or reconfigures the plan: a deposit, a pause toggle). While set, the plan must hold nothing and be
+    ///      either unindexed or parked (`paused`).
+    mapping(uint256 => bool) public closed;
 
     constructor(
         PlanVault _vault,
@@ -117,6 +124,7 @@ contract VaultHandler is Test {
         vm.prank(pl.owner);
         try vault.setPlanBoost(id, enabled) {
             boostToggles++;
+            closed[id] = false; // the owner reconfigured the plan (re-flagging an empty plan as boosted is fine)
         } catch {}
     }
 
@@ -154,24 +162,33 @@ contract VaultHandler is Test {
     function depositUSDG(uint256 p, uint256 a, uint128 amt) external {
         calls++;
         amt = uint128(bound(amt, 1, 50_000e6));
+        uint256 id = _plan(p);
         vm.prank(_actor(a));
-        try vault.depositUSDG(_plan(p), amt) {} catch {}
+        try vault.depositUSDG(id, amt) {
+            closed[id] = false;
+        } catch {}
     }
 
     function depositWETH(uint256 p, uint256 a, uint128 amt) external {
         calls++;
         amt = uint128(bound(amt, 1e9, 5 ether));
+        uint256 id = _plan(p);
         vm.prank(_actor(a));
-        try vault.depositWETH(_plan(p), amt, 0) {} catch {}
+        try vault.depositWETH(id, amt, 0) {
+            closed[id] = false;
+        } catch {}
     }
 
     function depositETH(uint256 p, uint256 a, uint128 amt) external {
         calls++;
         amt = uint128(bound(amt, 1e9, 2 ether));
+        uint256 id = _plan(p);
         address who = _actor(a);
         vm.deal(who, who.balance + amt);
         vm.prank(who);
-        try vault.depositETH{value: amt}(_plan(p), 0) {} catch {}
+        try vault.depositETH{value: amt}(id, 0) {
+            closed[id] = false;
+        } catch {}
     }
 
     function withdrawIdle(uint256 p, uint256 uFrac) external {
@@ -211,6 +228,7 @@ contract VaultHandler is Test {
         if (pl.owner == address(0)) return;
         vm.prank(pl.owner);
         vault.setPlanPaused(id, paused);
+        closed[id] = false; // the owner reconfigured a parked plan: it is theirs again
     }
 
     function setAmount(uint256 p, uint96 amount) external {
@@ -283,5 +301,31 @@ contract VaultHandler is Test {
     function prune(uint256 p) external {
         calls++;
         try vault.prunePlan(_plan(p)) {} catch {}
+    }
+
+    /// @dev `_stockPlanIndex` slot (BaseTest.STOCK_PLAN_INDEX_SLOT; pinned against `PlanIndexed` events in
+    ///      PlanVault.Close `test_isIndexedProbe_matchesPlanIndexedEvents`).
+    uint256 internal constant STOCK_PLAN_INDEX_SLOT = 24;
+
+    function _isIndexed(uint256 id) internal view returns (bool) {
+        return vm.load(address(vault), keccak256(abi.encode(id, STOCK_PLAN_INDEX_SLOT))) != bytes32(0);
+    }
+
+    /// @dev One-call exit: unboost + withdraw all + claim all + unindex (or park while a page is pending).
+    ///      Reverts wholesale on an illiquid market, which the walk produces on purpose. A close counts as
+    ///      deferred only when it actually had something to defer: a page cursor open AND the plan still indexed
+    ///      (an already pruned / closed plan is never parked).
+    function close(uint256 p) external {
+        calls++;
+        uint256 id = _plan(p);
+        Plan memory pl = vault.getPlan(id);
+        if (pl.owner == address(0)) return;
+        bool deferred = vault.isEpochPending(pl.stock) && _isIndexed(id);
+        vm.prank(pl.owner);
+        try vault.closePlan(id) {
+            closes++;
+            if (deferred) deferredCloses++;
+            closed[id] = true;
+        } catch {}
     }
 }

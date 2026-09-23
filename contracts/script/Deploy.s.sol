@@ -9,6 +9,7 @@ import {AggregatorRouter} from "../src/router/AggregatorRouter.sol";
 import {UniV3Adapter} from "../src/router/adapters/UniV3Adapter.sol";
 import {RamsesV3Adapter} from "../src/router/adapters/RamsesV3Adapter.sol";
 import {UniV4Adapter} from "../src/router/adapters/UniV4Adapter.sol";
+import {HourlyVault} from "../src/vault/HourlyVault.sol";
 import {DailyVault} from "../src/vault/DailyVault.sol";
 import {WeeklyVault} from "../src/vault/WeeklyVault.sol";
 import {MonthlyVault} from "../src/vault/MonthlyVault.sol";
@@ -39,8 +40,13 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 /// approves both directions of each listed V3-style pool at deploy; V4 keys and later additions go through
 /// `script/ApproveRoutes.s.sol` / `router.approveHop`.
 ///
+/// Vaults: Hourly / Daily / Weekly / Monthly, in that order. The hourly vault is created FIRST: its origin is the
+/// top of the current hour and `PlanVault` reverts `BadOrigin` unless the creation tx lands inside that same hour,
+/// so nothing that could stretch the broadcast (stock listing, route approvals) runs between computing the origin
+/// and creating it. Avoid starting a broadcast in the last minutes of an hour.
+///
 /// Boost: `MORPHO` (Morpho Blue singleton) + `MORPHO_MARKET_ID` (bytes32 id of a market whose loan token is USDG)
-/// deploy a `MorphoBlueStrategy` over that market, allow the three vaults to deposit and set it as their
+/// deploy a `MorphoBlueStrategy` over that market, allow the four vaults to deposit and set it as their
 /// `boostStrategy`. Leave `MORPHO` empty to ship without boost; `setBoostStrategy` can wire it up later.
 /// The strategy is seeded with `BOOST_SEED_USDG` whole USDG (default 100, paid by the deployer) whose shares are
 /// sent to 0x…dEaD so the share supply is never zero (audit v0.3 M-01). `BOOST_SEED_USDG=0` skips the seed.
@@ -48,11 +54,14 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 /// Fees: with `DCA` set, a `FeeReceiver` is deployed and every vault's `feeRecipient` is that contract; operators
 /// (`BUYBACK_OPERATORS`, plus the owner) split what lands there 70% to `FEE_RECIPIENT` (the treasury) and 30% into
 /// $DCA buybacks that are burned. Without a token yet, fees go straight to `FEE_RECIPIENT`; deploy a FeeReceiver
-/// later and `setFeeRecipient` on the three vaults.
+/// later and `setFeeRecipient` on the four vaults.
 ///
 /// Price guard (audit v0.3 H-01): every epoch purchase is floored at the stock's Chainlink reference price less
 /// `PRICE_GUARD_BPS` (default 300). `PRICE_FEEDS="0xstock:0xfeed,..."` (Chainlink AggregatorV3, USD per raw token)
-/// with `FEED_MAX_STALENESS` seconds (default 90000 = 25 h) is set on every vault. The vaults fail closed
+/// with `FEED_MAX_STALENESS` seconds (default 90000 = 25 h) is set on every vault; `HOURLY_FEED_MAX_STALENESS`
+/// (default: the same value) overrides the window on the hourly vault alone — a tighter window there refuses
+/// off-hours buys against a feed that stopped updating at the close instead of filling them at the last close
+/// price, at the cost of skipping those hours (missed epochs are never caught up). The vaults fail closed
 /// (`REQUIRE_PRICE_FEED`, default true): with it on, every approved stock must have a feed or the script aborts.
 /// `SEQUENCER_FEED` / `SEQUENCER_GRACE` (default 3600) wire Chainlink's L2 sequencer uptime feed when available.
 ///
@@ -81,6 +90,7 @@ contract Deploy is Script {
         uint256 maxPageNotional;
         string pageCaps;
         uint32 feedMaxStaleness;
+        uint32 hourlyFeedMaxStaleness;
         uint16 priceGuardBps;
         bool requirePriceFeed;
         address sequencerFeed;
@@ -93,6 +103,7 @@ contract Deploy is Script {
         UniV3Adapter uniV3;
         UniV4Adapter uniV4;
         RamsesV3Adapter ramses;
+        HourlyVault hourly;
         DailyVault daily;
         WeeklyVault weekly;
         MonthlyVault monthly;
@@ -103,6 +114,10 @@ contract Deploy is Script {
         MorphoBlueStrategy boostStrategy;
         FeeReceiver feeReceiver;
     }
+
+    /// @dev Index of the hourly vault in every `PlanVault[4]` below ([hourly, daily, weekly, monthly], the
+    ///      `VaultDirectory.vaults()` order). Only the hourly vault gets its own feed-staleness window.
+    uint256 internal constant HOURLY = 0;
 
     function run() external {
         Env memory e = _env();
@@ -143,7 +158,8 @@ contract Deploy is Script {
             feeRecipient = address(o.feeReceiver);
         }
 
-        // Vaults with aligned origins (epoch 0 contains now; first fire at the next boundary).
+        // Vaults with aligned origins (epoch 0 contains now; first fire at the next boundary). Hourly first: its
+        // BadOrigin window closes at the next top of the hour, the others' at midnight / next Monday.
         VaultParams memory p = VaultParams({
             owner: deployer,
             usdg: e.usdg,
@@ -156,14 +172,21 @@ contract Deploy is Script {
             origin: 0,
             purchaseFeeBps: 0
         });
+        p.origin = EpochLib.alignToHour(block.timestamp);
+        o.hourly = new HourlyVault(p);
         p.origin = EpochLib.alignToDay(block.timestamp);
         o.daily = new DailyVault(p);
         p.origin = EpochLib.alignToMonday(block.timestamp);
         o.weekly = new WeeklyVault(p);
         p.origin = EpochLib.alignToDay(block.timestamp);
         o.monthly = new MonthlyVault(p);
+        PlanVault[4] memory vaults =
+            [PlanVault(o.hourly), PlanVault(o.daily), PlanVault(o.weekly), PlanVault(o.monthly)];
 
-        // Fees from config (defaults already match; applied explicitly so config is the source of truth).
+        // Fees from config (defaults already match; applied explicitly so config is the source of truth). Note
+        // `hourlyPurchaseFeeBps` (90) is the inclusive `FeeMath.MAX_FEE_BPS` cap: `setFees` rejects anything above.
+        fees.purchaseFeeBps = uint16(_cfgUint("hourlyPurchaseFeeBps"));
+        o.hourly.setFees(fees);
         fees.purchaseFeeBps = uint16(_cfgUint("dailyPurchaseFeeBps"));
         o.daily.setFees(fees);
         fees.purchaseFeeBps = uint16(_cfgUint("weeklyPurchaseFeeBps"));
@@ -171,22 +194,19 @@ contract Deploy is Script {
         fees.purchaseFeeBps = uint16(_cfgUint("monthlyPurchaseFeeBps"));
         o.monthly.setFees(fees);
         uint16 maxPlans = uint16(_cfgUint("maxPlansPerTx"));
-        o.daily.setMaxPlansPerTx(maxPlans);
-        o.weekly.setMaxPlansPerTx(maxPlans);
-        o.monthly.setMaxPlansPerTx(maxPlans);
         // $DCA perk thresholds from config, in whole tokens (scaled by the token's decimals; 18 without a token).
         (uint256 autoDist, uint256 feeHalve) = _thresholds(e.dca);
-        o.daily.setThresholds(autoDist, feeHalve);
-        o.weekly.setThresholds(autoDist, feeHalve);
-        o.monthly.setThresholds(autoDist, feeHalve);
+        for (uint256 v; v < 4; ++v) {
+            vaults[v].setMaxPlansPerTx(maxPlans);
+            vaults[v].setThresholds(autoDist, feeHalve);
+        }
         o.router.setMaxPriceImpactBps(uint16(_cfgUint("maxPriceImpactBps")));
 
         // Keeper + jobs for every approved stock. Vaults run keeperOnly (default); the EpochKeeper contract and
         // every KEEPERS address are vault keepers, and KEEPERS are EpochKeeper operators.
         o.keeper = new EpochKeeper(e.usdg, deployer);
-        PlanVault[3] memory vaults = [PlanVault(o.daily), PlanVault(o.weekly), PlanVault(o.monthly)];
         address[] memory stocks = o.registry.approvedStocks();
-        for (uint256 v; v < 3; ++v) {
+        for (uint256 v; v < 4; ++v) {
             vaults[v].setKeeper(address(o.keeper), true);
             for (uint256 k; k < e.keepers.length; ++k) {
                 vaults[v].setKeeper(e.keepers[k], true);
@@ -216,7 +236,7 @@ contract Deploy is Script {
                 o.boostStrategy.deposit(e.boostSeed, 0x000000000000000000000000000000000000dEaD);
                 o.boostStrategy.setDepositor(deployer, false);
             }
-            for (uint256 v; v < 3; ++v) {
+            for (uint256 v; v < 4; ++v) {
                 o.boostStrategy.setDepositor(address(vaults[v]), true);
                 vaults[v].setBoostStrategy(address(o.boostStrategy));
             }
@@ -229,6 +249,7 @@ contract Deploy is Script {
         o.directory
             .set(
                 VaultDirectory.Entry({
+                    hourly: address(o.hourly),
                     daily: address(o.daily),
                     weekly: address(o.weekly),
                     monthly: address(o.monthly),
@@ -247,6 +268,7 @@ contract Deploy is Script {
             if (address(o.uniV3) != address(0)) o.uniV3.transferOwnership(e.owner);
             if (address(o.uniV4) != address(0)) o.uniV4.transferOwnership(e.owner);
             if (address(o.ramses) != address(0)) o.ramses.transferOwnership(e.owner);
+            o.hourly.transferOwnership(e.owner);
             o.daily.transferOwnership(e.owner);
             o.weekly.transferOwnership(e.owner);
             o.monthly.transferOwnership(e.owner);
@@ -284,6 +306,7 @@ contract Deploy is Script {
             vm.envOr("MAX_PAGE_NOTIONAL_USDG", uint256(100_000)) * 10 ** IERC20Metadata(e.usdg).decimals();
         e.pageCaps = vm.envOr("PAGE_NOTIONAL_CAPS", string(""));
         e.feedMaxStaleness = uint32(vm.envOr("FEED_MAX_STALENESS", uint256(90_000)));
+        e.hourlyFeedMaxStaleness = uint32(vm.envOr("HOURLY_FEED_MAX_STALENESS", uint256(e.feedMaxStaleness)));
         e.priceGuardBps = uint16(vm.envOr("PRICE_GUARD_BPS", uint256(300)));
         e.requirePriceFeed = vm.envOr("REQUIRE_PRICE_FEED", true);
         e.sequencerFeed = vm.envOr("SEQUENCER_FEED", address(0));
@@ -328,9 +351,10 @@ contract Deploy is Script {
         }
     }
 
-    /// @dev PRICE_FEEDS="0xstock:0xfeed,..." — set the same feeds on every vault, then the guard config. With
-    ///      `REQUIRE_PRICE_FEED` on, every approved stock must have a feed (otherwise no epoch could buy it).
-    function _setPriceFeeds(PlanVault[3] memory vaults, address[] memory stocks, Env memory e) internal {
+    /// @dev PRICE_FEEDS="0xstock:0xfeed,..." — set the same feeds on every vault (the hourly vault with its own
+    ///      staleness window, see HOURLY_FEED_MAX_STALENESS), then the guard config. With `REQUIRE_PRICE_FEED` on,
+    ///      every approved stock must have a feed (otherwise no epoch could buy it).
+    function _setPriceFeeds(PlanVault[4] memory vaults, address[] memory stocks, Env memory e) internal {
         if (bytes(e.priceFeeds).length != 0) {
             string[] memory entries = vm.split(e.priceFeeds, ",");
             for (uint256 i; i < entries.length; ++i) {
@@ -338,8 +362,8 @@ contract Deploy is Script {
                 require(kv.length == 2, "PRICE_FEEDS entry must be stock:feed");
                 address stock = vm.parseAddress(kv[0]);
                 address feed = vm.parseAddress(kv[1]);
-                for (uint256 v; v < 3; ++v) {
-                    vaults[v].setPriceFeed(stock, feed, e.feedMaxStaleness);
+                for (uint256 v; v < 4; ++v) {
+                    vaults[v].setPriceFeed(stock, feed, v == HOURLY ? e.hourlyFeedMaxStaleness : e.feedMaxStaleness);
                 }
             }
         }
@@ -349,16 +373,16 @@ contract Deploy is Script {
                 require(feed != address(0), string.concat("PRICE_FEEDS: no feed for ", vm.toString(stocks[s])));
             }
         }
-        for (uint256 v; v < 3; ++v) {
+        for (uint256 v; v < 4; ++v) {
             vaults[v].setPriceGuard(e.priceGuardBps, e.requirePriceFeed, e.sequencerFeed, e.sequencerGrace);
         }
     }
 
     /// @dev MAX_PAGE_NOTIONAL_USDG (whole USDG, vault default) and PAGE_NOTIONAL_CAPS="0xstock:wholeUsdg,..." for
     ///      stocks whose pools are thinner (or deeper) than the default assumes.
-    function _setPageCaps(PlanVault[3] memory vaults, Env memory e) internal {
+    function _setPageCaps(PlanVault[4] memory vaults, Env memory e) internal {
         uint256 unit = 10 ** IERC20Metadata(e.usdg).decimals();
-        for (uint256 v; v < 3; ++v) {
+        for (uint256 v; v < 4; ++v) {
             vaults[v].setMaxPageNotional(address(0), e.maxPageNotional);
         }
         if (bytes(e.pageCaps).length == 0) return;
@@ -368,7 +392,7 @@ contract Deploy is Script {
             require(kv.length == 2, "PAGE_NOTIONAL_CAPS entry must be stock:usdg");
             address stock = vm.parseAddress(kv[0]);
             uint256 cap = vm.parseUint(kv[1]) * unit;
-            for (uint256 v; v < 3; ++v) {
+            for (uint256 v; v < 4; ++v) {
                 vaults[v].setMaxPageNotional(stock, cap);
             }
         }
@@ -410,6 +434,7 @@ contract Deploy is Script {
         j.serialize("uniV3Adapter", address(o.uniV3));
         j.serialize("uniV4Adapter", address(o.uniV4));
         j.serialize("ramsesV3Adapter", address(o.ramses));
+        j.serialize("hourly", address(o.hourly));
         j.serialize("daily", address(o.daily));
         j.serialize("weekly", address(o.weekly));
         j.serialize("monthly", address(o.monthly));

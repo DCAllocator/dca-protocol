@@ -6,6 +6,7 @@ import {IPlanVault} from "../../src/interfaces/IPlanVault.sol";
 import {FeeConfig, VaultParams} from "../../src/vault/VaultTypes.sol";
 import {FeeMath} from "../../src/libraries/FeeMath.sol";
 import {DailyVault} from "../../src/vault/DailyVault.sol";
+import {HourlyVault} from "../../src/vault/HourlyVault.sol";
 import {MockRouter} from "../mocks/MockRouter.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -53,9 +54,16 @@ contract PlanVaultAdminTest is BaseTest {
         assertEq(daily.router(), address(router));
         assertEq(daily.feeRecipient(), treasury);
         assertEq(daily.owner(), owner);
+        assertEq(hourly.vaultKind(), "hourly");
         assertEq(daily.vaultKind(), "daily");
         assertEq(weekly.vaultKind(), "weekly");
         assertEq(monthly.vaultKind(), "monthly");
+        // each kind differs from PlanVault's shared defaults only in epoch length and purchase fee
+        assertEq(hourly.epochLength(), 1 hours);
+        assertEq(hourly.fees().purchaseFeeBps, 90);
+        assertEq(hourly.fees().claimFeeBps, 25);
+        assertEq(hourly.minAmountPerEpoch(), 10e6);
+        assertTrue(hourly.keeperOnly());
         assertEq(usdg.allowance(address(daily), address(router)), 0, "no standing approvals (v0.3 M-03)");
         assertEq(weth.allowance(address(daily), address(router)), 0);
     }
@@ -73,6 +81,21 @@ contract PlanVaultAdminTest is BaseTest {
         new DailyVault(p);
         p.origin = uint64(block.timestamp);
         new DailyVault(p); // ok: epoch 0 starts now
+    }
+
+    /// Same rule with the hourly epoch: the window is one hour, not one day (T0 is 14:00:00 exactly).
+    function test_constructor_rejectsBadOrigin_hourly() public {
+        VaultParams memory p = _params();
+        p.origin = uint64(T0 - 1 hours); // an hour ago: fine for a daily vault, one whole epoch ago here
+        vm.expectRevert(IPlanVault.BadOrigin.selector);
+        new HourlyVault(p);
+        p.origin = uint64(T0 + 1);
+        vm.expectRevert(IPlanVault.BadOrigin.selector);
+        new HourlyVault(p);
+        p.origin = uint64(T0 - 1 hours + 1); // 13:00:01: epoch 0 = [13:00:01, 14:00:01) contains now
+        new HourlyVault(p);
+        p.origin = uint64(T0);
+        new HourlyVault(p); // ok: epoch 0 starts now
     }
 
     function test_constructor_rejectsZeroAddresses() public {
