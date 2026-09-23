@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:test-vault": "NEXT_PUBLIC_SHOW_TEST_VAULT=1 next dev",
+    "dev:latency": "NEXT_PUBLIC_LOCAL_RPC=http://127.0.0.1:8555 NEXT_DIST_DIR=.next-latency next dev -p 3004",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

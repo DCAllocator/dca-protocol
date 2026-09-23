@@ -35,7 +35,8 @@
     ".next-test-vault/types/**/*.ts",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next-buildcheck/types/**/*.ts"
+    ".next-buildcheck/types/**/*.ts",
+    ".next-latency/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
