@@ -2,7 +2,9 @@
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { countdown } from "@/lib/format";
+import type { Hash } from "viem";
+import { activeChain } from "@/lib/chain";
+import { countdown, short } from "@/lib/format";
 import { tickerIconUrl } from "@/lib/tickers";
 import { useTheme } from "@/lib/theme";
 
@@ -242,23 +244,43 @@ export function Tip({ text, className = "" }: { text: string; className?: string
 /* Overlays                                                             */
 /* ------------------------------------------------------------------ */
 
-/** Centered dialog (bottom sheet on phones). Closes on Escape and backdrop click. */
-export function Modal({ open, onClose, title, children, width = "max-w-md" }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; width?: string }) {
+/**
+ * Centered dialog (bottom sheet on phones). Closes on Escape and backdrop click. `closable={false}` holds it
+ * open while a transaction is in flight: the close button is hidden and Escape / backdrop are ignored, so a
+ * stray click cannot drop a form whose write is still waiting for the wallet or the network.
+ */
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  width = "max-w-md",
+  closable = true,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: ReactNode;
+  children: ReactNode;
+  width?: string;
+  closable?: boolean;
+}) {
   useEffect(() => {
-    if (!open) return;
+    if (!open || !closable) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, closable, onClose]);
   if (!open) return null;
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && closable && onClose()}>
       <div role="dialog" aria-modal className={`card w-full ${width} rounded-b-none sm:rounded-b-xl`}>
         <header className="flex items-center justify-between px-5 pt-5">
           <h2 className="text-[16px] font-medium text-ink">{title}</h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="btn-ghost h-8 w-8 px-0 text-ink-3">
-            <Icon name="x" />
-          </button>
+          {closable && (
+            <button type="button" onClick={onClose} aria-label="Close" className="btn-ghost h-8 w-8 px-0 text-ink-3">
+              <Icon name="x" />
+            </button>
+          )}
         </header>
         <div className="card-pad">{children}</div>
       </div>
@@ -416,6 +438,23 @@ export function Notice({ kind = "info", children }: { kind?: "info" | "warn" | "
   return <div className={`rounded-lg border px-3 py-2 text-[12px] leading-relaxed ${cls}`}>{children}</div>;
 }
 
+/** Short transaction hash, linked to the explorer when the chain has one (plain text with a title otherwise). */
+export function HashLink({ hash }: { hash: Hash }) {
+  const explorer = activeChain.blockExplorers?.default.url;
+  if (!explorer)
+    return (
+      <span className="num shrink-0 text-[11.5px] text-ink-3" title={hash}>
+        {short(hash)}
+      </span>
+    );
+  return (
+    <a className="num inline-flex shrink-0 items-center gap-1 text-[11.5px] text-ink-3 hover:text-ink hover:underline" href={`${explorer}/tx/${hash}`} target="_blank" rel="noreferrer" title={hash}>
+      {short(hash)}
+      <Icon name="external" size={11} />
+    </a>
+  );
+}
+
 /** Tickers whose /tickers/<TICKER>.svg already 404'd this session, so later instances skip the probe. */
 const missingLogos = new Set<string>();
 
@@ -517,7 +556,7 @@ export function Empty({ children }: { children: ReactNode }) {
 /* Icons (16px, stroke)                                                 */
 /* ------------------------------------------------------------------ */
 
-export type IconName = "plus" | "plans" | "activity" | "overview" | "token" | "docs" | "x" | "dots" | "menu" | "arrow" | "external" | "check" | "chevron" | "info" | "bolt" | "sun" | "moon";
+export type IconName = "plus" | "plans" | "activity" | "overview" | "token" | "docs" | "x" | "dots" | "menu" | "arrow" | "external" | "check" | "chevron" | "info" | "bolt" | "sun" | "moon" | "wallet";
 
 export function Icon({ name, size = 16, className = "" }: { name: IconName; size?: number; className?: string }) {
   const p: Record<IconName, ReactNode> = {
@@ -586,6 +625,12 @@ export function Icon({ name, size = 16, className = "" }: { name: IconName; size
       </>
     ),
     moon: <path d="M13.2 10.1A5.6 5.6 0 0 1 5.9 2.8a5.6 5.6 0 1 0 7.3 7.3z" />,
+    wallet: (
+      <>
+        <path d="M12.5 5V3.8a1.3 1.3 0 0 0-1.3-1.3H3.8a1.3 1.3 0 0 0-1.3 1.3v8.4a1.3 1.3 0 0 0 1.3 1.3h8.4a1.3 1.3 0 0 0 1.3-1.3V9.5" />
+        <path d="M10 6.2h3.5v3.3H10a1.65 1.65 0 0 1 0-3.3z" />
+      </>
+    ),
   };
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>

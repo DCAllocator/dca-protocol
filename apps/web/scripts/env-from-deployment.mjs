@@ -24,6 +24,9 @@ const env = [
   `NEXT_PUBLIC_WC_PROJECT_ID=${process.env.NEXT_PUBLIC_WC_PROJECT_ID ?? ""}`,
   `NEXT_PUBLIC_LOG_LOOKBACK=200000`,
   `NEXT_PUBLIC_BLOCKED_COUNTRIES=US,GB,CA,AU,CU,IR,KP,SY`,
+  // "Buy $DCA" destination off-site (Pons) and the flag that forces the Buy tab on a real chain; see .env.local.example.
+  `# NEXT_PUBLIC_BUY_DCA_URL=`,
+  `# NEXT_PUBLIC_ENABLE_BUY_TAB=1`,
   "",
 ].join("\n");
 writeFileSync(join(webRoot, ".env.local"), env);

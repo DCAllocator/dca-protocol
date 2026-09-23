@@ -7,14 +7,16 @@ import type { Address } from "viem";
 import { VaultDirectoryAbi, StockRegistryAbi, PlanVaultAbi, ERC20Abi, ClaimHelperAbi, AggregatorRouterAbi, MorphoBlueStrategyAbi, IMorphoAbi } from "@/abi";
 import { Market, UnsupportedMarketIrmError } from "@morpho-org/blue-sdk";
 import type { PublicClient } from "viem";
-import { ADDRESSES, isZero, TEST_VAULT, VAULT_KINDS, SECONDS_PER_YEAR, DCA_PERK_DEFAULTS, type VaultKind } from "@/lib/config";
+import { ADDRESSES, isZero, TEST_VAULT, VAULT_KINDS, SECONDS_PER_YEAR, DCA_PERK_DEFAULTS, USDG_DECIMALS, type VaultKind } from "@/lib/config";
 import { valueOf } from "@/lib/format";
 import marketCapSnapshot from "@/data/market-caps.json";
 
 /** Periodic CoinGecko snapshot of each Stock Token's market cap (symbol → USD), see scripts/snapshot-market-caps.mjs. */
 const STOCK_MARKET_CAPS: Record<string, number> = marketCapSnapshot.marketCaps;
 
+/** VaultDirectory.Entry, field for field (vaults first, fastest first: the on-chain `vaults()` order). */
 export type Directory = {
+  hourly: Address;
   daily: Address;
   weekly: Address;
   monthly: Address;
@@ -41,7 +43,7 @@ export function useDirectory() {
   });
   const dir = q.data as Directory | undefined;
   const vaults = useMemo<VaultMap | undefined>(
-    () => (dir ? ({ daily: dir.daily, weekly: dir.weekly, monthly: dir.monthly, ...(TEST_VAULT ? { test: TEST_VAULT } : {}) } as VaultMap) : undefined),
+    () => (dir ? ({ hourly: dir.hourly, daily: dir.daily, weekly: dir.weekly, monthly: dir.monthly, ...(TEST_VAULT ? { test: TEST_VAULT } : {}) } as VaultMap) : undefined),
     [dir],
   );
   return { dir, vaults, isLoading: q.isLoading, error: q.error, configured: !isZero(ADDRESSES.directory) };
@@ -400,6 +402,24 @@ export function useQuote(router?: Address, tokenIn?: Address, tokenOut?: Address
   });
 }
 
+/** One whole USDG, the probe amount `useBuyDcaRoute` quotes with. */
+const ONE_USDG = 10n ** BigInt(USDG_DECIMALS);
+
+/**
+ * Can $DCA be bought in-app on this chain? True when the directory names a token and the router quotes
+ * USDG → $DCA for 1 USDG (hops are directional, so this is the buy direction — `useDcaToken` quotes the
+ * other way for the price). The source of truth is the router, not the FeeReceiver or the adapters'
+ * approved-hop list: a quote that comes back is proof of a live, routable pool. `isLoading` is true only
+ * while the first probe is in flight, so a caller can reserve the tab's slot and hide it only on a settled
+ * failure. An ETH-paired Pons / Uniswap v4 pool does NOT light this up (the router cannot route native-ETH
+ * pools); use BUY_DCA_TAB_FORCED for that case.
+ */
+export function useBuyDcaRoute(dir?: Directory) {
+  const configured = !!dir && !isZero(dir.dca);
+  const q = useQuote(configured ? dir.router : undefined, dir?.usdg, dir?.dca, ONE_USDG);
+  return { configured, available: configured && q.data !== undefined, isLoading: configured && q.isLoading };
+}
+
 /* ------------------------------------------------------------------ */
 /* Prices, holdings, TVL                                                */
 /* ------------------------------------------------------------------ */
@@ -454,11 +474,13 @@ export const TOP_STOCKS = 5;
  * yet listed on CoinGecko) keep their place at the bottom in symbol order. `ready` flips once the
  * registry has answered: until then `top` is empty rather than an alphabetical guess, so the "Popular"
  * row never shows the wrong five and then flips.
+ *
+ * No prices here on purpose: quoting every registry stock through the router cost one `eth_call` per
+ * stock per minute on every page that ranks stocks, and the picker does not need a price to choose a
+ * stock. Pages that show USD values (dashboard, plans, token) call `usePrices` for just what they show.
  */
 export function useRankedStocks(dir?: Directory) {
   const { stocks, byAddress, isLoading: stocksLoading } = useStocks(dir?.registry);
-  const tokens = useMemo(() => stocks.map((s) => ({ address: s.address, decimals: s.decimals })), [stocks]);
-  const { prices } = usePrices(dir?.router, dir?.usdg, tokens);
   return useMemo(() => {
     const marketCapOf = (s: Stock) => STOCK_MARKET_CAPS[s.symbol.toUpperCase()];
     const ranked = [...stocks].sort((a, b) => {
@@ -467,8 +489,8 @@ export function useRankedStocks(dir?: Directory) {
     });
     const ready = stocks.length > 0 && !stocksLoading;
     const top = ready ? ranked.filter((s) => (marketCapOf(s) ?? 0) > 0).slice(0, TOP_STOCKS) : [];
-    return { stocks, byAddress, ranked, top, prices, marketCapOf, ready };
-  }, [stocks, byAddress, prices, stocksLoading]);
+    return { stocks, byAddress, ranked, top, marketCapOf, ready };
+  }, [stocks, byAddress, stocksLoading]);
 }
 
 /** Stock still sitting on each vault (accrued, not yet claimed), per stock and in total. */

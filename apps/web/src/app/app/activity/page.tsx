@@ -26,15 +26,28 @@ export default function Activity() {
 
   const mine = new Set(positions.map((p) => `${p.vault.toLowerCase()}:${p.planId}`));
   const inFilter = (vault: `0x${string}`) => filter === "all" || kindOf(vaults, vault) === filter;
-  const fills = (logs.data?.fills ?? []).filter((f) => mine.has(`${f.vault.toLowerCase()}:${f.planId}`) && inFilter(f.vault));
+  const isMine = (vault: `0x${string}`, planId: bigint) => mine.has(`${vault.toLowerCase()}:${planId}`);
+  const newestFirst = (a: { block: bigint; idx: number }, b: { block: bigint; idx: number }) =>
+    a.block === b.block ? b.idx - a.idx : a.block < b.block ? 1 : -1;
+  // "Why didn't my buy happen?" gets an answer inline with the fills. A page that cannot be bought at all leaves
+  // no trace on-chain (it reverts and the keeper retries it), so the only per-plan miss is `PlanTooLarge`: the
+  // plan's spend alone is above the stock's page notional cap, so it sat the epoch out uncharged.
+  const myBuys = [
+    ...(logs.data?.fills ?? [])
+      .filter((f) => isMine(f.vault, f.planId) && inFilter(f.vault))
+      .map((f) => ({ kind: "fill" as const, key: `${f.txHash}-${f.logIndex}`, block: f.blockNumber, idx: f.logIndex, f })),
+    ...(logs.data?.tooLarge ?? [])
+      .filter((t) => isMine(t.vault, t.planId) && inFilter(t.vault))
+      .map((t) => ({ kind: "tooLarge" as const, key: `${t.txHash}-${t.logIndex}`, block: t.blockNumber, idx: t.logIndex, t })),
+  ].sort(newestFirst);
   const epochs = (logs.data?.epochs ?? []).filter((e) => inFilter(e.vault));
-  // Pages the vault could not buy for (no route within limits, swap failed): nobody was charged. Shown inline
-  // with the fills so "why didn't my buy happen?" has an answer. Every row of `all` sorts newest first.
-  const skips = (logs.data?.skips ?? []).filter((e) => inFilter(e.vault));
+  // Pages whose boosted spend the boost strategy could not pay out (lending market fully utilised): the boosted
+  // plans on that page sat it out uncharged while everyone else was filled. Every row of `all` sorts newest first.
+  const boostSkips = (logs.data?.boostSkips ?? []).filter((e) => inFilter(e.vault));
   const all = [
     ...epochs.filter((e) => e.plansFilled > 0).map((e) => ({ kind: "fill" as const, key: `${e.txHash}-${e.logIndex}`, block: e.blockNumber, idx: e.logIndex, e })),
-    ...skips.map((e) => ({ kind: "skip" as const, key: `${e.txHash}-${e.logIndex}`, block: e.blockNumber, idx: e.logIndex, e })),
-  ].sort((a, b) => (a.block === b.block ? b.idx - a.idx : a.block < b.block ? 1 : -1));
+    ...boostSkips.map((e) => ({ kind: "boostSkip" as const, key: `${e.txHash}-${e.logIndex}`, block: e.blockNumber, idx: e.logIndex, e })),
+  ].sort(newestFirst);
   const txLink = (hash: string) => (
     <a className="num text-[12px] text-ink-3 hover:text-ink hover:underline" href={explorer ? `${explorer}/tx/${hash}` : "#"} target="_blank" rel="noreferrer">
       {short(hash)}
@@ -62,7 +75,7 @@ export default function Activity() {
         flush
         title={tab === "mine" ? "My buys" : "All buys"}
         actions={
-          <div className="flex gap-1">
+          <div className="flex flex-wrap justify-end gap-1">
             {(["all", ...VAULT_KINDS] as const).map((k) => (
               <button key={k} type="button" onClick={() => setFilter(k)} className={`chip h-7 px-2.5 ${filter === k ? "border-lime text-lime" : ""}`}>
                 {k === "all" ? "All" : VAULT_META[k].label}
@@ -81,7 +94,7 @@ export default function Activity() {
               <ConnectButton />
               <div className="mt-3">Connect a wallet to see your buys.</div>
             </Empty>
-          ) : fills.length === 0 ? (
+          ) : myBuys.length === 0 ? (
             <Empty>No buys yet. Your first one lands at the next scheduled buy.</Empty>
           ) : (
             <table className="tbl">
@@ -97,20 +110,40 @@ export default function Activity() {
                 </tr>
               </thead>
               <tbody>
-                {fills.slice(0, 100).map((f) => {
-                  const pos = positions.find((p) => p.vault.toLowerCase() === f.vault.toLowerCase() && p.planId === f.planId);
+                {myBuys.slice(0, 100).map((row) => {
+                  const l = row.kind === "fill" ? row.f : row.t;
+                  const pos = positions.find((p) => p.vault.toLowerCase() === l.vault.toLowerCase() && p.planId === l.planId);
                   const stock = pos ? byAddress[pos.stock.toLowerCase()] : undefined;
-                  const kind = kindOf(vaults, f.vault);
-                  return (
-                    <tr key={`${f.txHash}-${f.logIndex}`}>
-                      <td className="text-[12px] text-ink-2">{f.timestamp ? tsToShort(f.timestamp) : `block ${f.blockNumber}`}</td>
+                  const kind = kindOf(vaults, l.vault);
+                  const lead = (
+                    <>
+                      <td className="text-[12px] text-ink-2">{l.timestamp ? tsToShort(l.timestamp) : `block ${l.blockNumber}`}</td>
                       <td>
                         <span className="flex items-center gap-2 font-semibold text-ink">
                           <StockAvatar symbol={stock?.symbol ?? "?"} size={24} />
                           {stock?.symbol ?? "?"}
                         </span>
                       </td>
-                      <td className="text-ink-2">{kind ? VAULT_META[kind].label : short(f.vault)}</td>
+                      <td className="text-ink-2">{kind ? VAULT_META[kind].label : short(l.vault)}</td>
+                    </>
+                  );
+                  if (row.kind === "tooLarge") {
+                    const t = row.t;
+                    return (
+                      <tr key={row.key}>
+                        {lead}
+                        <td colSpan={3} className="text-[12px] text-warn">
+                          Sat out — {fmtUsd(t.spend)} per buy is above this stock&apos;s {fmtUsd(t.cap)} page cap. You were not charged; lower
+                          the amount per buy to resume.
+                        </td>
+                        <td className="text-right">{txLink(t.txHash)}</td>
+                      </tr>
+                    );
+                  }
+                  const f = row.f;
+                  return (
+                    <tr key={row.key}>
+                      {lead}
                       <td className="num text-right">{fmtUsd(f.spendUsdg)}</td>
                       <td className="num text-right">
                         {fmtUnits(f.stockShare, stock?.decimals ?? 18, 6)} <span className="text-[11px] text-ink-3">{stock?.symbol}</span>
@@ -143,7 +176,7 @@ export default function Activity() {
                 const e = row.e;
                 const stock = byAddress[e.stock.toLowerCase()];
                 const kind = kindOf(vaults, e.vault);
-                if (row.kind === "skip") {
+                if (row.kind === "boostSkip") {
                   return (
                     <tr key={row.key}>
                       <td className="text-[12px] text-ink-2">{e.timestamp ? tsToShort(e.timestamp) : `block ${e.blockNumber}`}</td>
@@ -155,7 +188,8 @@ export default function Activity() {
                       </td>
                       <td className="text-ink-2">{kind ? VAULT_META[kind].label : short(e.vault)}</td>
                       <td colSpan={3} className="text-[12px] text-warn">
-                        Skipped — {row.e.reason}. Nobody was charged; the plans try again next {kind ? VAULT_META[kind].per : "period"}.
+                        Boosted plans sat this buy out — {row.e.reason}. They were not charged ({fmtUsd(row.e.usdgRequested)} stayed lent out);
+                        unboosted plans were filled as usual.
                       </td>
                       <td className="text-right">{txLink(e.txHash)}</td>
                     </tr>

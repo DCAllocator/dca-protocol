@@ -29,7 +29,7 @@ export default function Docs() {
         <div className="space-y-6">
           <Section id="what" title="What is DCA?">
             <p>
-              DCA buys Robinhood Stock Tokens for you on a schedule, on-chain. You pick a stock, choose daily, weekly or monthly buys, and fund the
+              DCA buys Robinhood Stock Tokens for you on a schedule, on-chain. You pick a stock, choose hourly, daily, weekly or monthly buys, and fund the
               plan with USDG or ETH. Every buy happens automatically at the same time for everyone, at the best price across Uniswap V3, Uniswap V4 and
               Ramses.
             </p>
@@ -39,7 +39,7 @@ export default function Docs() {
           <Section id="plans" title="Plans">
             <ul className="list-disc space-y-1 pl-5">
               <li>
-                <b>Daily</b> plans buy every day at 00:00 UTC. <b>Weekly</b> plans buy every Monday at 00:00 UTC. <b>Monthly</b> plans buy every 30 days.
+                <b>Hourly</b> plans buy every hour, on the hour (UTC), around the clock. <b>Daily</b> plans buy every day at 00:00 UTC. <b>Weekly</b> plans buy every Monday at 00:00 UTC. <b>Monthly</b> plans buy every 30 days.
               </li>
               <li>Each buy spends the amount you set, as long as the plan has funds. If a plan runs dry it simply waits.</li>
               <li>
@@ -104,44 +104,52 @@ export default function Docs() {
 
           <Section id="fees" title="Fees">
             <p>One purchase fee per buy, taken before the swap. Nothing on deposit. Every fee is capped at 0.90% in the contract.</p>
-            <table className="tbl -mx-5 w-[calc(100%+2.5rem)]">
-              <thead>
-                <tr>
-                  <th>Fee</th>
-                  <th className="text-right">Daily</th>
-                  <th className="text-right">Weekly</th>
-                  <th className="text-right">Monthly</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td className="text-ink-2">Purchase, per buy</td>
-                  <td className="num text-right">0.75%</td>
-                  <td className="num text-right">0.50%</td>
-                  <td className="num text-right">0.25%</td>
-                </tr>
-                <tr>
-                  <td className="text-ink-2">Deposit</td>
-                  <td className="num text-right">0%</td>
-                  <td className="num text-right">0%</td>
-                  <td className="num text-right">0%</td>
-                </tr>
-                <tr>
-                  <td className="text-ink-2">Withdraw funds</td>
-                  <td className="num text-right">0.25%</td>
-                  <td className="num text-right">0.25%</td>
-                  <td className="num text-right">0.25%</td>
-                </tr>
-                <tr>
-                  <td className="text-ink-2">
-                    Claim stock (free with <PerkThreshold perk="autoDistribute" compact />)
-                  </td>
-                  <td className="num text-right">0.25%</td>
-                  <td className="num text-right">0.25%</td>
-                  <td className="num text-right">0.25%</td>
-                </tr>
-              </tbody>
-            </table>
+            {/* Five columns do not fit a phone: the label column wraps and the table scrolls inside the card, never the page. */}
+            <div className="-mx-5 overflow-x-auto">
+              <table className="tbl w-full min-w-[420px]">
+                <thead>
+                  <tr>
+                    <th>Fee</th>
+                    <th className="text-right">Hourly</th>
+                    <th className="text-right">Daily</th>
+                    <th className="text-right">Weekly</th>
+                    <th className="text-right">Monthly</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className="whitespace-normal text-ink-2">Purchase, per buy</td>
+                    <td className="num text-right">0.90%</td>
+                    <td className="num text-right">0.75%</td>
+                    <td className="num text-right">0.50%</td>
+                    <td className="num text-right">0.25%</td>
+                  </tr>
+                  <tr>
+                    <td className="whitespace-normal text-ink-2">Deposit</td>
+                    <td className="num text-right">0%</td>
+                    <td className="num text-right">0%</td>
+                    <td className="num text-right">0%</td>
+                    <td className="num text-right">0%</td>
+                  </tr>
+                  <tr>
+                    <td className="whitespace-normal text-ink-2">Withdraw funds</td>
+                    <td className="num text-right">0.25%</td>
+                    <td className="num text-right">0.25%</td>
+                    <td className="num text-right">0.25%</td>
+                    <td className="num text-right">0.25%</td>
+                  </tr>
+                  <tr>
+                    <td className="whitespace-normal text-ink-2">
+                      Claim stock (free with <PerkThreshold perk="autoDistribute" compact />)
+                    </td>
+                    <td className="num text-right">0.25%</td>
+                    <td className="num text-right">0.25%</td>
+                    <td className="num text-right">0.25%</td>
+                    <td className="num text-right">0.25%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
             <p className="text-[12px] text-ink-3">
               Defaults shown; live values are on the{" "}
               <Link href="/app/token" className="text-lime hover:underline">
@@ -155,6 +163,10 @@ export default function Docs() {
             <ul className="list-disc space-y-1 pl-5">
               <li>Stock Tokens are economic exposure to a stock, not shares or shareholder rights. They can trade away from the underlying price.</li>
               <li>Buys execute against on-chain liquidity. If a buy cannot be filled within the price limits it is skipped for that period and nobody is charged.</li>
+              <li>
+                Hourly plans also buy while stock markets are closed (nights and weekends). The price check then leans on the last market close, and
+                buys during a long closure can be skipped when that price is too old.
+              </li>
               <li>Only the protocol's operators can trigger buys. No operator, no buys. Missed buys are skipped, never caught up.</li>
               <li>Early software: one round of review and remediation so far (see the repository's AUDIT.md). Only use funds you can afford to lose.</li>
               <li>Not offered to US persons or in the United Kingdom, Canada, Australia or sanctioned regions.</li>

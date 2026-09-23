@@ -36,13 +36,17 @@ export const BOOST = {
   tip: "Idle USDG in this plan is lent on Morpho Blue and earns the market's supply rate until each buy. It is pulled back automatically at every buy and whenever you withdraw. Lending carries its own risks: the market can run short of liquidity or take on bad debt.",
 } as const;
 
-/** The three production frequencies, in display order (this is what the marketing site shows). */
-export const PRODUCTION_VAULT_KINDS = ["daily", "weekly", "monthly"] as const;
+/**
+ * The four production frequencies, fastest first, in display order (this is what the marketing site shows).
+ * The order matches `VaultDirectory.Entry` / `vaults()` on-chain: [hourly, daily, weekly, monthly].
+ */
+export const PRODUCTION_VAULT_KINDS = ["hourly", "daily", "weekly", "monthly"] as const;
 export type ProductionVaultKind = (typeof PRODUCTION_VAULT_KINDS)[number];
 /** `test` is the local-only short-epoch TestVault (contracts/test/mocks/TestVault.sol); see TEST_VAULT. */
 export type VaultKind = ProductionVaultKind | "test";
 
-const flagOn = (v: string | undefined) => ["1", "true", "yes"].includes((v ?? "").toLowerCase());
+/** Whether a NEXT_PUBLIC_* switch is on: "1", "true" or "yes" (any case). */
+export const flagOn = (v: string | undefined) => ["1", "true", "yes"].includes((v ?? "").toLowerCase());
 
 /**
  * Dev-only test vault (minutes-long epochs, advanced by apps/scheduler). Shown only when the app targets
@@ -65,13 +69,15 @@ export const VAULT_KINDS: readonly VaultKind[] = TEST_VAULT ? [...PRODUCTION_VAU
 
 /**
  * User-facing copy per frequency. "Vault" is the contract-side name; in the product a user picks a
- * *frequency* for their *plan*. `per` is the noun used after an amount ("$50 per day"). The test vault's
+ * *frequency* for their *plan*. `per` is the noun used after an amount ("$50 per day"). Hourly runs 24/7
+ * (no market-hours gating) at the 90 bps fee cap (FeeMath.MAX_FEE_BPS). The test vault's
  * cadence and buys-per-month depend on its on-chain `epochLength` — use `cadenceOf` / `buysPerMonthOf`.
  */
 export const VAULT_META: Record<
   VaultKind,
   { label: string; per: string; cadence: string; blurb: string; buysPerMonth: number; defaultFeeBps: number }
 > = {
+  hourly: { label: "Hourly", per: "hour", cadence: "Every hour, on the hour (UTC)", blurb: "Fastest. Buys every hour.", buysPerMonth: 720, defaultFeeBps: 90 },
   daily: { label: "Daily", per: "day", cadence: "Every day at 00:00 UTC", blurb: "Smoothest entry. Buys every day.", buysPerMonth: 30, defaultFeeBps: 75 },
   weekly: { label: "Weekly", per: "week", cadence: "Every Monday at 00:00 UTC", blurb: "The classic. One buy a week.", buysPerMonth: 4.35, defaultFeeBps: 50 },
   monthly: { label: "Monthly", per: "month", cadence: "Every 30 days", blurb: "Set it and forget it.", buysPerMonth: 1, defaultFeeBps: 25 },
@@ -110,7 +116,17 @@ export const DCA_PERK_DEFAULTS = {
 export const DOCS_PATH = "/app/docs";
 
 /**
- * Where "Buy $DCA" sends people. The token launches through Pons; until that link is set
- * (NEXT_PUBLIC_BUY_DCA_URL) the button goes to the in-app token page.
+ * Where the landing page's "Buy $DCA" sends people. The token launches through Pons; until that link is set
+ * (NEXT_PUBLIC_BUY_DCA_URL) the button goes to the in-app token page. An https URL is opened in a new tab
+ * (see components/BuyDcaLink.tsx); it is also the "Buy on Pons" hand-off /app/buy shows when the router
+ * has no USDG → $DCA route on this chain.
  */
 export const BUY_DCA_URL = process.env.NEXT_PUBLIC_BUY_DCA_URL ?? "/app/token";
+
+/**
+ * Forces the "Buy $DCA" tab (and the in-app swap at /app/buy) on, regardless of whether the router can quote
+ * USDG → $DCA: always on the local anvil, and on a real chain with NEXT_PUBLIC_ENABLE_BUY_TAB=1. Without it
+ * the tab lights only when `useBuyDcaRoute` finds a routable pool — an ETH-paired Pons / Uniswap v4 pool
+ * is not one (the router rejects native-ETH pools), so a launch through Pons needs this flag or a WETH-side route.
+ */
+export const BUY_DCA_TAB_FORCED = activeChain.id === 31337 || flagOn(process.env.NEXT_PUBLIC_ENABLE_BUY_TAB);

@@ -53,31 +53,35 @@ export function FeeTable() {
     ["Withdraw idle funds", (k: ProductionVaultKind) => byKind[k]?.fees?.withdrawFeeBps ?? 25],
     [`Claim (free with ${fmtUnitsCompact(autoDistribute, 18)} $DCA)`, (k: ProductionVaultKind) => byKind[k]?.fees?.claimFeeBps ?? 25],
   ] as const;
+  // Five columns (four vaults + labels) overflow a phone: the label column wraps and the table scrolls inside
+  // its own box rather than widening the page.
   return (
-    <table className="tbl">
-      <thead>
-        <tr>
-          <th>Fee</th>
-          {PRODUCTION_VAULT_KINDS.map((k) => (
-            <th key={k} className="text-right">
-              {VAULT_META[k].label}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map(([label, get]) => (
-          <tr key={label}>
-            <td className="text-ink-2">{label}</td>
+    <div className="overflow-x-auto">
+      <table className="tbl w-full">
+        <thead>
+          <tr>
+            <th>Fee</th>
             {PRODUCTION_VAULT_KINDS.map((k) => (
-              <td key={k} className="num text-right text-ink">
-                {fmtBps(get(k))}
-              </td>
+              <th key={k} className="text-right">
+                {VAULT_META[k].label}
+              </th>
             ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map(([label, get]) => (
+            <tr key={label}>
+              <td className="min-w-[140px] whitespace-normal text-ink-2">{label}</td>
+              {PRODUCTION_VAULT_KINDS.map((k) => (
+                <td key={k} className="num text-right text-ink">
+                  {fmtBps(get(k))}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { formatEther, formatUnits, parseEther, parseUnits } from "viem";
 import { useAccount, useReadContract } from "wagmi";
-import { useDirectory, useRankedStocks, useVaults, useUser, useQuote, useBoostApys, boostAvailable, TOP_STOCKS, type Stock, type PriceMap } from "@/hooks/useProtocol";
+import { useDirectory, useRankedStocks, useVaults, useUser, useQuote, useBoostApys, boostAvailable, TOP_STOCKS, type Stock } from "@/hooks/useProtocol";
 import { useTxSequence, type TxStep } from "@/hooks/useTx";
 import { PlanVaultAbi, ERC20Abi } from "@/abi";
 import { PageHeader, Notice, Spinner, StockAvatar, Segmented, Countdown, Icon } from "@/components/ui";
@@ -33,7 +33,7 @@ const ZAP_SLIPPAGE_BPS = 50n;
 export default function CreatePlan() {
   const { address } = useAccount();
   const { dir, vaults, configured } = useDirectory();
-  const { stocks, ranked, top, prices, ready: rankReady } = useRankedStocks(dir);
+  const { stocks, ranked, top, ready: rankReady } = useRankedStocks(dir);
   const { infos, byKind, refetch: refetchVaults } = useVaults(vaults);
 
   const [stock, setStock] = useState<string>("");
@@ -153,7 +153,7 @@ export default function CreatePlan() {
               <p className="text-[13px] text-ink-3">No stocks are listed yet.</p>
             ) : (
               <>
-                <StockSelect stocks={ranked} prices={prices} value={stockAddr ?? ""} onSelect={setStock} />
+                <StockSelect stocks={ranked} value={stockAddr ?? ""} onSelect={setStock} />
                 {(!rankReady || top.length > 0) && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="mr-1 text-[12.5px] text-ink-3">Popular</span>
@@ -410,7 +410,7 @@ export default function CreatePlan() {
 }
 
 /** Token-selector style stock picker: the current pick on a tile, a searchable list (ranked, popular first) beneath. */
-function StockSelect({ stocks, prices, value, onSelect }: { stocks: Stock[]; prices: PriceMap; value: string; onSelect: (address: string) => void }) {
+function StockSelect({ stocks, value, onSelect }: { stocks: Stock[]; value: string; onSelect: (address: string) => void }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -432,7 +432,6 @@ function StockSelect({ stocks, prices, value, onSelect }: { stocks: Stock[]; pri
   const q = query.trim().toLowerCase();
   const filtered = q ? stocks.filter((s) => s.symbol.toLowerCase().includes(q) || tickerName(s.symbol).toLowerCase().includes(q)) : stocks;
   const selected = stocks.find((s) => s.address === value);
-  const price = selected ? prices[selected.address.toLowerCase()] : undefined;
 
   return (
     <div ref={wrapRef} className="relative">
@@ -444,7 +443,6 @@ function StockSelect({ stocks, prices, value, onSelect }: { stocks: Stock[]; pri
               {selected.symbol}
               {tickerName(selected.symbol) !== selected.symbol && <span className="ml-1.5 font-normal text-ink-3">{tickerName(selected.symbol)}</span>}
             </span>
-            {price !== undefined && <span className="num shrink-0 text-[12.5px] text-ink-3">{fmtUsd(price)}</span>}
           </>
         ) : (
           <span className="flex-1 text-[14px] text-ink-3">Choose a stock</span>
@@ -461,7 +459,6 @@ function StockSelect({ stocks, prices, value, onSelect }: { stocks: Stock[]; pri
             <div className="px-3 py-6 text-center text-[12.5px] text-ink-3">No stocks match &ldquo;{query}&rdquo;.</div>
           ) : (
             filtered.map((s) => {
-              const p = prices[s.address.toLowerCase()];
               return (
                 <button
                   key={s.address}
@@ -480,7 +477,6 @@ function StockSelect({ stocks, prices, value, onSelect }: { stocks: Stock[]; pri
                     <span className="text-[13px] font-medium text-ink">{s.symbol}</span>
                     {tickerName(s.symbol) !== s.symbol && <span className="ml-1.5 text-[12px] text-ink-3">{tickerName(s.symbol)}</span>}
                   </span>
-                  <span className="num shrink-0 text-[12px] text-ink-3">{p !== undefined ? fmtUsd(p) : "—"}</span>
                 </button>
               );
             })

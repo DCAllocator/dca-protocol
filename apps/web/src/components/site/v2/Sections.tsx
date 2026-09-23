@@ -196,7 +196,7 @@ export function V2Manifesto() {
   const lines: [string, string, string][] = [
     ["01", "Boomer assets. Degen rails.", "NVDA, SPY, TSLA, GLD, bought from a wallet on an L2. Wall Street closes at 4. The daily vault buys at 00:00 UTC, Sundays included."],
     ["02", "A DCA plan with a burn address.", `At each distribution ${V2.split.buybackBps / 100}% of the fees go to a reserve. The reserve leaves one way: swapped into $DCA and burned, same transaction. Nothing is parked.`],
-    ["03", "Fees you can read.", `0.75% daily. 0.50% weekly. 0.25% monthly. Hard-capped at ${pct(V2.maxFeeBps)} in code. No key can set one past it.`],
+    ["03", "Fees you can read.", `0.90% hourly. 0.75% daily. 0.50% weekly. 0.25% monthly. Hard-capped at ${pct(V2.maxFeeBps)} in code. No key can set one past it.`],
     ["04", "Skipped, not charged.", "Can't fill inside the price caps? The page waits or is skipped and nobody pays. Missed epochs are never double-charged."],
   ];
   return (
@@ -281,7 +281,7 @@ export function V2Burn() {
               <div className="grid grid-cols-[auto_1fr] items-start gap-x-3 gap-y-3 px-4 py-4 text-[13.5px]">
                 <span className="v2-num text-[12px] font-semibold text-lime">A</span>
                 <p className="text-ink-2">
-                  <b className="font-semibold text-ink">Stock plans.</b> 0.25% to 0.75% per buy → FeeReceiver.
+                  <b className="font-semibold text-ink">Stock plans.</b> 0.25% to 0.90% per buy → FeeReceiver.
                 </p>
                 <span className="v2-num text-[12px] font-semibold text-lime">B</span>
                 <p className="text-ink-2">
@@ -383,7 +383,7 @@ export function V2Hold() {
 export function V2Protocol() {
   const steps: [string, string, string][] = [
     ["01", "Pick a Stock Token and an amount.", "Any token in Robinhood's registry, from $10 a buy."],
-    ["02", "Pick a rhythm.", "Daily at 00:00 UTC. Weekly on Monday 00:00 UTC. Monthly every 30 days."],
+    ["02", "Pick a rhythm.", "Hourly on the hour. Daily at 00:00 UTC. Weekly on Monday 00:00 UTC. Monthly every 30 days."],
     ["03", "Deposit once.", "USDG, or ETH converted to USDG on deposit. Minimum $10. No deposit fee."],
   ];
   const safes = [
