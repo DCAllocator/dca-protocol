@@ -28,6 +28,10 @@ import {Plan, FeeConfig, VaultParams, DustState, PriceGuard, PriceFeed} from "./
 /// @notice Shared implementation of a DCA frequency vault. Daily / Weekly / Monthly are thin subclasses
 ///         that fix `epochLength` and the default purchase fee.
 ///
+/// @notice Twitter/X: https://twitter.com/DCAllocator
+/// @notice Github: https://github.com/DCAllocator/dca-protocol
+/// @notice Web: https://dcallocator.com
+///
 /// @dev Accounting model
 ///      - Vaults hold USDG (idle) and Stock Tokens (accrued) only. ETH / WETH deposits are converted to USDG
 ///        at deposit time; any unfilled WETH remainder goes straight back to the depositor.

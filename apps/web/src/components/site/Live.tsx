@@ -10,8 +10,9 @@ export function LiveStats() {
   const { dir, vaults, configured } = useDirectory();
   const { infos } = useVaults(vaults);
   const { stocks } = useStocks(dir?.registry);
-  // Vaults hold USDG only (ETH is converted on deposit), so "waiting to buy" is exactly the idle USDG.
-  const usdgIdle = infos.reduce((a, v) => a + (v.totalUsdgIdle ?? 0n), 0n);
+  // Vaults hold USDG only (ETH is converted on deposit), so "waiting to buy" is the idle USDG plus what boosted
+  // plans have lent out on Morpho (`boostAssets`), which is not in `totalUsdgIdle`.
+  const usdgIdle = infos.reduce((a, v) => a + (v.totalUsdgIdle ?? 0n) + (v.boostAssets ?? 0n), 0n);
   const notional = infos.reduce((a, v) => a + (v.totalNotionalUsdg ?? 0n), 0n);
   const epochs = infos.reduce((a, v) => a + (v.epochsCompleted ?? 0n), 0n);
   const ready = configured && infos.length > 0;
