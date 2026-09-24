@@ -1,0 +1,41 @@
+/*
+ * FAQ (FaqV3.tsx) and the lime closing band (FinalCta.tsx). Everything else they use lives in v3.css
+ * (.v3-faq details animation, .v3-onlime, .v3-onlime-focus, .v3-ghost-onlime, the reveal primitives).
+ */
+
+/* ---------- FAQ: inline links carry a faint underline at rest, so they never rely on colour alone (light theme's
+   lime-text sits close to ink-2 in lightness); hover draws it in full ---------- */
+.v3-faq-a a {
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: text-decoration-color 150ms ease;
+}
+.v3-faq-a a:hover {
+  text-decoration-color: currentColor;
+}
+
+/* ---------- closing band: fixed lime and lime-ink, identical in both themes ---------- */
+.v3-final ::selection {
+  background: #14120d;
+  color: #ccff00;
+}
+/* the ticks step in 60ms apart (the shared stagger is 70ms) */
+.v3-final-ticks.v3-reveal-stagger > .v3-reveal-item {
+  transition-delay: calc(var(--i, 0) * 60ms);
+}
+/* the ghost wordmark drifts against the scroll (--p from useScrollProgress; .5 = centred, and static when unset) */
+.v3-final-ghost {
+  transform: translateX(calc((var(--p, 0.5) - 0.5) * -80px));
+  will-change: transform;
+}
+@media (prefers-reduced-motion: reduce) {
+  .v3-final-ghost {
+    transform: none;
+    will-change: auto;
+  }
+  .v3-faq-a a {
+    transition: none;
+  }
+}

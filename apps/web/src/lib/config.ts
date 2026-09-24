@@ -121,8 +121,8 @@ export const DOCS_PATH = "/app/docs";
  * The off-site $DCA listing (the Pons token page), NEXT_PUBLIC_BUY_DCA_URL; empty when unset. Every in-site
  * "Buy $DCA" goes to /app/buy (components/BuyDcaLink.tsx; in the app `BuyDcaButton`, which links only while
  * `useBuyDcaAvailable`), which swaps in-app when the router can and otherwise hands off here, in a new tab. Only an
- * http(s) URL is a hand-off (`BUY_DCA_EXTERNAL`): an in-app path would send /app/buy back to itself. /v2's
- * "Buy $DCA on Pons" links here directly.
+ * http(s) URL is a hand-off (`BUY_DCA_EXTERNAL`): an in-app path would send /app/buy back to itself. Before the
+ * token is deployed, the landing's contract chip links here too (as "Launching on Pons") when NEXT_PUBLIC_PONS_URL is unset.
  */
 export const BUY_DCA_URL = process.env.NEXT_PUBLIC_BUY_DCA_URL ?? "";
 

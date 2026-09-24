@@ -14,11 +14,11 @@ const TEST_ENV = activeChain.id === 31337;
 
 // Each process.env.NEXT_PUBLIC_* is spelled out so Next inlines it into the client bundle.
 const LINKS: { id: SocialId; label: string; href: string | undefined; placeholder: string }[] = [
-  // NEXT_PUBLIC_X_URL is the name the /v2 landing used first.
+  // NEXT_PUBLIC_X_URL is accepted as an alias.
   { id: "twitter", label: "X (Twitter)", href: url(process.env.NEXT_PUBLIC_TWITTER_URL) ?? url(process.env.NEXT_PUBLIC_X_URL), placeholder: "https://x.com" },
   { id: "discord", label: "Discord", href: url(process.env.NEXT_PUBLIC_DISCORD_URL), placeholder: "https://discord.com" },
   { id: "telegram", label: "Telegram", href: url(process.env.NEXT_PUBLIC_TELEGRAM_URL), placeholder: "https://t.me" },
-  // Falls back to the repository URL, which /v2 also uses for its source-file links.
+  // Falls back to the repository URL (NEXT_PUBLIC_REPO_URL).
   { id: "github", label: "GitHub", href: url(process.env.NEXT_PUBLIC_GITHUB_URL) ?? url(process.env.NEXT_PUBLIC_REPO_URL), placeholder: "https://github.com" },
 ];
 
