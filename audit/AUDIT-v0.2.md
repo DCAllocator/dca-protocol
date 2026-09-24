@@ -1,9 +1,12 @@
 # DCA Protocol — Security Re-audit (v0.2, post-remediation)
 
+> **Automated AI review, not an independent third-party audit.** This report was produced with an AI model (Claude) during development. It has not been reviewed by a professional audit firm and does not replace one.
+
 | | |
 |---|---|
 | **Target** | `contracts/src/**` at tag `v0.2` (commit `64cd2f6`; diff vs `v0.1`: 15 files, +604/−635 in `src` + `script`); solc 0.8.28, via-ir, OZ 5.1.0. Apps migrated in `3929fc7`. |
 | **Date** | 2026-09-20 |
+| **Auditor** | Automated review by Claude (AI). Not an independent third-party audit. |
 | **Previous report** | [`audit/AUDIT-v0.1.md`](AUDIT-v0.1.md) — 2 High, 3 Medium, 6 Low, 15 Info |
 | **Method** | Line-by-line re-review of every changed file; every v0.1 finding re-tested against the remediated code with a permanent regression test (`contracts/test/audit/`, 30 tests); existing suites rewritten for the new API; invariants tightened and re-run at CI depth (fuzz 2048, invariants 256×64); Slither 0.11.6; coverage; contract sizes. |
 | **Result** | **All 5 High/Medium findings closed or mitigated; 5 of 6 Lows closed; 2 items accepted by decision (L-02, L-06); 1 item open by decision (H-02 block-level sandwich) with concrete mitigations in place and a V2 design.** Two new issues were found in the remediated code during this pass and fixed in the same change (N-01, N-02). No new High or Medium. |

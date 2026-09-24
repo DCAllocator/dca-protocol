@@ -1,9 +1,12 @@
 # FeeReceiver — Security Review (v0.1)
 
+> **Automated AI review, not an independent third-party audit.** This report was produced with an AI model (Claude) during development. It has not been reviewed by a professional audit firm and does not replace one.
+
 | | |
 |---|---|
 | **Target** | [`contracts/src/treasury/FeeReceiver.sol`](../contracts/src/treasury/FeeReceiver.sol) (378 LoC, 8,510 bytes deployed) on top of `4ea7ba0`; solc 0.8.28, via-ir, OZ 5.1.0. Deploy wiring in `script/Deploy.s.sol` / `script/DeployLocal.s.sol`. |
 | **Date** | 2026-09-22 |
+| **Auditor** | Automated review by Claude (AI). Not an independent third-party audit. |
 | **Scope** | The new contract and its interaction with the audited vaults (`feeRecipient`), the `AggregatorRouter` and the `$DCA` token. Vault / router code is unchanged and out of scope (see [`AUDIT.md`](../AUDIT.md)). |
 | **Method** | Threat model first (§2), then line-by-line review of the final code; 47 unit tests, 3 vault-integration tests and a 5-invariant handler suite (`fail_on_revert = true`, CI depth: fuzz 2048, invariants 256×64); Slither 0.11.6; end-to-end run of `DeployLocal` on a throwaway anvil with a real `AggregatorRouter → UniV3Adapter → pool` buyback. Six weaknesses were found in earlier drafts of the design during this pass and fixed before the code was finalised (§3). |
 | **Result** | **No High or Medium finding remains.** No unprivileged party can move value. Operators can only move value into three places — the treasury, a reserve, or a burn — and the price they pay is bounded on-chain by the router quote, the slippage cap and an on-path TWAP guard. The owner is trusted exactly as it is everywhere else in the protocol. Three Low residuals are accepted with operational mitigations (§4). |
