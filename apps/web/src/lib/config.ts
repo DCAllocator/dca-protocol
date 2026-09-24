@@ -128,9 +128,10 @@ export const BUY_DCA_URL = process.env.NEXT_PUBLIC_BUY_DCA_URL ?? "";
 
 /**
  * Forces every in-app "Buy $DCA" (the tab, the sidebar and token-page buttons: `useBuyDcaAvailable`) on, regardless of
- * whether the router can quote USDG → $DCA: always on the local anvil, and on a real chain with
+ * whether the router can route into $DCA: always on the local anvil, and on a real chain with
  * NEXT_PUBLIC_ENABLE_BUY_TAB=1. Without it (or an off-site BUY_DCA_URL) they link only when `useBuyDcaRoute` finds a
- * routable pool — an ETH-paired Pons / Uniswap v4 pool is not one (the router rejects native-ETH pools), so a launch
- * through Pons needs this flag, the Pons URL, or a WETH-side route.
+ * route from USDG or ETH through an approved pool (a USDG or a WETH pair both count) — a native-ETH Pons / Uniswap v4
+ * pool is not one (the router's v4 adapter rejects native-ETH pools), so a launch through Pons needs this flag, the Pons
+ * URL, or a WETH (ERC-20) pool approved on the router.
  */
 export const BUY_DCA_TAB_FORCED = activeChain.id === 31337 || flagOn(process.env.NEXT_PUBLIC_ENABLE_BUY_TAB);

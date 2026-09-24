@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Wordmark } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { PRODUCTION_VAULT_KINDS, VAULT_META } from "@/lib/config";
+import { frequencyHref, startPlanLabel } from "@/lib/createLinks";
 import { PerkThreshold } from "@/components/site/Live";
 
 export function SiteNav() {
@@ -85,8 +86,12 @@ export function Vaults() {
         <h2 className="h-section mt-3 max-w-xl">Choose how often. We handle the rest.</h2>
         <p className="lede mt-3 max-w-2xl">Four vaults, one job each. The fee is taken per buy — nothing on the way in, and never a surprise.</p>
         <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {/* Each card opens Create plan on its frequency: the button's ::after stretches over the card (one tab stop). */}
           {PRODUCTION_VAULT_KINDS.map((k) => (
-            <div key={k} className={`rounded-lg border p-6 ${k === "weekly" ? "border-lime bg-surface-3" : "border-line bg-surface-3"}`}>
+            <div
+              key={k}
+              className={`relative rounded-lg border p-6 transition-colors ${k === "weekly" ? "border-lime bg-surface-3" : "border-line bg-surface-3 hover:border-line-strong"}`}
+            >
               <div className="flex items-center justify-between">
                 <span className="text-xl font-semibold text-ink">{VAULT_META[k].label}</span>
                 <span className={k === "weekly" ? "chip-lime" : "chip"}>{copy[k].tag}</span>
@@ -97,8 +102,8 @@ export function Vaults() {
               </div>
               <div className="mt-1 text-[13px] text-ink-3">{VAULT_META[k].cadence}</div>
               <p className="mt-4 text-[14px] leading-relaxed text-ink-2">{copy[k].who}</p>
-              <Link href="/app/create" className={`${k === "weekly" ? "btn-primary" : "btn-secondary"} mt-6 w-full`}>
-                Start a {VAULT_META[k].label.toLowerCase()} plan
+              <Link href={frequencyHref(k)} className={`${k === "weekly" ? "btn-primary" : "btn-secondary"} mt-6 w-full after:absolute after:inset-0 after:rounded-lg`}>
+                {startPlanLabel(k)}
               </Link>
             </div>
           ))}

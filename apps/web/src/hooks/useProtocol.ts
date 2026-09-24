@@ -3,7 +3,7 @@
 import { useCallback, useMemo } from "react";
 import { useAccount, useBalance, useReadContract, useReadContracts, usePublicClient } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
-import type { Address } from "viem";
+import { BaseError, ContractFunctionRevertedError, ContractFunctionZeroDataError, InternalRpcError, type Address, type Hex } from "viem";
 import { VaultDirectoryAbi, StockRegistryAbi, PlanVaultAbi, EpochKeeperAbi, ERC20Abi, ClaimHelperAbi, AggregatorRouterAbi, MorphoBlueStrategyAbi, IMorphoAbi } from "@/abi";
 import { Market, UnsupportedMarketIrmError } from "@morpho-org/blue-sdk";
 import type { PublicClient } from "viem";
@@ -473,22 +473,254 @@ export function useQuote(router?: Address, tokenIn?: Address, tokenOut?: Address
   });
 }
 
-/** One whole USDG, the probe amount `useBuyDcaRoute` quotes with. */
-const ONE_USDG = 10n ** BigInt(USDG_DECIMALS);
+/**
+ * The amounts `useBuyDcaRoute` probes each pay token with, in the router's units: one whole USDG, and 0.001 WETH (for
+ * ETH, which the buy wraps first) — both small, so a thin pool's impact cap does not hide a route. /app/buy's card asks
+ * the same amount when a typed amount has no quote, to tell "too big for the pool" from "no route with this token".
+ */
+export const BUY_DCA_PROBE = { USDG: 10n ** BigInt(USDG_DECIMALS), ETH: 10n ** 15n } as const;
 
 /**
- * Can $DCA be bought in-app on this chain? True when the directory names a token and the router quotes
- * USDG → $DCA for 1 USDG (hops are directional, so this is the buy direction — `useDcaToken` quotes the
- * other way for the price). The source of truth is the router, not the FeeReceiver or the adapters'
- * approved-hop list: a quote that comes back is proof of a live, routable pool. `isLoading` is true only
- * while the first probe is in flight, so a caller can reserve the tab's slot and hide it only on a settled
- * failure. An ETH-paired Pons / Uniswap v4 pool does NOT light this up (the router cannot route native-ETH
- * pools); use BUY_DCA_TAB_FORCED for that case.
+ * Can $DCA be bought in-app on this chain, and with what? True when the directory names a token and either of
+ * /app/buy's pay tokens has a route into it, whichever token the $DCA pool is paired with (hops are directional, so
+ * this is the buy direction — `useDcaToken` quotes the other way for the price). The source of truth is the router,
+ * not the FeeReceiver or the adapters' approved-hop list: a quote that comes back is proof of a live, routable pool.
+ *
+ * - 1 USDG first, as the router's own `quote(usdg, dca)` — for USDG that IS `readBestRoute` (USDG is an end, and the
+ *   router already searches through WETH), as one read. Kept as `useQuote` so a $DCA plan's estimate shares the query
+ *   (`lib/planEstimate.ts`).
+ * - Only once that has settled on "no": 0.001 WETH through `readBestRoute`, for a $DCA pool only ETH can reach (a
+ *   WETH/$DCA pool with no approved USDG → WETH hop).
+ *
+ * Both probes FAIL on "no route" (`useQuote` throws on a revert; the ETH one throws when the finder comes back empty),
+ * so a later poll that finds nothing — or an RPC blip — keeps the last answer instead of flipping `available` off and
+ * unmounting an open buy card mid-order; only a probe that has never answered counts as "no".
+ *
+ * `payWith` is the pay token that answered (USDG when both would), for the card to open on. `isLoading` is true only
+ * while a first probe is in flight, so a caller can reserve the tab's slot and hide it only on a settled failure. A
+ * native-ETH Uniswap v4 pool (a Pons launch pool) does NOT light this up with either pay token: the UniV4 adapter only
+ * takes ERC-20/ERC-20 pool keys, so the router cannot route it at all — use BUY_DCA_TAB_FORCED (or the Pons hand-off)
+ * for that case. A WETH (ERC-20) pool on an approved adapter does.
  */
 export function useBuyDcaRoute(dir?: Directory) {
+  const client = usePublicClient();
   const configured = !!dir && !isZero(dir.dca);
-  const q = useQuote(configured ? dir.router : undefined, dir?.usdg, dir?.dca, ONE_USDG);
-  return { configured, available: configured && q.data !== undefined, isLoading: configured && q.isLoading };
+  const usdg = useQuote(configured ? dir.router : undefined, dir?.usdg, dir?.dca, BUY_DCA_PROBE.USDG);
+  // Settled on "no": an error with no answer kept from an earlier poll (a failed refetch keeps the last good one).
+  const usdgNo = configured && usdg.isError && usdg.data === undefined;
+  const eth = useQuery({
+    queryKey: ["buyDcaEthProbe", dir?.router, dir?.usdg, dir?.weth, dir?.dca],
+    enabled: !!client && usdgNo,
+    retry: false,
+    refetchInterval: 20_000,
+    queryFn: async () => {
+      const found = await readBestRoute(client!, dir!, dir!.weth, dir!.dca, BUY_DCA_PROBE.ETH);
+      if (!found.best) throw new Error("No route from WETH to $DCA");
+      return found.best;
+    },
+  });
+  const payWith: "USDG" | "ETH" | undefined = !configured ? undefined : usdg.data !== undefined ? "USDG" : usdgNo && eth.data !== undefined ? "ETH" : undefined;
+  return { configured, available: payWith !== undefined, payWith, isLoading: configured && (usdg.isLoading || (usdgNo && eth.isLoading)) };
+}
+
+/** One hop of a router path: AggregatorRouter's `Route` struct as viem decodes it (`extra` is the adapter's pool encoding). */
+export type RouteHop = { protocol: number; tokenIn: Address; tokenOut: Address; fee: number; extra: Hex };
+
+/** A path `swapWithRoute` accepts, and what it delivers right now for the amount it was quoted for. */
+export type BestRoute = {
+  /** `tokenOut` the path delivers for the whole amount, as the router simulates it now. */
+  amountOut: bigint;
+  /** The explicit path to hand `swapWithRoute`: 1–3 approved hops. */
+  path: readonly RouteHop[];
+  /** Every token the path visits, `tokenIn` first and `tokenOut` last: the route as the copy names it. */
+  tokens: readonly Address[];
+};
+
+/** What `readBestRoute` found for one amount. */
+export type RouteQuote = {
+  /** The candidate that delivers the most `tokenOut`; undefined when none quotes within the router's impact cap. */
+  best?: BestRoute;
+  /**
+   * What the whole amount fetches in each stepping-stone token the finder tried (lower-case address → amount), from that
+   * candidate's first leg: the USDG an ETH amount is worth, for the "≈ $" beside it. A token is missing when it was not
+   * tried (it is one of the two ends — USDG is the only stepping stone, see `readBestRoute`) or that leg does not quote.
+   */
+  firstLegs: Record<string, bigint>;
+};
+
+/** Same address, whatever the checksum casing. */
+const sameAddr = (a: Address, b: Address) => a.toLowerCase() === b.toLowerCase();
+
+/**
+ * Like `tryRead`, but only the contract's own "no" resolves to undefined: a revert (NoRoute, PriceImpactTooHigh — also
+ * a failed call inside a Multicall3 batch, which viem raises as a raw revert) or no code at the address. Anything else
+ * (a timeout, an HTTP error, a rate limit) is rethrown, so a query built on it fails and keeps its last good answer
+ * instead of replacing it with "no route".
+ *
+ * One trap: viem files EVERY JSON-RPC -32603 "Internal error" that has a message under ContractFunctionRevertedError,
+ * and many providers — and an anvil fork whose upstream fetch fails — report a timeout exactly that way. A real revert
+ * from the router carries revert data (its errors are all custom errors) or comes as code 3 (anvil, Nitro, a Multicall3
+ * sub-call), so a -32603 with no revert data is taken for the transport failure it is and rethrown.
+ */
+async function readOrNo<T>(read: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await read();
+  } catch (e) {
+    if (!(e instanceof BaseError)) throw e;
+    if (e.walk((x) => x instanceof ContractFunctionZeroDataError)) return undefined;
+    const reverted = e.walk((x) => x instanceof ContractFunctionRevertedError);
+    if (!(reverted instanceof ContractFunctionRevertedError)) throw e;
+    const hasRevertData = !!reverted.raw && reverted.raw !== "0x";
+    const internalError = !!e.walk((x) => (x as { code?: unknown }).code === InternalRpcError.code);
+    if (internalError && !hasRevertData) throw e;
+    return undefined;
+  }
+}
+
+/**
+ * Whether `path` is one `swapWithRoute(from, to, …)` would accept as a shape: 1–3 hops, starting at `from`, ending at
+ * `to`, each hop taking what the last one gave. (`_execute` also checks every hop is approved; `quotePath` checks that.)
+ */
+const isChained = (path: readonly RouteHop[], from: Address, to: Address) =>
+  path.length > 0 &&
+  path.length <= 3 &&
+  sameAddr(path[0].tokenIn, from) &&
+  sameAddr(path[path.length - 1].tokenOut, to) &&
+  path.every((h, i) => i === 0 || sameAddr(path[i - 1].tokenOut, h.tokenIn));
+
+/** Every token a path visits, in order: its first hop's input, then each hop's output. */
+const pathTokens = (path: readonly RouteHop[]): Address[] => [path[0].tokenIn, ...path.map((h) => h.tokenOut)];
+
+/**
+ * `isChained`, and no token visited twice. A revisit is a round trip that only pays two more pool fees: joining WETH →
+ * USDG with the router's own USDG → $DCA pick gives WETH → USDG → WETH → $DCA whenever that pick is itself through WETH
+ * (both pools exist). Dropping it loses nothing: the WETH → $DCA hop it ends on is the router's own candidate for the
+ * whole amount, and WETH → USDG → $DCA over USDG's direct hop — the route the loop hid — is a candidate of its own
+ * (`readBestRoute` joins the first leg to every approved direct hop too), which counts near the direct hop's impact cap,
+ * where the whole amount fails WETH → $DCA but the slightly smaller amount the round trip leaves would not.
+ */
+const isRoutable = (path: readonly RouteHop[], from: Address, to: Address) =>
+  isChained(path, from, to) && new Set(pathTokens(path).map((t) => t.toLowerCase())).size === path.length + 1;
+
+/** A path's identity, for dropping duplicates: every field of every hop, as the router's `hopKey` hashes them. */
+const pathKey = (path: readonly RouteHop[]) =>
+  path.map((h) => [h.protocol, h.tokenIn.toLowerCase(), h.tokenOut.toLowerCase(), h.fee, h.extra.toLowerCase()].join(":")).join("|");
+
+/**
+ * The explicit path that delivers the most `tokenOut` for `amountIn`, whichever token the `tokenOut` pool is paired
+ * with. The router's own `quote()` tries every approved direct hop and, only when neither end is WETH, every two-hop
+ * route THROUGH WETH: USDG → WETH → $DCA it finds by itself, but from WETH it only ever sees a direct hop, and it never
+ * steps through USDG — so WETH → USDG → $DCA (ETH paid into a USDG-paired $DCA) is composed here. The candidates:
+ *
+ * - the router's own pick: `quote(tokenIn, tokenOut, amountIn)` — a direct hop, or two hops through WETH;
+ * - through USDG, the one stepping stone the router does not search (unless USDG is an end): the first leg is
+ *   `quote(tokenIn, usdg, amountIn)`'s path, joined to (a) the router's own onward pick, `quote(usdg, tokenOut,
+ *   thatOutput)`'s path, and (b) each approved direct hop out of USDG (`approvedHops(usdg, tokenOut)`) — (a) may loop
+ *   back through `tokenIn` (see `isRoutable`), and (b) is the route such a loop hides. Each is kept only when
+ *   `swapWithRoute` would take it, it visits no token twice and it is not a path already on the list; then confirmed
+ *   end to end with `quotePath`, which applies the router's impact cap to the WHOLE path — the cap `quote()` holds its
+ *   own two-hop routes to. Each leg alone can pass the cap while the pair does not; such a path is dropped rather than
+ *   sent, since `swapWithRoute` does not re-check impact (the caller's `minOut` is then the only guard).
+ *
+ * WETH is never a stepping stone here: when it is neither end, `quote()` has already tried every tokenIn → WETH hop with
+ * the best WETH → tokenOut hop after it, under the same end-to-end impact formula `quotePath` applies, so a composed
+ * path through WETH could only tie or lose. That keeps a USDG buy to the router's one read.
+ *
+ * The highest output wins; on a tie the shorter path (less gas), then the router's own pick. For $DCA that means:
+ * paired with USDG, USDG pays straight in and ETH goes WETH → USDG → $DCA; paired with WETH, ETH pays straight in and
+ * USDG goes USDG → WETH → $DCA; with both pools, whichever delivers more. Only ERC-20 pools on the approved adapters
+ * are ever candidates: a native-ETH Uniswap v4 pool (a Pons launch pool) is not routable by this router at all — its
+ * UniV4 adapter only takes ERC-20/ERC-20 pool keys.
+ *
+ * Every read goes as a `view` (see `RouterQuoteViewAbi`), in up to three rounds — the first quotes and the approved
+ * hops, the onward quotes, the `quotePath` checks — each one Multicall3 aggregate where the chain has it (a round with
+ * nothing to ask sends nothing). A candidate that reverts (NoRoute, PriceImpactTooHigh) is simply not one, and with none
+ * left `best` is undefined ("no quote for this amount"). A transport failure on ANY read throws instead (`readOrNo`), so
+ * a query keeps its last good answer through an RPC blip rather than losing its route.
+ */
+export async function readBestRoute(
+  client: PublicClient,
+  dir: Pick<Directory, "router" | "usdg">,
+  tokenIn: Address,
+  tokenOut: Address,
+  amountIn: bigint,
+): Promise<RouteQuote> {
+  const quote = (from: Address, to: Address, amount: bigint) =>
+    readOrNo(async () => {
+      const [amountOut, path] = await client.readContract({ address: dir.router, abi: RouterQuoteViewAbi, functionName: "quote", args: [from, to, amount] });
+      return { amountOut, path: path as readonly RouteHop[] };
+    });
+  const directHops = (from: Address, to: Address) =>
+    readOrNo(async () => (await client.readContract({ address: dir.router, abi: AggregatorRouterAbi, functionName: "approvedHops", args: [from, to] })) as readonly RouteHop[]);
+  // The stepping stones the router's own search does not cover (see above): USDG, unless it is one of the ends.
+  const bases = [dir.usdg].filter((b) => !sameAddr(b, tokenIn) && !sameAddr(b, tokenOut));
+
+  const [own, firsts, hopsOut] = await Promise.all([
+    quote(tokenIn, tokenOut, amountIn),
+    Promise.all(bases.map((b) => quote(tokenIn, b, amountIn))),
+    Promise.all(bases.map((b) => directHops(b, tokenOut))),
+  ]);
+  const onwards = await Promise.all(bases.map((b, i) => (firsts[i] && firsts[i].amountOut > 0n ? quote(b, tokenOut, firsts[i].amountOut) : undefined)));
+
+  const candidates: BestRoute[] = [];
+  const seen = new Set<string>();
+  if (own && own.amountOut > 0n && isRoutable(own.path, tokenIn, tokenOut)) {
+    candidates.push({ amountOut: own.amountOut, path: own.path, tokens: pathTokens(own.path) });
+    seen.add(pathKey(own.path));
+  }
+  const composed: RouteHop[][] = [];
+  bases.forEach((_, i) => {
+    const first = firsts[i];
+    if (!first || first.amountOut === 0n) return;
+    // (a) the router's onward pick first, then (b) each direct hop; a (b) that equals (a) is the same path, asked once.
+    const tails: (readonly RouteHop[])[] = [...(onwards[i] ? [onwards[i].path] : []), ...(hopsOut[i] ?? []).map((h) => [h])];
+    for (const tail of tails) {
+      const path = [...first.path, ...tail];
+      const key = isRoutable(path, tokenIn, tokenOut) ? pathKey(path) : undefined;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      composed.push(path);
+    }
+  });
+  const confirmed = await Promise.all(
+    composed.map((path) => readOrNo(() => client.readContract({ address: dir.router, abi: RouterQuotePathViewAbi, functionName: "quotePath", args: [path, amountIn] }))),
+  );
+  composed.forEach((path, i) => {
+    const out = confirmed[i];
+    if (out !== undefined && out > 0n) candidates.push({ amountOut: out, path, tokens: pathTokens(path) });
+  });
+
+  // The router's own pick is first on the list, so it keeps a full tie; a strictly shorter path takes one.
+  const best = candidates.reduce<BestRoute | undefined>(
+    (b, c) => (!b || c.amountOut > b.amountOut || (c.amountOut === b.amountOut && c.path.length < b.path.length) ? c : b),
+    undefined,
+  );
+  const firstLegs: Record<string, bigint> = {};
+  bases.forEach((b, i) => {
+    const first = firsts[i];
+    if (first) firstLegs[b.toLowerCase()] = first.amountOut;
+  });
+  return { best, firstLegs };
+}
+
+/**
+ * `readBestRoute` for the amount being typed, refreshed every 20 s like `useQuote`. `data.best` is the path to freeze into
+ * an order at click time; `data.firstLegs` prices the amount in the stepping-stone tokens (USDG for the "≈ $" line).
+ *
+ * `gcTime: 0`: an amount's answer is dropped as soon as nothing shows it. An order freezes this path and its floor
+ * (`swapWithRoute` does not re-check impact), so going back to an amount typed minutes ago (0.1 → 0.12 → 0.1) must wait
+ * for a fresh read rather than offer the cached one while it refetches.
+ */
+export function useBestRoute(dir?: Directory, tokenIn?: Address, tokenOut?: Address, amountIn?: bigint) {
+  const client = usePublicClient();
+  return useQuery({
+    queryKey: ["bestRoute", dir?.router, dir?.usdg, tokenIn, tokenOut, amountIn?.toString()],
+    enabled: !!client && !!dir && !!tokenIn && !isZero(tokenOut) && !!amountIn && amountIn > 0n,
+    retry: false,
+    refetchInterval: 20_000,
+    gcTime: 0,
+    queryFn: () => readBestRoute(client!, dir!, tokenIn!, tokenOut!, amountIn!),
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -527,6 +759,30 @@ const RouterQuoteViewAbi = [
         ],
       },
     ],
+  },
+] as const;
+
+/** AggregatorRouter.quotePath declared `view`, for the same reason as `RouterQuoteViewAbi` (its adapters simulate and revert). */
+const RouterQuotePathViewAbi = [
+  {
+    type: "function",
+    name: "quotePath",
+    stateMutability: "view",
+    inputs: [
+      {
+        name: "path",
+        type: "tuple[]",
+        components: [
+          { name: "protocol", type: "uint8" },
+          { name: "tokenIn", type: "address" },
+          { name: "tokenOut", type: "address" },
+          { name: "fee", type: "uint24" },
+          { name: "extra", type: "bytes" },
+        ],
+      },
+      { name: "amountIn", type: "uint256" },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
   },
 ] as const;
 
@@ -678,7 +934,10 @@ export function useTvl(dir?: Directory, vaults?: VaultMap, infos?: VaultInfo[], 
   }, [infos, stocks, prices, pricesLoading, holdings]);
 }
 
-/** $DCA supply, router price and market cap (price is undefined when no DCA/USDG route exists). */
+/**
+ * $DCA supply, router price and market cap. The price is the router's own `quote($DCA, USDG)`, which also finds
+ * $DCA → WETH → USDG, so a WETH-paired $DCA is priced too; undefined when neither route exists.
+ */
 export function useDcaToken(dir?: Directory) {
   const dca = dir && !isZero(dir.dca) ? dir.dca : undefined;
   const supply = useReadContract({

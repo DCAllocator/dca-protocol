@@ -4,7 +4,9 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { PerkThreshold } from "@/components/site/Live";
 import { BoostTeaser, LaunchAppLink, PlansPreview, StockGrid } from "@/components/site/LandingLive";
 import { BuyDcaLink as BuyDca } from "@/components/BuyDcaLink";
+import { SocialLinks } from "@/components/SocialLinks";
 import { DOCS_PATH, PRODUCTION_VAULT_KINDS, VAULT_META } from "@/lib/config";
+import { frequencyHref, startPlanLabel } from "@/lib/createLinks";
 
 /*
  * Token-first landing page. The old product-first page lives on at /legacy (components/site/Sections.tsx).
@@ -34,6 +36,7 @@ export function LandingNav() {
           ))}
         </nav>
         <div className="ml-auto flex items-center gap-2">
+          <SocialLinks className="mr-1 hidden lg:flex" />
           <LaunchAppLink className="btn-secondary hidden sm:inline-flex">Launch app</LaunchAppLink>
           <BuyDca />
           <ThemeToggle />
@@ -277,18 +280,29 @@ export function Protocol() {
               <span className="text-ink-3">·</span>
               <span className="text-ink-3">one per rhythm</span>
             </div>
+            {/*
+              Each row opens Create plan on its frequency (`frequencyHref`): the "Start" link's ::after stretches over the
+              whole row, so the frequency's name and blurb are one click target with it — and still one tab stop.
+            */}
             {PRODUCTION_VAULT_KINDS.map((k) => (
-              <div key={k} className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1 border-b border-line px-4 py-3.5 last:border-b-0 sm:grid-cols-[96px_1fr_auto]">
+              <div
+                key={k}
+                className="group relative grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1 border-b border-line px-4 py-3.5 transition-colors last:border-b-0 hover:bg-surface-2 focus-within:bg-surface-2 sm:grid-cols-[96px_1fr_auto]"
+              >
                 <div>
                   <div className="text-[16px] font-semibold text-ink">
-                    {VAULT_META[k].label}
+                    <span className="underline-offset-4 group-hover:underline">{VAULT_META[k].label}</span>
                     {k === "weekly" && <span className="chip-lime ml-2 align-[2px]">popular</span>}
                     {k === "hourly" && <span className="chip ml-2 align-[2px]">fastest</span>}
                   </div>
                   <div className="text-[11.5px] text-ink-3">{vaults[k].when}</div>
                 </div>
                 <div className="col-span-2 text-[13.5px] text-ink-2 sm:col-span-1">{vaults[k].who}</div>
-                <Link href="/app/create" className={`${k === "weekly" ? "btn-primary" : "btn-secondary"} btn-xs col-start-2 row-start-1 sm:col-start-auto sm:row-start-auto`}>
+                <Link
+                  href={frequencyHref(k)}
+                  aria-label={startPlanLabel(k)}
+                  className={`${k === "weekly" ? "btn-primary" : "btn-secondary"} btn-xs col-start-2 row-start-1 after:absolute after:inset-0 sm:col-start-auto sm:row-start-auto`}
+                >
                   Start
                 </Link>
               </div>
@@ -397,8 +411,9 @@ export function LandingFooter() {
             utility token; it is not equity, a security, or a promise of returns. Nothing on this site is investment advice. Smart contracts are
             unaudited software; use at your own risk. DCA is independent software and is not affiliated with or endorsed by Robinhood.
           </p>
+          <SocialLinks className="-ml-2 mt-5" size={18} />
         </div>
-        <div className="grid grid-cols-2 gap-x-10 gap-y-2 text-[13px] text-ink-2">
+        <div className="grid content-start grid-cols-2 gap-x-10 gap-y-2 text-[13px] text-ink-2">
           <LaunchAppLink className="hover:text-ink">App</LaunchAppLink>
           <a href="#flywheel" className="hover:text-ink">
             Buyback
@@ -412,9 +427,6 @@ export function LandingFooter() {
           <Link href={DOCS_PATH} className="hover:text-ink">
             Docs
           </Link>
-          <a href="https://github.com" target="_blank" rel="noreferrer" className="hover:text-ink">
-            GitHub
-          </a>
           <a href="#faq" className="hover:text-ink">
             FAQ
           </a>

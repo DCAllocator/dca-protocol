@@ -58,7 +58,7 @@ export default function TokenPage() {
       {noToken && <Notice kind="warn">$DCA is not configured on this deployment, so holder perks are inactive.</Notice>}
 
       <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Price" value={token.price !== undefined ? fmtUsd(token.price) : "—"} hint={token.price === undefined ? "No $DCA/USDG route on this chain yet." : "Router quote, 1 $DCA."} />
+        <StatCard label="Price" value={token.price !== undefined ? fmtUsd(token.price) : "—"} hint={token.price === undefined ? "No $DCA route on this chain yet." : "Router quote, 1 $DCA."} />
         <StatCard label="Market cap" value={token.marketCap !== undefined ? fmtUsdCompact(token.marketCap) : "—"} hint={token.totalSupply !== undefined ? `${fmtUnits(token.totalSupply, 18, 0)} $DCA supply` : "Total supply unavailable."} />
         <StatCard label="Protocol volume" value={fmtUsdCompact(volume)} delta={volume30 > 0n ? `+${fmtUsdCompact(volume30)} 30d` : undefined} hint="USDG turned into stock, all time." />
         <StatCard label="Fees accrued" value={fmtUsdCompact(fees)} hint="Purchase + withdrawal fees in USDG, from the scanned window. Claim fees are paid in stock." />

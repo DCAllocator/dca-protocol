@@ -9,8 +9,8 @@ import { BUY_DCA_TAB_FORCED } from "@/lib/config";
 
 /**
  * Whether /app/buy has something to offer, the one rule every in-app "Buy $DCA" (this strip, the sidebar, the token
- * page, the perks banner) goes by: BUY_DCA_TAB_FORCED (local anvil, or NEXT_PUBLIC_ENABLE_BUY_TAB), a router quote for
- * USDG → $DCA (`useBuyDcaRoute`), or an off-site listing to hand off to (`BUY_DCA_EXTERNAL`). Otherwise /app/buy only
+ * page, the perks banner) goes by: BUY_DCA_TAB_FORCED (local anvil, or NEXT_PUBLIC_ENABLE_BUY_TAB), a route into $DCA
+ * from USDG or, failing that, from ETH, whichever pool $DCA is paired with (`useBuyDcaRoute`), or an off-site listing to hand off to (`BUY_DCA_EXTERNAL`). Otherwise /app/buy only
  * says there is no route, so the entry points show a disabled "Buy $DCA · soon" instead of linking there. `pending` is
  * true while the directory or the first route probe is still loading, so a caller can hold a muted slot rather than flash
  * "soon".

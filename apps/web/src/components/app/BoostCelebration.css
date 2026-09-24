@@ -18,7 +18,9 @@
    Base rules are resting styles, and every resting style is an end state (burst layers rest at opacity 0). All motion
    lives in the `no-preference` block, so reduced motion gets the end state with short opacity fades and nothing else.
    Only transform and opacity move, plus the gauge's stroke-dashoffset for 560 ms. The component mirrors CHARGE_MS
-   and DISCHARGE_AT for the tick, mote, spark and ember delays, and the odometer's 900 ms start: keep them in step. */
+   and DISCHARGE_AT for the tick, mote, spark and ember delays, and the odometer's 900 ms start: keep them in step.
+   The landing page's Boost section (components/site/BoostShowcase.tsx + .css) replays the done hero from these
+   classes and keyframes (boost-rise, boost-edge by name), so renaming one here renames it there too. */
 :root {
   --boost-hot: var(--color-lime); /* gauge, ticks, comet, waves, the warm bolt, the echo */
   --boost-spark: var(--color-lime);

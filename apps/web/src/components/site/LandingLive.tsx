@@ -6,7 +6,8 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useAccount } from "wagmi";
 import { useDirectory, useVaults, useStocks, useRankedStocks, useBoostApys, usePositions, useKindsBuying, boostAvailable, isDcaToken, findStock } from "@/hooks/useProtocol";
 import { Countdown, StockAvatar } from "@/components/ui";
-import { fmtUsd, fmtPct } from "@/lib/format";
+import { BoostShowcase } from "@/components/site/BoostShowcase";
+import { fmtUsd } from "@/lib/format";
 import { VAULT_META } from "@/lib/config";
 import { tickerName } from "@/lib/tickers";
 
@@ -180,29 +181,16 @@ export function PlansPreview() {
   );
 }
 
-/** Boost teaser with the live Morpho supply APY of the weekly vault's strategy (any vault with one, really). */
+/**
+ * The Boost section beside the Vaults panel, with the live Morpho supply APY of the first vault that has a boost
+ * strategy (they lend into the same USDG market). Drawn by BoostShowcase in the Boost dialog's celebration style.
+ */
 export function BoostTeaser() {
   const { vaults } = useDirectory();
   const { infos } = useVaults(vaults);
   const { apyOf } = useBoostApys(infos);
   const withBoost = infos.find(boostAvailable);
-  const apy = apyOf(withBoost?.boostStrategy);
-  return (
-    <div className="flex flex-col gap-2.5 rounded-xl border border-line bg-surface-3 p-5">
-      <h3 className="flex flex-wrap items-center gap-2.5 text-[18px] font-semibold text-ink">
-        Boost <span className="chip">optional · per plan</span>
-      </h3>
-      <p className="text-[14px] leading-relaxed text-ink-2">
-        Your USDG normally waits days or weeks between buys. Boost lends it on Morpho Blue in the meantime and pulls it back automatically at every buy and
-        withdrawal. No fee on the yield.
-      </p>
-      <p className="text-[12.5px] text-ink-3">Boosted balances are a Morpho supply position and carry that market&apos;s risk.</p>
-      <div className="mt-auto flex items-baseline justify-between gap-3 border-t border-line pt-3.5">
-        <span className="text-[13.5px] text-ink-2">USDG supply APY, live</span>
-        <span className="num text-[22px] font-semibold text-good">{apy === undefined ? "—" : fmtPct(apy)}</span>
-      </div>
-    </div>
-  );
+  return <BoostShowcase apy={apyOf(withBoost?.boostStrategy)} />;
 }
 
 const GRID_SIZE = 17;
