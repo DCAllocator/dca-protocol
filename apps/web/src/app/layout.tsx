@@ -8,10 +8,14 @@ import { THEME_BOOTSTRAP } from "@/lib/theme-bootstrap";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
 
+/** Canonical origin for absolute share-card URLs on every route (the card is app/opengraph-image.tsx); http(s) only. */
+const SITE_URL = /^https?:\/\//.test(process.env.NEXT_PUBLIC_SITE_URL ?? "") ? process.env.NEXT_PUBLIC_SITE_URL : undefined;
+
 export const metadata: Metadata = {
+  ...(SITE_URL ? { metadataBase: new URL(SITE_URL) } : {}),
   title: "DCA — Wall Street stocks. On a clock. On-chain.",
   description:
-    "Recurring on-chain buys of Robinhood Stock Tokens on Robinhood Chain, delivered to your wallet. $DCA is the protocol's token — and what the protocol's fees buy back.",
+    "Recurring on-chain buys of Robinhood Stock Tokens on Robinhood Chain. $DCA is the protocol's token, and a share of every purchase fee buys it on-chain.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -1,0 +1,84 @@
+/* Three steps: the extra rules StepsV3 needs beyond v3.css. Prefixed v3-steps-; reduced motion at the bottom. */
+
+/* the rail: a hairline from each numeral disc down to the next (never past the last step), drawn top-down in step
+   with the stagger as the list rises (armed like .v3-reveal; the list carries [data-in]) */
+.v3-steps-li {
+  position: relative;
+}
+.v3-steps-li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 17px;
+  top: 40px;
+  bottom: -20px;
+  width: 1px;
+  background-color: var(--color-line-strong);
+  transform-origin: top;
+  transition: transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition-delay: calc(var(--i, 0) * 70ms + 250ms);
+  pointer-events: none;
+}
+html[data-v3-motion] .v3-steps-rail:not([data-in]) .v3-steps-li::after {
+  transform: scaleY(0);
+}
+
+/* the builder card sits a little forward of the section: a soft lime underglow on dark, a plain drop on light */
+.v3-steps-card {
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.04) inset,
+    0 28px 70px -34px rgb(204 255 0 / 0.28);
+}
+:root[data-theme="light"] .v3-steps-card {
+  box-shadow: 0 22px 50px -30px rgb(20 18 13 / 0.22);
+}
+
+/* the stock pill's logo scales with the sentence (28px at the 40px desktop size); StockAvatar sizes itself inline */
+.v3-steps-mark > * {
+  width: 0.7em !important;
+  height: 0.7em !important;
+}
+
+/* a pill's new value slides in (re-keyed on the value, only after a change) */
+@keyframes v3-steps-swap {
+  from {
+    opacity: 0;
+    transform: translateY(0.3em);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.v3-steps-swap {
+  animation: v3-steps-swap 280ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* with the pill's .v3-flash wash, a lime edge that glows and fades: the change reads even without a focus ring */
+@keyframes v3-steps-ring {
+  from {
+    box-shadow:
+      0 0 0 1px var(--color-lime-text),
+      0 0 22px -4px rgb(204 255 0 / 0.5);
+  }
+  to {
+    box-shadow:
+      0 0 0 1px transparent,
+      0 0 22px -4px rgb(204 255 0 / 0);
+  }
+}
+.v3-steps-ring {
+  animation: v3-steps-ring 900ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-steps-li::after {
+    transition: none !important;
+  }
+  html[data-v3-motion] .v3-steps-rail:not([data-in]) .v3-steps-li::after {
+    transform: none;
+  }
+  .v3-steps-swap,
+  .v3-steps-ring {
+    animation: none;
+  }
+}

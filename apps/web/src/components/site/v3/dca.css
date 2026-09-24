@@ -1,0 +1,113 @@
+/* $DCA section extras (DcaSection.tsx, FeeLoop.tsx). Builds on v3.css (.v3-pass, .v3-sheen-once, .v3-node,
+   .v3-travel, .v3-rail-dot); everything here is prefixed v3-dca- and unlayered, so it beats utilities.
+   Only opacity animates; the loops themselves live in v3.css. */
+
+/* ---------- Holder card: a richer glow, a faint top-left light, a deeper shadow and a hairline top edge ---------- */
+.v3-pass.v3-dca-holder {
+  background:
+    radial-gradient(70% 80% at 100% 100%, rgb(204 255 0 / 0.2), transparent 70%),
+    radial-gradient(55% 65% at 0% 0%, rgb(255 255 255 / 0.05), transparent 70%),
+    var(--pass-bg);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.09),
+    0 32px 72px -32px rgb(204 255 0 / 0.42),
+    0 14px 32px -20px rgb(0 0 0 / 0.7);
+}
+/* on light the lime glow washes out: a dark drop with a little olive under it lifts the fixed-dark card instead */
+:root[data-theme="light"] .v3-pass.v3-dca-holder {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.09),
+    0 38px 70px -34px rgb(20 18 13 / 0.55),
+    0 20px 48px -28px rgb(95 125 0 / 0.5);
+}
+/* The one-shot sheen: v3-sheen stops at translateX(220%), where the skewed band's lower half still sits inside a
+   card this tall and stays there (fill: both) as a stray light streak. This sweep runs on until it has left. */
+@keyframes v3-dca-sheen {
+  from {
+    transform: translateX(-120%) skewX(-18deg);
+  }
+  to {
+    transform: translateX(340%) skewX(-18deg);
+  }
+}
+[data-in] .v3-dca-holder.v3-sheen-once::after,
+.v3-dca-holder.v3-sheen-once[data-in]::after {
+  animation-name: v3-dca-sheen;
+}
+/* the lime words glow a little on the dark card (same in both themes: the card is always dark) */
+.v3-dca-glow {
+  text-shadow: 0 0 26px rgb(204 255 0 / 0.38);
+}
+/* a soft light that follows the pointer while it is over the card (fine pointers only; set --gx/--gy) */
+.v3-dca-glare {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(340px circle at var(--gx, 70%) var(--gy, 0%), rgb(255 255 255 / 0.075), transparent 62%);
+  transition: opacity 300ms ease;
+}
+.v3-dca-holder:hover .v3-dca-glare {
+  opacity: 1;
+}
+@media (hover: none), (pointer: coarse) {
+  .v3-dca-glare {
+    display: none;
+  }
+}
+
+/* ---------- loop nodes ---------- */
+/* v3-node-lit leaves border-color out of its 30-100% keyframes, so the lime edge would bleed out over 6.5s; this copy
+   hands it back to the line colour by 30%, as the loop spec says ("none from 30%"). Same timing, delay and pause. */
+@keyframes v3-dca-node-lit {
+  0%,
+  18% {
+    border-color: var(--color-lime-text);
+    box-shadow:
+      0 0 0 4px rgb(204 255 0 / 0.14),
+      0 0 24px -6px rgb(204 255 0 / 0.5);
+  }
+  30%,
+  100% {
+    border-color: var(--color-line);
+    box-shadow:
+      0 0 0 0 rgb(204 255 0 / 0),
+      0 0 0 0 rgb(204 255 0 / 0);
+  }
+}
+.v3-node.v3-dca-node {
+  animation-name: v3-dca-node-lit;
+}
+/* on light, surface-3 nodes sit grey on the pale box: white cards read crisper */
+:root[data-theme="light"] .v3-dca-node {
+  background-color: var(--color-surface-0);
+}
+
+/* ---------- loop: the travelling dot (desktop) and the rail (mobile) ---------- */
+.v3-dca-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background-color: var(--color-lime);
+  box-shadow:
+    0 0 0 3px rgb(204 255 0 / 0.16),
+    0 0 14px rgb(204 255 0 / 0.75);
+}
+/* lime on a near-white surface disappears: ring it in the olive accent on light */
+:root[data-theme="light"] .v3-dca-dot,
+:root[data-theme="light"] .v3-dca-rail-dot {
+  box-shadow:
+    0 0 0 1.5px var(--color-lime-text),
+    0 0 12px rgb(95 125 0 / 0.4);
+}
+/* the mobile rail: dotted like the desktop track (dash 2 / gap 6) */
+.v3-dca-rail {
+  width: 2px;
+  background-image: repeating-linear-gradient(to bottom, var(--color-line-strong) 0 2px, transparent 2px 8px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-dca-glare {
+    display: none;
+  }
+}

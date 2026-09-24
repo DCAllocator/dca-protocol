@@ -1,0 +1,35 @@
+/* Landing chrome (nav, footer, sticky bar): the few rules the shared v3.css does not cover. Everything is prefixed
+   v3-chrome- and reuses v3.css keyframes where one exists. */
+
+/* mobile menu scrim: fades in each time the sheet opens (it toggles `hidden`, so a keyframe rather than a transition) */
+@keyframes v3-chrome-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.v3-chrome-scrim {
+  animation: v3-chrome-fade 150ms ease-out both;
+}
+
+/* footer: the Core contracts column flashes once when a link lands on #contracts (v3-flash lives in v3.css) */
+.v3-chrome-contracts:target {
+  animation: v3-flash 900ms ease-out;
+}
+
+/* phones: while the sticky CTA bar is up it carries Buy $DCA, so the nav's copy steps out of sight (visibility keeps
+   the bar's layout fixed and takes the link out of the tab order and the accessibility tree) */
+@media (max-width: 767px) {
+  html[data-sticky-cta] .v3-nav-buy {
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-chrome-scrim,
+  .v3-chrome-contracts:target {
+    animation: none;
+  }
+}

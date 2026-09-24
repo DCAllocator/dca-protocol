@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BoostMark, BoostStamp, Odometer } from "@/components/app/BoostCelebration";
 import "./BoostShowcase.css";
 import { Icon } from "@/components/ui";
-import { BOOST } from "@/lib/config";
+import { BOOST, DOCS_PATH } from "@/lib/config";
 import { fmtPct } from "@/lib/format";
 
 /*
@@ -134,7 +134,13 @@ export function BoostShowcase({ apy }: { apy?: number }) {
           Between buys, a plan&apos;s USDG sits idle. Boost lends it on Morpho Blue in the meantime and pulls it back automatically at every buy and
           withdrawal. No fee on the yield.
         </p>
-        <p className="text-[12.5px] leading-normal text-ink-3">Boosted balances are a Morpho supply position and carry that market&apos;s risk.</p>
+        <p className="text-[12.5px] leading-normal text-ink-3">
+          <strong className="font-semibold text-ink-2">Disclaimer:</strong> boosted balances are a Morpho supply position and carry that market&apos;s
+          risk, including withdrawals waiting on liquidity and shared bad debt. They are not insured.{" "}
+          <Link href={`${DOCS_PATH}#boost`} className="text-lime hover:underline">
+            Read the risks
+          </Link>
+        </p>
         {/* Boost is off by default on the create form, where its switch is titled BOOST.title, so the link promises a
             plan and the hint names the switch rather than claiming the plan arrives boosted. */}
         <div className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-1.5">
