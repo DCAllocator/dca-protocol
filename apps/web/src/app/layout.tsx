@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
 import { Splash } from "@/components/Splash";
+import { PrelaunchGate } from "@/components/site/PrelaunchGate";
 import { SPLASH_BOOTSTRAP } from "@/lib/splash";
 import { THEME_BOOTSTRAP } from "@/lib/theme-bootstrap";
 
@@ -30,6 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <Splash />
         <Providers>{children}</Providers>
+        <PrelaunchGate />
       </body>
     </html>
   );

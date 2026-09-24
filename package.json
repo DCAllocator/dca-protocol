@@ -14,6 +14,7 @@
     "fork": "bash scripts/fork.sh",
     "fork:mainnet": "bash scripts/fork-mainnet.sh",
     "share": "bash scripts/share.sh",
+    "deploy:site": "bash scripts/deploy-site.sh",
     "fund": "bash scripts/fund-tester.sh",
     "dca:list": "bash scripts/list-dca.sh",
     "protocol:deploy": "bash scripts/deploy.sh"
