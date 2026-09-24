@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Target** | `contracts/src/**` at tag `v0.1` (commit `1c2288b`), solc 0.8.28, via-ir, OZ 5.1.0 |
+| **Target** | `contracts/src/**` at tag `v0.1` (commit `20f3ad4`), solc 0.8.28, via-ir, OZ 5.1.0 |
 | **Date** | 2026-09-20 |
 | **Method** | Manual line-by-line review of all 27 source files (2,942 LoC) against the README / SECURITY.md threat model; Slither 0.11.6; 26 new PoC / property tests (`contracts/test/audit/`) run against the **real** `AggregatorRouter` + `UniV3Adapter` with constant-price and constant-product pool mocks; existing suite re-run (fuzz 512, invariants 64×32); coverage. Source code was **not** modified. |
 | **Result** | **2 High, 3 Medium, 6 Low, 15 Informational.** No issue lets an unprivileged party take *idle* balances or accrued stock. Both Highs attack the epoch purchase itself: one is a cheap, permanent per-stock DoS; the other lets anyone atomically sandwich every epoch swap. Neither is a one-line fix; both need a design decision before mainnet. |

@@ -9,7 +9,7 @@ verified with, and its ABI-sync commit is the branch base for every worktree.
 
 ## Current state (three latent defects)
 - **ABI drift [confirmed].** `apps/web/src/abi/PlanVault.ts` and `apps/scheduler/src/abi/PlanVault.ts` still export
-  `EpochPageSkipped`, absent from `contracts/src` since 5ec278c; consumers `apps/scheduler/src/scheduler.ts:282` and
+  `EpochPageSkipped`, absent from `contracts/src` since e5cda0d; consumers `apps/scheduler/src/scheduler.ts:282` and
   `apps/web/src/hooks/useLogs.ts:15-17,98` are dormant. Agents' in-memory compare also reports the price-guard surface
   (`setPriceFeed/setPriceGuard/setMaxPageNotional/skim`, events `PriceFeedSet/PriceGuardSet/PlanTooLarge/…`, 10 errors)
   missing from the committed ABIs, and `AggregatorRouter.ts` lacking `PartialFill`/`PriceImpactTooHigh` [hypothesis —
@@ -24,7 +24,7 @@ verified with, and its ABI-sync commit is the branch base for every worktree.
 
 ## Proposed approach
 1. Owner decides the uncommitted tree (overview Step 0). Baseline commit(s) on `main`: FeeReceiver set; latency proxy +
-   scripts; Splash/site-v2; research suite. Worktrees branch from the result, never from 5ec278c.
+   scripts; Splash/site-v2; research suite. Worktrees branch from the result, never from e5cda0d.
 2. **ABI-sync commit on `main`** before any frontend worktree branches: `cd contracts && forge build`,
    `pnpm --filter @dca/web abi`, `pnpm --filter @dca/scheduler abi`; fix `scheduler.ts:282` (retarget the skip branch to
    the retry-not-skip surface — `PlanTooLarge` if it carries the reason bytes `describeSkipReason` expects, else delete

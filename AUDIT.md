@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Target** | `contracts/src/**` (31 files, 3,501 non-blank LoC) and `contracts/script/**` at commit `636c643` plus the uncommitted working tree of 2026-09-22 (FeeReceiver, deploy wiring, mocks). solc 0.8.28, via-ir, `evm_version = cancun`, OpenZeppelin 5.1.0, forge-std 1.16.2. |
+| **Target** | `contracts/src/**` (31 files, 3,501 non-blank LoC) and `contracts/script/**` at commit `4ea7ba0` plus the uncommitted working tree of 2026-09-22 (FeeReceiver, deploy wiring, mocks). solc 0.8.28, via-ir, `evm_version = cancun`, OpenZeppelin 5.1.0, forge-std 1.16.2. |
 | **Chain** | Robinhood Chain (chain id 4663, Arbitrum Orbit, ArbOS 61). Single first-come-first-served sequencer run by Robinhood; no public mempool; L2 system contracts instantly upgradeable by a 7/8 multisig ([L2BEAT](https://l2beat.com/layer2s/projects/robinhood)). Stock Tokens are plain 18-decimal ERC-20s whose splits/dividends are expressed through an ERC-8056 `uiMultiplier` (raw balances never change) and have per-token Chainlink feeds ([Robinhood docs](https://docs.robinhood.com/chain/building-with-stock-tokens/)). |
 | **Date** | 2026-09-22 |
 | **Auditor** | Automated review by Claude Fable 5.1. Independent of the earlier reviews (archived: [`audit/AUDIT-v0.1.md`](audit/AUDIT-v0.1.md), [`audit/AUDIT-v0.2.md`](audit/AUDIT-v0.2.md), [`audit/AUDIT-FeeReceiver.md`](audit/AUDIT-FeeReceiver.md)); their findings were not taken as given — every one was re-derived from the code. |
