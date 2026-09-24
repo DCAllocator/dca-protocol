@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useDirectory, useVaults } from "@/hooks/useProtocol";
 import { Wordmark } from "@/components/Logo";
 import { Dot, Icon, type IconName } from "@/components/ui";
+import { BuyDcaButton } from "@/components/app/create/CreateTabs";
 import { fmtUsdCompact } from "@/lib/format";
 import { VAULT_META } from "@/lib/config";
 
@@ -52,10 +53,11 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3 pb-4">
-          <Link href="/app/create" onClick={onClose} className="btn-primary mb-3 h-10 w-full rounded-lg text-[14px]">
+          <Link href="/app/create" onClick={onClose} className="btn-primary mb-2 h-10 w-full rounded-lg text-[14px]">
             <Icon name="plus" />
             Create new plan
           </Link>
+          <BuyDcaButton onClick={onClose} className="btn-secondary mb-3 h-10 w-full rounded-lg text-[14px]" icon={<Icon name="token" />} />
           <div className="space-y-0.5">{primary.map((n) => item(n.href, n.label, n.icon))}</div>
 
           <div className="side-label">Protocol</div>

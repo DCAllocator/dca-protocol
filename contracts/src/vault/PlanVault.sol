@@ -774,6 +774,7 @@ abstract contract PlanVault is IPlanVault, Ownable2Step, Pausable, ReentrancyGua
 
     /// @inheritdoc IPlanVault
     /// @notice Set (or clear with `feed == address(0)`) the Chainlink reference feed of `stock` (USD per raw token).
+    ///         `PriceGuardLib.UNGUARDED` (0xFFfF…FFfF) instead buys `stock` without a price floor — $DCA only, see there.
     function setPriceFeed(address stock, address feed, uint32 maxStaleness) external onlyOwner {
         PriceGuardLib.setFeed(priceFeed, stock, feed, maxStaleness);
     }

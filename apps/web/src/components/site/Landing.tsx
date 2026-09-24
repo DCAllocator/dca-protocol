@@ -9,7 +9,7 @@ import { DOCS_PATH, PRODUCTION_VAULT_KINDS, VAULT_META } from "@/lib/config";
 /*
  * Token-first landing page. The old product-first page lives on at /legacy (components/site/Sections.tsx).
  * Copy rules agreed for this page: no fee percentages, no buyback amounts, no buyback timing.
- * "Buy $DCA" (BUY_DCA_URL, off-site when https) is the shared components/BuyDcaLink.tsx.
+ * "Buy $DCA" is the shared components/BuyDcaLink.tsx: always /app/buy, which hands off to Pons when it cannot swap in-app.
  */
 
 export function LandingNav() {
@@ -345,7 +345,7 @@ export function LandingFaq() {
       "Is it audited?",
       "The code is open source and has been through two internal review rounds with regression tests for every finding. It has not yet had an external audit. Treat it as early software and only use funds you can afford to lose.",
     ],
-    ["Is there a minimum?", "Each buy is at least $10, and a plan needs at least $10 to start or top up. That keeps dust plans from clogging the shared buy for everyone."],
+    ["Is there a minimum?", "The amount per buy is at least $10 (a plan's final buy can be smaller), and a plan needs at least $10 to start or top up. That keeps dust plans from clogging the shared buy for everyone."],
   ];
   return (
     <section id="faq" className="container-x py-20">

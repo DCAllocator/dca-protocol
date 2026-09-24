@@ -250,7 +250,8 @@ export function Tip({ text, className = "", align = "center" }: { text: string; 
 /**
  * Centered dialog (bottom sheet on phones). Closes on Escape and backdrop click. `closable={false}` holds it
  * open while a transaction is in flight: the close button is hidden and Escape / backdrop are ignored, so a
- * stray click cannot drop a form whose write is still waiting for the wallet or the network.
+ * stray click cannot drop a form whose write is still waiting for the wallet or the network. Taller than the
+ * screen (a form with its steps, on a small phone), it scrolls inside instead of running off the edge.
  */
 export function Modal({
   open,
@@ -276,7 +277,7 @@ export function Modal({
   if (!open) return null;
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && closable && onClose()}>
-      <div role="dialog" aria-modal className={`card w-full ${width} rounded-b-none sm:rounded-b-xl`}>
+      <div role="dialog" aria-modal className={`card max-h-dvh w-full overflow-y-auto ${width} rounded-b-none sm:max-h-[calc(100dvh-2rem)] sm:rounded-b-xl`}>
         <header className="flex items-center justify-between px-5 pt-5">
           <h2 className="text-[16px] font-medium text-ink">{title}</h2>
           {closable && (

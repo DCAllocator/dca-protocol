@@ -1,0 +1,15 @@
+{
+  "_comment": "Robinhood Chain (4663) addresses the mainnet fork (`pnpm fork:mainnet`, scripts/fork-mainnet.sh) deploys against. Found on-chain on 2026-09-23: the Uniswap V3 factory and V4 PoolManager are the ones the SPCX / NVDA / … pools report; the Morpho market is the deepest USDG-loan market in Morpho's API. Stocks, feeds and pools are not listed here: scripts/fork-mainnet-discover.py picks them live on every fork from the two sources below.",
+  "chainId": 4663,
+  "publicRpc": "https://rpc.mainnet.chain.robinhood.com",
+  "usdg": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+  "usdgBalanceSlot": 1,
+  "weth": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+  "uniV3Factory": "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA",
+  "uniV4PoolManager": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+  "morpho": "0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010",
+  "morphoMarketId": "0xc845da65a020ddca5f132efa8fea79676d8edfdea504226a4c01e7a9e34cddd6",
+  "morphoMarketNote": "USDG loan / USDe collateral, 91.5% LLTV: ~$339M supplied, 89% utilised, ~3.5% supply APY on 2026-09-23",
+  "assetRegistryUrl": "https://api.robinhood.com/rhj/assets",
+  "chainlinkFeedsUrl": "https://reference-data-directory.vercel.app/feeds-robinhood-mainnet.json"
+}

@@ -9,7 +9,9 @@ import { useTxSequence, type TxStep } from "@/hooks/useTx";
 import { AggregatorRouterAbi, ERC20Abi } from "@/abi";
 import { Spinner } from "@/components/ui";
 import { TxFlowDialog, type FlowStep } from "@/components/app/TxFlowDialog";
+import { AddToWalletButton } from "@/components/app/AddToWalletButton";
 import { ConnectButton } from "@/components/ConnectButton";
+import { Logo } from "@/components/Logo";
 import { fmtUsd, fmtUnits, fmtBps } from "@/lib/format";
 import { USDG_DECIMALS } from "@/lib/config";
 import { Box, Coin, Detail, clean, safeParse } from "./fields";
@@ -26,7 +28,8 @@ type BuyOrder = { flow: FlowStep[]; amountIn: bigint; quoted: bigint; minOut: bi
  * shown is what the router will try to deliver; `minOut` is that quote minus 0.5%. Steps: Approve USDG
  * (skipped when the router's allowance already covers it) → Buy $DCA, through the same `useTxSequence` +
  * `TxFlowDialog` the create card uses. USDG only: ETH → $DCA is not routable today (the router only searches
- * two-hop routes when neither side is WETH, and the Zap is ETH ↔ USDG).
+ * two-hop routes when neither side is WETH, and the Zap is ETH ↔ USDG). "Add to MetaMask" for $DCA sits on the
+ * Receive box and again once a buy is done.
  */
 export function BuyDcaCard({ dir }: { dir: Directory }) {
   const user = useUser(dir);
@@ -148,12 +151,15 @@ export function BuyDcaCard({ dir }: { dir: Directory }) {
           </div>
         </Box>
 
-        <Box label="Receive" className="mt-3">
+        <Box label="Receive" className="mt-3" aside={<AddToWalletButton address={dir.dca} symbol={symbolQ.data ?? "DCA"} decimals={decimals} />}>
           <div className="flex items-center gap-3">
             <span className={`num min-w-0 flex-1 truncate text-[30px] font-medium ${quoted !== undefined ? "text-ink" : "text-ink-3"}`}>
               {hasAmount ? (quoted !== undefined ? `≈ ${fmtUnits(quoted, decimals)}` : quoteFailed ? "—" : "…") : "0"}
             </span>
-            <span className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-line-strong bg-surface-4 px-3 text-[14px] font-semibold text-ink">{symbol}</span>
+            <span className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-line-strong bg-surface-4 pr-3 pl-1.5 text-[14px] font-semibold text-ink">
+              <Logo size={24} />
+              {symbol}
+            </span>
           </div>
           <div className="mt-1.5 text-[12.5px] text-ink-3">
             Balance <span className="num text-ink-2">{address ? `${fmtUnits(user.dca, decimals)} ${symbol}` : "—"}</span>
@@ -211,6 +217,7 @@ export function BuyDcaCard({ dir }: { dir: Directory }) {
             <button type="button" className="btn-ghost w-full" onClick={closeFlow}>
               Buy more
             </button>
+            <AddToWalletButton address={dir.dca} symbol={symbolQ.data ?? "DCA"} decimals={decimals} className="justify-self-center" />
           </div>
         }
       />

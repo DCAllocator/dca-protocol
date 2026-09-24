@@ -11,6 +11,7 @@ import {MockV3Factory} from "../test/mocks/MockV3.sol";
 import {MockDCA} from "../test/mocks/MockDCA.sol";
 import {MockMorpho, MockIrm} from "../test/mocks/MockMorpho.sol";
 import {MockAggregatorV3} from "../test/mocks/MockChainlink.sol";
+import {PriceGuardLib} from "../src/libraries/PriceGuardLib.sol";
 import {MorphoBlueStrategy} from "../src/boost/MorphoBlueStrategy.sol";
 import {Id, MarketParams} from "../src/interfaces/IMorpho.sol";
 import {StockRegistry} from "../src/registries/StockRegistry.sol";
@@ -54,6 +55,14 @@ import {FeeReceiver} from "../src/treasury/FeeReceiver.sol";
 ///         are listed in the registry (so the frontend's dropdown search has the full set) but with no pool —
 ///         same as a real thin-liquidity ticker, the router has no route and the UI simply shows no price.
 ///
+///         $DCA is a plan asset too: the local mDCA is listed in the registry as "DCA" (approved, not
+///         fee-on-transfer) and bought like a liquid stock, through the mDCA/USDG pool the FeeReceiver buys back on,
+///         with keeper jobs on every vault and no price floor (`PriceGuardLib.UNGUARDED`, as production lists it: there
+///         is no Chainlink feed for $DCA, its trading tax is the sandwich defence). It is wired after
+///         the last contract is deployed, so every address matches a stack from before the listing ($DCA is last in
+///         `approvedStocks()`; the web pins it by address). A stack deployed before this can get the same with
+///         script/ListDca.s.sol.
+///
 ///   anvil &
 ///   forge script script/DeployLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcast \
 ///     --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
@@ -64,6 +73,9 @@ contract DeployLocal is Script {
     uint256[] internal PRICES_USDG;
     uint256[] internal SUPPLIES;
     string[] internal OTHER_SYMBOLS;
+
+    /// @dev USDG (1e6-scaled) per mDCA: the seeded pool price.
+    uint256 internal constant DCA_PRICE_USDG = 0.1e6;
 
     function _liquid(string memory symbol, uint256 priceUsdg, uint256 supply) internal {
         SYMBOLS.push(symbol);
@@ -262,9 +274,11 @@ contract DeployLocal is Script {
         weth.mint(pool, 1_000_000e18);
         _approveBoth(router, 1, pool, address(weth), address(usdg), 500);
 
-        // mDCA/USDG pool at 0.10 USDG per mDCA, approved both ways, so the FeeReceiver can buy back locally.
-        address dcaPool =
-            factory.createPool(address(dca), address(usdg), 3000, _sqrt(address(dca), 1e18, address(usdg), 0.1e6));
+        // mDCA/USDG pool at 0.10 USDG per mDCA, approved both ways, so the FeeReceiver can buy back locally and
+        // $DCA plans fill.
+        address dcaPool = factory.createPool(
+            address(dca), address(usdg), 3000, _sqrt(address(dca), 1e18, address(usdg), DCA_PRICE_USDG)
+        );
         usdg.mint(dcaPool, 100_000_000e6);
         dca.mint(dcaPool, 1_000_000_000e18);
         _approveBoth(router, 1, dcaPool, address(usdg), address(dca), 3000);
@@ -286,7 +300,8 @@ contract DeployLocal is Script {
             stocks[i] = address(st);
         }
         // Long-tail tickers: registry-listed for the frontend, no seeded pool (no route, no price — same as
-        // real life for a thin-liquidity Stock Token), so no keeper jobs either.
+        // real life for a thin-liquidity Stock Token), so no keeper jobs either. The app's create picker only offers
+        // stocks with an active keeper job (useBuyable), so these show in the ticker tape but cannot be picked.
         for (uint256 i; i < OTHER_SYMBOLS.length; ++i) {
             MockERC20 st = new MockERC20(
                 string.concat(OTHER_SYMBOLS[i], " Stock Token"), string.concat(OTHER_SYMBOLS[i], "st"), 18
@@ -339,7 +354,8 @@ contract DeployLocal is Script {
         }
 
         // Price guard (audit v0.3 H-01): a mock Chainlink feed per liquid symbol at the seeded pool price, set on
-        // every vault with a long staleness window so the local stack keeps working across restarts.
+        // every vault with a long staleness window so the local stack keeps working across restarts. A page pays
+        // the pool's 0.3% fee plus up to `swapSlippageBps` (0.5%), well inside the default 3% deviation.
         {
             PlanVault[5] memory guarded =
                 [PlanVault(hourly), PlanVault(daily), PlanVault(weekly), PlanVault(monthly), PlanVault(testVault)];
@@ -399,6 +415,22 @@ contract DeployLocal is Script {
             })
         );
 
+        // $DCA as a plan asset, wired like a liquid stock but after the last contract above is deployed: every
+        // call uses a deployer nonce, so doing this earlier would move every later address. MockDCA is a plain
+        // ERC-20 (no transfer tax), so not fee-on-transfer. No price floor: marked UNGUARDED, as production lists it
+        // (no Chainlink feed for $DCA; its trading tax is the sandwich defence, see PriceGuardLib.UNGUARDED).
+        {
+            registry.listStock(address(dca), "DCA", false, true);
+            PlanVault[5] memory all =
+                [PlanVault(hourly), PlanVault(daily), PlanVault(weekly), PlanVault(monthly), PlanVault(testVault)];
+            for (uint256 v; v < 5; ++v) {
+                all[v].setPriceFeed(address(dca), PriceGuardLib.UNGUARDED, 0);
+            }
+            for (uint256 v; v < 5; ++v) {
+                keeper.addJob(address(all[v]), address(dca));
+            }
+        }
+
         usdg.mint(deployer, 1_000_000e6);
         usdg.mint(treasury, 1_000_000e6);
         for (uint256 i; i < testWallets.length; ++i) {
@@ -456,6 +488,7 @@ contract DeployLocal is Script {
         console2.log("deployer ", deployer);
         console2.log("treasury ", treasury);
         console2.log("feeRecv  ", address(feeReceiver));
+        console2.log("dca      ", address(dca));
         console2.log("test1    ", test1);
         console2.log("test2    ", test2);
         console2.log("test3    ", test3);

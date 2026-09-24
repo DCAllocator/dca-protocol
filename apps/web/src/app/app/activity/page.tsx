@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { useAccount } from "wagmi";
-import { useDirectory, usePositions, useStocks, kindOf, vaultList } from "@/hooks/useProtocol";
+import type { Address } from "viem";
+import { useDirectory, usePositions, useStocks, kindOf, vaultList, isDcaToken } from "@/hooks/useProtocol";
 import { useEpochLogs } from "@/hooks/useLogs";
-import { PageHeader, Card, Notice, Empty, Segmented, StockAvatar } from "@/components/ui";
+import { PageHeader, Card, Notice, Empty, Segmented } from "@/components/ui";
 import { ConnectButton } from "@/components/ConnectButton";
+import { ChoiceAvatar, choiceLabel } from "@/components/app/create/fields";
 import { fmtUsd, fmtUnits, tsToShort, short } from "@/lib/format";
 import { VAULT_KINDS, VAULT_META, type VaultKind } from "@/lib/config";
 import { activeChain } from "@/lib/chain";
@@ -21,6 +23,14 @@ export default function Activity() {
   const [tab, setTab] = useState<Tab>("mine");
   const [filter, setFilter] = useState<VaultKind | "all">("all");
   const explorer = activeChain.blockExplorers?.default.url;
+  // Our own token (told apart by address) reads "$DCA" under our mark, as on My plans; a Stock Token by its ticker.
+  // No `symbol` for a token the registry does not list (yet).
+  const labelOf = (address: Address | undefined): { symbol?: string; dca: boolean } => {
+    const s = address ? byAddress[address.toLowerCase()] : undefined;
+    const dca = isDcaToken(dir, address);
+    if (!address || (!s && !dca)) return { dca: false };
+    return choiceLabel({ address, symbol: s?.symbol ?? "" }, dca ? address : undefined);
+  };
 
   if (!configured) return <Notice kind="warn">App is not configured.</Notice>;
 
@@ -114,14 +124,15 @@ export default function Activity() {
                   const l = row.kind === "fill" ? row.f : row.t;
                   const pos = positions.find((p) => p.vault.toLowerCase() === l.vault.toLowerCase() && p.planId === l.planId);
                   const stock = pos ? byAddress[pos.stock.toLowerCase()] : undefined;
+                  const label = labelOf(pos?.stock);
                   const kind = kindOf(vaults, l.vault);
                   const lead = (
                     <>
                       <td className="text-[12px] text-ink-2">{l.timestamp ? tsToShort(l.timestamp) : `block ${l.blockNumber}`}</td>
                       <td>
                         <span className="flex items-center gap-2 font-semibold text-ink">
-                          <StockAvatar symbol={stock?.symbol ?? "?"} size={24} />
-                          {stock?.symbol ?? "?"}
+                          <ChoiceAvatar symbol={label.symbol ?? "?"} dca={label.dca} size={24} />
+                          {label.symbol ?? "?"}
                         </span>
                       </td>
                       <td className="text-ink-2">{kind ? VAULT_META[kind].label : short(l.vault)}</td>
@@ -146,7 +157,7 @@ export default function Activity() {
                       {lead}
                       <td className="num text-right">{fmtUsd(f.spendUsdg)}</td>
                       <td className="num text-right">
-                        {fmtUnits(f.stockShare, stock?.decimals ?? 18, 6)} <span className="text-[11px] text-ink-3">{stock?.symbol}</span>
+                        {fmtUnits(f.stockShare, stock?.decimals ?? 18, 6)} <span className="text-[11px] text-ink-3">{label.symbol}</span>
                       </td>
                       <td>{f.autoDistributed ? <span className="chip-lime">Sent to wallet</span> : <span className="chip">Held for you</span>}</td>
                       <td className="text-right">{txLink(f.txHash)}</td>
@@ -175,6 +186,7 @@ export default function Activity() {
               {all.slice(0, 100).map((row) => {
                 const e = row.e;
                 const stock = byAddress[e.stock.toLowerCase()];
+                const label = labelOf(e.stock);
                 const kind = kindOf(vaults, e.vault);
                 if (row.kind === "boostSkip") {
                   return (
@@ -182,8 +194,8 @@ export default function Activity() {
                       <td className="text-[12px] text-ink-2">{e.timestamp ? tsToShort(e.timestamp) : `block ${e.blockNumber}`}</td>
                       <td>
                         <span className="flex items-center gap-2 font-semibold text-ink">
-                          <StockAvatar symbol={stock?.symbol ?? "?"} size={24} />
-                          {stock?.symbol ?? short(e.stock)}
+                          <ChoiceAvatar symbol={label.symbol ?? "?"} dca={label.dca} size={24} />
+                          {label.symbol ?? short(e.stock)}
                         </span>
                       </td>
                       <td className="text-ink-2">{kind ? VAULT_META[kind].label : short(e.vault)}</td>
@@ -201,14 +213,14 @@ export default function Activity() {
                     <td className="text-[12px] text-ink-2">{e.timestamp ? tsToShort(e.timestamp) : `block ${e.blockNumber}`}</td>
                     <td>
                       <span className="flex items-center gap-2 font-semibold text-ink">
-                        <StockAvatar symbol={stock?.symbol ?? "?"} size={24} />
-                        {stock?.symbol ?? short(e.stock)}
+                        <ChoiceAvatar symbol={label.symbol ?? "?"} dca={label.dca} size={24} />
+                        {label.symbol ?? short(e.stock)}
                       </span>
                     </td>
                     <td className="text-ink-2">{kind ? VAULT_META[kind].label : short(e.vault)}</td>
                     <td className="num text-right">{fmtUsd(f.netUsdg)}</td>
                     <td className="num text-right">
-                      {fmtUnits(f.stockOut, stock?.decimals ?? 18, 6)} <span className="text-[11px] text-ink-3">{stock?.symbol}</span>
+                      {fmtUnits(f.stockOut, stock?.decimals ?? 18, 6)} <span className="text-[11px] text-ink-3">{label.symbol}</span>
                     </td>
                     <td className="num text-right">{f.plansFilled}</td>
                     <td className="text-right">{txLink(e.txHash)}</td>

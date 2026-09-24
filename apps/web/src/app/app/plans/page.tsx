@@ -8,6 +8,7 @@ import {
   useDirectory,
   usePositions,
   useStocks,
+  useBuyable,
   useVaults,
   useUser,
   useQuote,
@@ -18,24 +19,28 @@ import {
   boostEarnings,
   kindOf,
   vaultList,
+  isDcaToken,
+  type Directory,
   type Position,
   type VaultInfo,
 } from "@/hooks/useProtocol";
 import { useTxSequence } from "@/hooks/useTx";
 import { usePlanIndex, planKey } from "@/hooks/useLogs";
 import { PlanVaultAbi, ERC20Abi } from "@/abi";
-import { PageHeader, Card, Notice, Spinner, StockAvatar, Dot, Empty, Modal, Menu, Slider, AmountInput, Segmented, KV, Countdown, SearchInput, SortTh, Icon } from "@/components/ui";
+import { PageHeader, Card, Notice, Spinner, Dot, Empty, Modal, Menu, Slider, AmountInput, Segmented, Countdown, SearchInput, SortTh, Icon, Tip } from "@/components/ui";
 import { ConnectButton } from "@/components/ConnectButton";
 import { useToast } from "@/components/Toast";
-import { TxFlowDialog } from "@/components/app/TxFlowDialog";
+import { FlowTimeline, TxFlowDialog } from "@/components/app/TxFlowDialog";
 import { AddToWalletButton } from "@/components/app/AddToWalletButton";
 import { PlanFlowSummary } from "@/components/app/PlanFlowSummary";
 import { BoostCelebration, BoostPowerDown } from "@/components/app/BoostCelebration";
+import { FormSummary, FundsNote, type SummaryRow } from "@/components/app/plans/FormParts";
+import { ChoiceAvatar, choiceLabel } from "@/components/app/create/fields";
 import { fmtUsd, fmtUnits, fmtBps, fmtPct, feeOf, valueOf } from "@/lib/format";
 import { VAULT_META, VAULT_KINDS, USDG_DECIMALS, BOOST, type VaultKind } from "@/lib/config";
-import { tickerName } from "@/lib/tickers";
 import { describeTxError, REJECTED_COPY, STILL_PENDING_COPY } from "@/lib/txErrors";
 import { visiblePositions } from "@/lib/visiblePositions";
+import { USDG_DUST, coverageCopy, depositFor, depositShortCopy, fundsLevel, rowFundsCopy, withdrawLeftCopy } from "@/lib/planFunds";
 import {
   buildRemoveOrder,
   buildCloseOrder,
@@ -62,6 +67,7 @@ import {
   planFlowDoneLine,
   planFlowTitles,
   planOutcomeLine,
+  settledWithdraw,
   type BoostOrder,
   type ClaimOrder,
   type DepositOrder,
@@ -85,6 +91,13 @@ type RowFlow = { key: string; planLabel: string; order: ClaimOrder | BoostOrder 
 /** "Daily · #3": how a flow dialog names the plan. */
 const planLabelOf = (kind: VaultKind | undefined, planId: bigint) => `${kind ? VAULT_META[kind].label : "?"} · #${planId.toString()}`;
 
+/**
+ * How a plan's stock is named everywhere on the page: our own token (told apart by address, `isDcaToken`) as "$DCA" /
+ * "DCA Token" under our mark, the way create names it (`choiceLabel`); a Stock Token by its registry ticker.
+ */
+const stockLabelOf = (dir: Directory | undefined, address: Address, registrySymbol: string | undefined) =>
+  choiceLabel({ address, symbol: registrySymbol ?? "?" }, isDcaToken(dir, address) ? address : undefined);
+
 type SortKey = "plan" | "per" | "balance" | "stock" | "next" | "status";
 type Sort = { key: SortKey; dir: 1 | -1 };
 
@@ -92,6 +105,8 @@ export default function Plans() {
   const { address } = useAccount();
   const { dir, vaults, configured } = useDirectory();
   const { byAddress } = useStocks(dir?.registry);
+  // Plans on a stock their vault never buys (no keeper job, or no price feed where one is required) are flagged, not hidden.
+  const { isBuyable } = useBuyable();
   const { positions: all, isLoading, refetch } = usePositions(vaults);
   const index = usePlanIndex(vaults ? vaultList(vaults) : undefined);
   const { infos, byKind, refetch: refetchVaults } = useVaults(vaults);
@@ -187,26 +202,43 @@ export default function Plans() {
   const positions = useMemo(() => visiblePositions(all, index.data, hidden, keyOf), [all, index.data, hidden]);
   const livePlan = dialog ? (all.find((p) => keyOf(p) === dialog.key) ?? dialog.plan) : null;
 
-  type Row = { p: Position; kind?: VaultKind; info?: VaultInfo; symbol: string; name: string; decimals: number; stockUsd?: bigint; active: boolean };
+  // `symbol` / `name` / `dca`: how the page names the stock (`stockLabelOf`); `tokenSymbol`: the registry's ticker, for the wallet.
+  type Row = {
+    p: Position;
+    kind?: VaultKind;
+    info?: VaultInfo;
+    symbol: string;
+    name: string;
+    dca: boolean;
+    tokenSymbol: string;
+    decimals: number;
+    stockUsd?: bigint;
+    bought?: boolean;
+    active: boolean;
+  };
   const rows = useMemo<Row[]>(
     () =>
       positions.map((p) => {
         const kind = kindOf(vaults, p.vault);
         const stock = byAddress[p.stock.toLowerCase()];
-        const symbol = stock?.symbol ?? "?";
+        const label = stockLabelOf(dir, p.stock, stock?.symbol);
         const decimals = stock?.decimals ?? 18;
+        const bought = isBuyable(p.vault, p.stock);
         return {
           p,
           kind,
           info: kind ? byKind[kind] : undefined,
-          symbol,
-          name: tickerName(symbol),
+          symbol: label.symbol,
+          name: label.name,
+          dca: label.dca,
+          tokenSymbol: stock?.symbol ?? label.symbol,
           decimals,
           stockUsd: p.stockAccrued === 0n ? 0n : valueOf(p.stockAccrued, prices[p.stock.toLowerCase()], decimals),
-          active: !p.paused && planBalance(p) > 0n,
+          bought,
+          active: !p.paused && planBalance(p) > 0n && bought !== false,
         };
       }),
-    [positions, vaults, byAddress, byKind, prices],
+    [positions, vaults, dir, byAddress, byKind, prices, isBuyable],
   );
 
   const filtered = useMemo(() => {
@@ -232,7 +264,7 @@ export default function Plans() {
         case "next":
           return r.active && r.info?.nextEpochStart !== undefined ? Number(r.info.nextEpochStart) : undefined;
         case "status":
-          return r.p.paused ? 2 : r.active ? 0 : 1;
+          return r.bought === false ? 3 : r.p.paused ? 2 : r.active ? 0 : 1;
       }
     };
     return [...filtered].sort((a, b) => {
@@ -256,7 +288,15 @@ export default function Plans() {
   const activeCount = rows.filter((r) => r.active).length;
   const stockUsd = rows.reduce<bigint | undefined>((a, r) => (a === undefined || r.stockUsd === undefined ? undefined : a + r.stockUsd), 0n);
   const soonest = rows.filter((r) => r.active && r.info?.nextEpochStart !== undefined).sort((a, b) => Number(a.info!.nextEpochStart! - b.info!.nextEpochStart!))[0];
+  // Running plans with nothing left, or under a cent: the rows `rowFundsCopy` warns on (and washes amber); the Plans
+  // tile counts them.
+  const outOfFunds = rows.filter((r) => {
+    if (r.bought === false || r.p.paused || removing.has(keyOf(r.p))) return false;
+    const level = fundsLevel(planBalance(r.p), r.p.amountPerEpoch);
+    return level === "empty" || level === "dust";
+  }).length;
   const cols = 7;
+  const dialogStock = livePlan ? stockLabelOf(dir, livePlan.stock, byAddress[livePlan.stock.toLowerCase()]?.symbol) : undefined;
 
   return (
     <>
@@ -296,6 +336,13 @@ export default function Plans() {
               {rows.length}
               {rows.length > 0 && <span className="ml-2 text-[13px] text-ink-2">{activeCount} active</span>}
             </span>
+            {outOfFunds > 0 && (
+              <span className="inline-flex items-center gap-1.5 text-[12px] text-ink-2">
+                {/* the rows' own mark, so the tile reads as their legend (an amber dot is Paused in the Status column) */}
+                <Icon name="info" size={12} className="shrink-0 text-warn" />
+                {outOfFunds} out of funds
+              </span>
+            )}
           </div>
           <div className="stat-cell">
             <span className="stat-label">Next buy</span>
@@ -321,7 +368,7 @@ export default function Plans() {
             {filtered.length} of {rows.length}
           </span>
         </div>
-        <div className="overflow-x-auto">
+        <div className="tbl-scroll overflow-x-auto">
           <table className="tbl min-w-[820px]">
             <thead>
               <tr>
@@ -370,26 +417,32 @@ export default function Plans() {
               ) : (
                 sorted.map((r) => {
                   const key = keyOf(r.p);
-                  const ref: PlanRef = { vault: r.p.vault, planId: r.p.planId, symbol: r.symbol, stockDecimals: r.decimals };
+                  const ref: PlanRef = { vault: r.p.vault, planId: r.p.planId, symbol: r.symbol, stockDecimals: r.decimals, name: r.name, dca: r.dca };
                   const planLabel = planLabelOf(r.kind, r.p.planId);
                   // The claim fee is waived while the owner holds the auto-distribute amount of $DCA (the vault's `_perks`).
                   const perk = user.dca !== undefined && r.info?.autoDistributeThreshold !== undefined && user.dca >= r.info.autoDistributeThreshold;
                   return (
                     <PlanRow
                       key={key}
+                      planKey={key}
+                      cols={cols}
                       p={r.p}
                       kind={r.kind}
                       info={r.info}
                       apy={apyOf(r.info?.boostStrategy)}
                       symbol={r.symbol}
                       name={r.name}
+                      dca={r.dca}
+                      tokenSymbol={r.tokenSymbol}
                       stockDecimals={r.decimals}
                       stockUsd={r.stockUsd}
+                      bought={r.bought}
                       removing={removing.has(key)}
                       flowBusy={rowSeq.running}
                       flash={flashKey === key}
                       onFlashEnd={() => setFlashKey((k) => (k === key ? null : k))}
-                      onDialog={(d) => setDialog({ kind: d, key, plan: r.p })}
+                      // One form at a time: a row button reached behind an open dialog (keyboard) does not swap its plan.
+                      onDialog={(d) => setDialog((cur) => cur ?? { kind: d, key, plan: r.p })}
                       onClaim={() =>
                         startRowFlow(
                           key,
@@ -439,15 +492,20 @@ export default function Plans() {
         </div>
       </Card>
 
-      {dialog && livePlan && dir && (
+      {dialog && livePlan && dialogStock && dir && (
         <PlanDialog
+          // A fresh form per plan and action: nothing typed for one plan carries over to another.
+          key={`${dialog.kind}:${dialog.key}`}
           dialog={{ ...dialog, plan: livePlan }}
-          symbol={byAddress[livePlan.stock.toLowerCase()]?.symbol ?? "?"}
+          symbol={dialogStock.symbol}
+          name={dialogStock.name}
+          dca={dialogStock.dca}
           stockDecimals={byAddress[livePlan.stock.toLowerCase()]?.decimals ?? 18}
           info={(() => {
             const k = kindOf(vaults, livePlan.vault);
             return k ? byKind[k] : undefined;
           })()}
+          bought={isBuyable(livePlan.vault, livePlan.stock)}
           usdg={dir.usdg}
           weth={dir.weth}
           router={dir.router}
@@ -467,7 +525,12 @@ export default function Plans() {
           onClose={closeRowFlow}
           extraDoneActions={
             rowFlow.order.kind === "claim" && rowFlow.order.toSelf ? (
-              <AddToWalletButton address={rowFlow.order.stock} symbol={rowFlow.order.symbol} decimals={rowFlow.order.stockDecimals} className="justify-self-center" />
+              <AddToWalletButton
+                address={rowFlow.order.stock}
+                symbol={byAddress[rowFlow.order.stock.toLowerCase()]?.symbol ?? rowFlow.order.symbol}
+                decimals={rowFlow.order.stockDecimals}
+                className="justify-self-center"
+              />
             ) : undefined
           }
         />
@@ -503,6 +566,9 @@ function PlanFlowDialog({
   // click-time idle balance until the receipt is read.
   const boost = order.kind === "boost" ? order : undefined;
   const lent = boost ? (receipt.data ? (boostLent(boost, receipt.data.logs) ?? 0n) : boost.lend) : 0n;
+  // Withdraw everything: the MAX sentinel pays the balance at execution, so once the receipt is read the tile and the
+  // step show what the vault paid (a boosted plan earns after the click); the click-time estimate until then.
+  const shown = order.kind === "withdraw" && order.all && receipt.data ? settledWithdraw(order, receipt.data.logs) : order;
   const failed = seq.steps.find((s) => s.phase === "error");
   const hint = failed ? planErrorHint(order, failed.errorName) : undefined;
   const { toast } = useToast();
@@ -520,11 +586,11 @@ function PlanFlowDialog({
       subtitle={outcome ?? planFlowDoneLine(order)}
       summary={
         <>
-          <PlanFlowSummary order={order} planLabel={planLabel} />
+          <PlanFlowSummary order={shown} planLabel={planLabel} />
           {hint && <Notice kind="warn">{hint}</Notice>}
         </>
       }
-      flow={order.flow}
+      flow={shown.flow}
       seq={seq}
       onClose={close}
       hero={boost ? (h) => <BoostCelebration {...h} apy={boost.apy} amount={lent > 0n ? fmtUsd(lent) : undefined} /> : undefined}
@@ -546,14 +612,19 @@ function PlanFlowDialog({
 /* ------------------------------------------------------------------ */
 
 function PlanRow({
+  planKey,
+  cols,
   p,
   kind,
   info,
   apy,
   symbol,
   name,
+  dca,
+  tokenSymbol,
   stockDecimals,
   stockUsd,
+  bought,
   removing,
   flowBusy,
   flash,
@@ -563,14 +634,24 @@ function PlanRow({
   onBoost,
   onPause,
 }: {
+  /** The plan's key, on the row (`data-plan`) so focus can come back to it once a dialog closes. */
+  planKey: string;
+  /** Columns of the table, for the notice row under a plan that is short of funds. */
+  cols: number;
   p: Position;
   kind?: VaultKind;
   info?: VaultInfo;
   apy?: number;
+  /** How the page names the stock: "$DCA" / "DCA Token" for our own token (`dca`), the ticker otherwise. */
   symbol: string;
   name: string;
+  dca: boolean;
+  /** The registry's ticker, which the wallet is given. */
+  tokenSymbol: string;
   stockDecimals: number;
   stockUsd?: bigint;
+  /** false: the plan's vault never buys its stock (see `useBuyable`), so it spends nothing; undefined while loading. */
+  bought?: boolean;
   /** This plan's withdraw-and-remove sequence is running: its menu entry is disabled so a second one cannot start. */
   removing?: boolean;
   /** A claim / boost / unboost / pause flow is in flight (any row): one wallet, one nonce, so this row's writes wait. */
@@ -588,116 +669,151 @@ function PlanRow({
   const funded = balance > 0n;
   const earned = boostEarnings(p);
   const canBoost = boostAvailable(info);
-  const status = p.paused ? (["Paused", "warn"] as const) : funded ? (["Active", "good"] as const) : (["Needs funds", "muted"] as const);
+  const notBought = bought === false;
+  const status = notBought
+    ? (["Not being bought", "bad"] as const)
+    : p.paused
+      ? (["Paused", "warn"] as const)
+      : funded
+        ? (["Active", "good"] as const)
+        : (["Needs funds", "muted"] as const);
   const locked = !!flowBusy;
   // The flash waits for the refetched row to show the boost, so it never plays on a row that is not yet highlighted.
   const flashing = !!flash && p.boosted;
+  // Less than one buy left: a line under the row says what the next buy does, with Deposit beside it. Not for a plan
+  // being removed, nor for one that is never bought (its status already says it spends nothing). A warning (out of
+  // funds, or down to dust) also washes the row and its line amber: an indicator, not an alert.
+  const fundsNote = notBought || removing ? undefined : rowFundsCopy({ balance, perBuy: p.amountPerEpoch, paused: p.paused });
+  const noteTone = fundsNote?.tone === "warn" ? "note-warn" : "";
 
   return (
-    <tr
-      className={`${p.boosted ? "boost-row" : ""} ${flashing ? "boost-row-flash" : ""}`}
-      onAnimationEnd={(e) => {
-        if (flashing && e.animationName === "boost-row-flash") onFlashEnd?.();
-      }}
-    >
-      <td>
-        <span className="flex items-center gap-3">
-          <span className="relative inline-flex shrink-0">
-            <StockAvatar symbol={symbol} size={30} />
+    <>
+      <tr
+        data-plan={planKey}
+        className={`${p.boosted ? "boost-row" : ""} ${flashing ? "boost-row-flash" : ""} ${fundsNote ? "has-note" : ""} ${noteTone}`}
+        onAnimationEnd={(e) => {
+          if (flashing && e.animationName === "boost-row-flash") onFlashEnd?.();
+        }}
+      >
+        <td>
+          <span className="flex items-center gap-3">
+            <span className="relative inline-flex shrink-0">
+              <ChoiceAvatar symbol={symbol} dca={dca} size={30} />
+              {p.boosted && (
+                <span className="boost-badge" aria-hidden>
+                  <Icon name="bolt" size={9} />
+                </span>
+              )}
+            </span>
+            <span className="min-w-0">
+              <span className="block text-[14px] font-medium text-ink">
+                {symbol} <span className="font-normal text-ink-2">{name !== symbol ? name : ""}</span>
+                {p.boosted && <span className="sr-only">, {BOOST.chip.toLowerCase()}</span>}
+              </span>
+              <span className="block text-[12px] text-ink-2">
+                {kind ? VAULT_META[kind].label : "?"} · #{p.planId.toString()}
+              </span>
+              <AddToWalletButton address={p.stock} symbol={tokenSymbol} decimals={stockDecimals} className="mt-0.5" />
+            </span>
+          </span>
+        </td>
+        <td className="num text-right">
+          {fmtUsd(p.amountPerEpoch)}
+          {kind && <span className="block text-[11.5px] text-ink-2">per {VAULT_META[kind].per}</span>}
+        </td>
+        <td className="num text-right">
+          {fmtUsd(balance)}
+          {(p.boosted || earned > 0n) && (
+            <span
+              className={`mt-0.5 flex items-center justify-end gap-1 text-[11.5px] ${p.boosted ? "text-good" : "text-ink-2"}`}
+              title={
+                p.boosted
+                  ? `${BOOST.chip}: lifetime earnings from lending on Morpho Blue${apy !== undefined ? ` (now ${fmtPct(apy, true)} APY)` : ""}`
+                  : "Earned while this plan was boosted"
+              }
+            >
+              {p.boosted && <Icon name="bolt" size={11} className="text-lime" />}+{fmtUsd(earned)} earned
+            </span>
+          )}
+        </td>
+        <td className="num text-right">
+          {fmtUnits(p.stockAccrued, stockDecimals, 4)} <span className="text-[11.5px] text-ink-2">{symbol}</span>
+          {p.stockAccrued > 0n && <span className="block text-[11.5px] text-ink-2">{fmtUsd(stockUsd)}</span>}
+        </td>
+        <td>
+          {p.paused || !funded || notBought ? <span className="text-ink-3">—</span> : <Countdown target={info?.nextEpochStart} className="text-ink" />}
+        </td>
+        <td>
+          <span className="inline-flex items-center gap-1.5 text-[12.5px] text-ink">
+            <Dot tone={status[1]} />
+            {status[0]}
+            {notBought && (
+              <Tip
+                text={`${symbol} isn't available for ${kind ? VAULT_META[kind].label.toLowerCase() : "this frequency's"} plans, so this plan never buys and spends nothing. Your balance stays in the plan: withdraw it or remove the plan.`}
+              />
+            )}
+            {/* The same chip the create flow's summary gives a boosted plan; decorative (the ticker cell says it for screen readers). */}
             {p.boosted && (
-              <span className="boost-badge" aria-hidden>
-                <Icon name="bolt" size={9} />
+              <span className="chip-lime ml-1 gap-1" aria-hidden>
+                <Icon name="bolt" size={11} />
+                {BOOST.chip}
               </span>
             )}
           </span>
-          <span className="min-w-0">
-            <span className="block text-[14px] font-medium text-ink">
-              {symbol} <span className="font-normal text-ink-2">{name !== symbol ? name : ""}</span>
-              {p.boosted && <span className="sr-only">, {BOOST.chip.toLowerCase()}</span>}
-            </span>
-            <span className="block text-[12px] text-ink-2">
-              {kind ? VAULT_META[kind].label : "?"} · #{p.planId.toString()}
-            </span>
-            <AddToWalletButton address={p.stock} symbol={symbol} decimals={stockDecimals} className="mt-0.5" />
-          </span>
-        </span>
-      </td>
-      <td className="num text-right">
-        {fmtUsd(p.amountPerEpoch)}
-        {kind && <span className="block text-[11.5px] text-ink-2">per {VAULT_META[kind].per}</span>}
-      </td>
-      <td className="num text-right">
-        {fmtUsd(balance)}
-        {(p.boosted || earned > 0n) && (
-          <span
-            className={`mt-0.5 flex items-center justify-end gap-1 text-[11.5px] ${p.boosted ? "text-good" : "text-ink-2"}`}
-            title={
-              p.boosted
-                ? `${BOOST.chip}: lifetime earnings from lending on Morpho Blue${apy !== undefined ? ` (now ${fmtPct(apy, true)} APY)` : ""}`
-                : "Earned while this plan was boosted"
-            }
-          >
-            {p.boosted && <Icon name="bolt" size={11} className="text-lime" />}+{fmtUsd(earned)} earned
-          </span>
-        )}
-      </td>
-      <td className="num text-right">
-        {fmtUnits(p.stockAccrued, stockDecimals, 4)} <span className="text-[11.5px] text-ink-2">{symbol}</span>
-        {p.stockAccrued > 0n && <span className="block text-[11.5px] text-ink-2">{fmtUsd(stockUsd)}</span>}
-      </td>
-      <td>
-        {p.paused || !funded ? <span className="text-ink-3">—</span> : <Countdown target={info?.nextEpochStart} className="text-ink" />}
-      </td>
-      <td>
-        <span className="inline-flex items-center gap-1.5 text-[12.5px] text-ink">
-          <Dot tone={status[1]} />
-          {status[0]}
-          {/* The same chip the create flow's summary gives a boosted plan; decorative (the ticker cell says it for screen readers). */}
-          {p.boosted && (
-            <span className="chip-lime ml-1 gap-1" aria-hidden>
-              <Icon name="bolt" size={11} />
-              {BOOST.chip}
-            </span>
-          )}
-        </span>
-      </td>
-      <td className="stick-r text-right">
-        <span className="inline-flex items-center justify-end gap-0.5">
-          <button type="button" className="btn-secondary btn-xs px-2.5" disabled={locked} onClick={() => onDialog("deposit")}>
-            Deposit
-          </button>
-          <button type="button" className="btn-ghost btn-xs px-2.5" disabled={!funded || locked} onClick={() => onDialog("withdraw")}>
-            Withdraw
-          </button>
-          <button type="button" className="btn-ghost btn-xs px-2.5" disabled={p.stockAccrued === 0n || locked} onClick={onClaim}>
-            Claim
-          </button>
-          {p.boosted ? (
-            <button type="button" className="btn-ghost btn-xs px-2.5" disabled={locked} onClick={onBoost} title={`Pull the boosted balance back into the plan (${fmtUsd(p.boostValue)}, earnings included)`}>
-              {BOOST.off}
+        </td>
+        <td className="stick-r text-right">
+          <span className="inline-flex items-center justify-end gap-0.5">
+            <button type="button" data-action="deposit" className="btn-secondary btn-xs px-2.5" disabled={locked || notBought} onClick={() => onDialog("deposit")}>
+              Deposit
             </button>
-          ) : (
-            <button
-              type="button"
-              className="btn-secondary btn-xs gap-1 border-lime/40 px-2.5 text-lime hover:border-lime hover:bg-lime/10"
-              disabled={!canBoost || locked}
-              onClick={onBoost}
-              title={canBoost ? `Lend the idle balance on Morpho Blue at ${fmtPct(apy, true)} APY until each buy` : "Boost is not available on this frequency yet"}
-            >
-              <Icon name="bolt" size={12} />
-              {BOOST.on}
-              {canBoost && apy !== undefined && <span className="hidden font-normal text-ink-2 2xl:inline">{fmtPct(apy)}</span>}
+            <button type="button" className="btn-ghost btn-xs px-2.5" disabled={!funded || locked} onClick={() => onDialog("withdraw")}>
+              Withdraw
             </button>
-          )}
-          <Menu
-            items={[
-              { label: p.paused ? "Resume plan" : "Pause plan", onClick: onPause, disabled: locked },
-              { label: "Withdraw & remove plan", onClick: () => onDialog("remove"), danger: true, disabled: removing },
-            ]}
-          />
-        </span>
-      </td>
-    </tr>
+            <button type="button" className="btn-ghost btn-xs px-2.5" disabled={p.stockAccrued === 0n || locked} onClick={onClaim}>
+              Claim
+            </button>
+            {p.boosted ? (
+              <button type="button" className="btn-ghost btn-xs px-2.5" disabled={locked} onClick={onBoost} title={`Pull the boosted balance back into the plan (${fmtUsd(p.boostValue)}, earnings included)`}>
+                {BOOST.off}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn-secondary btn-xs gap-1 border-lime/40 px-2.5 text-lime hover:border-lime hover:bg-lime/10"
+                disabled={!canBoost || locked}
+                onClick={onBoost}
+                title={canBoost ? `Lend the idle balance on Morpho Blue at ${fmtPct(apy, true)} APY until each buy` : "Boost is not available on this frequency yet"}
+              >
+                <Icon name="bolt" size={12} />
+                {BOOST.on}
+                {canBoost && apy !== undefined && <span className="hidden font-normal text-ink-2 2xl:inline">{fmtPct(apy)}</span>}
+              </button>
+            )}
+            <Menu
+              items={[
+                { label: p.paused ? "Resume plan" : "Pause plan", onClick: onPause, disabled: locked },
+                { label: "Withdraw & remove plan", onClick: () => onDialog("remove"), danger: true, disabled: removing },
+              ]}
+            />
+          </span>
+        </td>
+      </tr>
+      {fundsNote && (
+        <tr className={`row-note ${noteTone}`}>
+          <td colSpan={cols}>
+            <div className="row-note-body flex items-start gap-1.5 text-[12px] leading-snug text-ink-2">
+              <Icon name="info" size={13} className={`mt-px shrink-0 ${fundsNote.tone === "warn" ? "text-warn" : "text-ink-3"}`} />
+              <span>
+                {fundsNote.text}{" "}
+                <button type="button" className="row-note-action" disabled={locked} onClick={() => onDialog("deposit")}>
+                  Deposit
+                </button>
+              </span>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -707,9 +823,14 @@ function PlanRow({
 
 function PlanDialog(props: {
   dialog: NonNullable<Dialog>;
+  /** How the page names the stock (`stockLabelOf`): "$DCA" / "DCA Token" for our own token (`dca`). */
   symbol: string;
+  name: string;
+  dca: boolean;
   stockDecimals: number;
   info?: VaultInfo;
+  /** false: the plan's vault never buys its stock (see `useBuyable`), so the forms say nothing about buys. */
+  bought?: boolean;
   usdg: `0x${string}`;
   weth: `0x${string}`;
   router: `0x${string}`;
@@ -721,14 +842,21 @@ function PlanDialog(props: {
   onBusy?: (busy: boolean) => void;
 }) {
   const { dialog } = props;
-  // Back to the row button that opened it once the whole dialog goes (the form's own button is gone by then).
+  // Back to the row button that opened it once the whole dialog goes (the form's own button is gone by then). When
+  // that button is gone too (the note row under a plan short of funds, once a deposit tops it up) or disabled, the
+  // plan's own row takes it: its Deposit, else its first enabled button. Keyed per plan, so `dialog.key` is fixed.
+  const planKeyOpen = dialog.key;
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
     return () => {
-      if (opener?.isConnected && !opener.matches(":disabled")) opener.focus();
-      else opener?.closest("tr")?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+      if (opener?.isConnected && !opener.matches(":disabled")) {
+        opener.focus();
+        return;
+      }
+      const row = document.querySelector<HTMLElement>(`tr[data-plan="${planKeyOpen}"]`);
+      (row?.querySelector<HTMLElement>('[data-action="deposit"]:not(:disabled)') ?? row?.querySelector<HTMLElement>("button:not(:disabled)"))?.focus();
     };
-  }, []);
+  }, [planKeyOpen]);
   // Each form hosts its own dialogs: the form in a Modal, then — once sent — the step-by-step TxFlowDialog, which
   // cannot be closed while a step is in flight. Remove also reports its in-flight state up through `onBusy` so the
   // row's menu entry stays disabled meanwhile.
@@ -738,9 +866,9 @@ function PlanDialog(props: {
 }
 
 /** `PlanRef` + "Daily · #3" for the plan a form dialog is open on. */
-function planRefOf({ dialog, symbol, stockDecimals, info }: Parameters<typeof PlanDialog>[0]): { ref: PlanRef; planLabel: string } {
+function planRefOf({ dialog, symbol, name, dca, stockDecimals, info }: Parameters<typeof PlanDialog>[0]): { ref: PlanRef; planLabel: string } {
   const p = dialog.plan;
-  return { ref: { vault: p.vault, planId: p.planId, symbol, stockDecimals }, planLabel: planLabelOf(info?.kind, p.planId) };
+  return { ref: { vault: p.vault, planId: p.planId, symbol, stockDecimals, name, dca }, planLabel: planLabelOf(info?.kind, p.planId) };
 }
 
 const ETH_GAS_RESERVE = parseEther("0.01");
@@ -748,8 +876,11 @@ const ETH_GAS_RESERVE = parseEther("0.01");
 const ZAP_SLIPPAGE_BPS = 50n;
 const MIN_DEPOSIT_FALLBACK = 10n * 10n ** BigInt(USDG_DECIMALS);
 
+/** "1 confirmation" / "2 confirmations", for the buttons that send. */
+const confirmations = (n: number) => `${n} ${n === 1 ? "confirmation" : "confirmations"}`;
+
 function DepositForm(props: Parameters<typeof PlanDialog>[0]) {
-  const { dialog, symbol, info, usdg, weth, router, balances, onClose, onChange } = props;
+  const { dialog, symbol, info, bought, usdg, weth, router, balances, onClose, onChange } = props;
   const p = dialog.plan;
   const { ref, planLabel } = planRefOf(props);
   const { address } = useAccount();
@@ -793,26 +924,53 @@ function DepositForm(props: Parameters<typeof PlanDialog>[0]) {
   const quoteMissing = pay === "ETH" && !!wei && wei > 0n && quote.data === undefined;
   const ok = !!wei && wei > 0n && !insufficient && !quoteMissing && !tooSmall && !seq.running;
 
+  // What the plan holds once this lands (an estimate for ETH, from the quote) and how far that goes at its per-buy
+  // amount. A plan left under one buy is not refused — its next buy spends everything it has — but the form says so.
+  const balance = planBalance(p);
+  const perBuy = p.amountPerEpoch;
+  const credited = pay === "USDG" ? (wei !== undefined ? wei - feeOf(wei, depositFeeBps) : undefined) : quote.data?.amountOut;
+  const after = credited !== undefined ? balance + credited : undefined;
+  const buys = bought !== false;
+  const short = buys && after !== undefined && after < perBuy;
+  // The USDG deposit that makes one full buy from here, never under the vault's minimum.
+  const shortfall = perBuy > balance ? perBuy - balance : 0n;
+  const fullBuy = depositFor(shortfall > minDeposit ? shortfall : minDeposit, depositFeeBps);
+  // Paid in ETH: the same, grossed up for the swap's tolerance (the credited floor `tooSmall` checks). The pool's own
+  // fee comes on top, so the hint says "a little over".
+  const fullBuyEth = depositFor(fullBuy, Number(ZAP_SLIPPAGE_BPS));
+
+  // The steps this deposit sends, drawn the way the flow dialog draws them; the order on screen at the click is the one sent.
+  // ETH is swapped to USDG inside depositETH; the quote minus 0.5% is the least the vault may credit.
+  const minOut = quote.data ? (quote.data.amountOut * (10_000n - ZAP_SLIPPAGE_BPS)) / 10_000n : 0n;
+  const preview =
+    wei && wei > 0n
+      ? buildDepositOrder({
+          ref,
+          usdg,
+          pay,
+          amount: wei,
+          needsApproval,
+          minUsdgOut: pay === "ETH" ? minOut : undefined,
+          toleranceBps: pay === "ETH" ? Number(ZAP_SLIPPAGE_BPS) : undefined,
+          depositFeeBps,
+          credited,
+          balanceBefore: balance,
+          boosted: p.boosted,
+          vaultName: info?.kind ? `${VAULT_META[info.kind].label.toLowerCase()} vault` : "vault",
+        })
+      : null;
+  const summary: SummaryRow[] = [];
+  if (preview) {
+    summary.push({ k: "You deposit", v: pay === "USDG" ? fmtUsd(preview.amount) : `${fmtUnits(preview.amount, 18)} ETH` });
+    if (depositFeeBps > 0) summary.push({ k: "Deposit fee", v: fmtBps(depositFeeBps) });
+    summary.push({ k: "Plan after", v: after !== undefined ? `${pay === "ETH" ? "≈ " : ""}${fmtUsd(after)}` : "…", tone: "strong" });
+    if (buys && after !== undefined) summary.push({ k: "Covers", v: `${coverageCopy(after, perBuy)}${p.paused ? " once resumed" : ""}`, tone: short ? "warn" : undefined, words: true });
+  }
+
   const submit = () => {
-    if (!wei || seq.running) return;
-    // ETH is swapped to USDG inside depositETH; the quote minus 0.5% is the least the vault may credit.
-    const minOut = quote.data ? (quote.data.amountOut * (10_000n - ZAP_SLIPPAGE_BPS)) / 10_000n : 0n;
-    const o = buildDepositOrder({
-      ref,
-      usdg,
-      pay,
-      amount: wei,
-      needsApproval,
-      minUsdgOut: pay === "ETH" ? minOut : undefined,
-      toleranceBps: pay === "ETH" ? Number(ZAP_SLIPPAGE_BPS) : undefined,
-      depositFeeBps,
-      credited: pay === "USDG" ? wei - feeOf(wei, depositFeeBps) : quote.data?.amountOut,
-      balanceBefore: planBalance(p),
-      boosted: p.boosted,
-      vaultName: info?.kind ? `${VAULT_META[info.kind].label.toLowerCase()} vault` : "vault",
-    });
-    setOrder(o);
-    void seq.run(o.steps);
+    if (!preview || seq.running) return;
+    setOrder(preview);
+    void seq.run(preview.steps);
   };
   // Done closes the whole dialog; after a failure, closing goes back to the form with the amount kept — and a fresh
   // allowance, so an approval that did land is not asked for again.
@@ -830,71 +988,124 @@ function DepositForm(props: Parameters<typeof PlanDialog>[0]) {
   if (order) return <PlanFlowDialog order={order} planLabel={planLabel} seq={seq} onClose={closeFlow} />;
   return (
     <Modal open onClose={onClose} title={`Deposit · ${symbol} #${p.planId.toString()}`}>
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <span className="text-[13px] text-ink-3">Pay with</span>
-        <Segmented
-          value={pay}
-          onChange={(v) => {
-            setPay(v);
-            setAmount("");
-          }}
-          options={[
-            { value: "USDG", label: "USDG" },
-            { value: "ETH", label: "ETH" },
-          ]}
-        />
-      </div>
-      <AmountInput value={amount} onChange={setAmount} unit={pay} large onMax={() => setAmount(pay === "USDG" ? formatUnits(max, USDG_DECIMALS) : formatEther(max))} />
-      <div>
-        <Slider value={Number(amount) || 0} min={0} max={sliderMax} step={pay === "USDG" ? 1 : 0.001} onChange={(v) => setAmount(pay === "USDG" ? String(v) : v.toFixed(3))} ariaLabel="Deposit amount" />
-        <div className="flex justify-between text-[11px] text-ink-3">
-          <span>0</span>
-          <span>Balance: {pay === "USDG" ? fmtUsd(balances.usdg) : `${fmtUnits(balances.eth, 18)} ETH`}</span>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <span className="text-[13px] text-ink-3">Pay with</span>
+          <Segmented
+            value={pay}
+            onChange={(v) => {
+              setPay(v);
+              setAmount("");
+            }}
+            options={[
+              { value: "USDG", label: "USDG" },
+              { value: "ETH", label: "ETH" },
+            ]}
+          />
         </div>
+        <AmountInput value={amount} onChange={setAmount} unit={pay} large onMax={() => setAmount(pay === "USDG" ? formatUnits(max, USDG_DECIMALS) : formatEther(max))} />
+        <div>
+          <Slider value={Number(amount) || 0} min={0} max={sliderMax} step={pay === "USDG" ? 1 : 0.001} onChange={(v) => setAmount(pay === "USDG" ? String(v) : v.toFixed(3))} ariaLabel="Deposit amount" />
+          <div className="flex justify-between text-[11px] text-ink-3">
+            <span>0</span>
+            <span>Balance: {pay === "USDG" ? fmtUsd(balances.usdg) : `${fmtUnits(balances.eth, 18)} ETH`}</span>
+          </div>
+        </div>
+        {pay === "ETH" && wei && wei > 0n && (
+          <p className="text-[12px] text-ink-3">
+            Converted to <span className="num text-ink-2">{quote.data ? `≈ ${fmtUsd(quote.data.amountOut)}` : "…"}</span> USDG on deposit — the plan holds USDG,
+            never ETH. The swap has a {fmtBps(Number(ZAP_SLIPPAGE_BPS))} tolerance; if the pool cannot fill it in full, the deposit fails and nothing moves.
+          </p>
+        )}
+        {tooSmall && <Notice kind="error">The smallest deposit is {fmtUsd(minDeposit)}{pay === "ETH" ? " worth of ETH" : ""}.</Notice>}
+        {insufficient && <Notice kind="error">Not enough {pay} in your wallet.</Notice>}
+        {/* Before an amount is in: how much tops a plan under one buy back up to a full one. */}
+        {!preview && buys && balance < perBuy && (
+          <p className="text-[12px] text-ink-3">
+            {balance === 0n ? "The plan is empty." : `The plan holds ${fmtUsd(balance)} — less than one ${fmtUsd(perBuy)} buy.`}{" "}
+            {pay === "USDG" ? (
+              <>
+                A deposit of <span className="num text-ink-2">{fmtUsd(fullBuy)}</span> or more makes one full buy.
+              </>
+            ) : (
+              <>
+                A little over <span className="num text-ink-2">{fmtUsd(fullBuyEth)}</span> worth of ETH makes one full buy, as the swap may credit up to{" "}
+                {fmtBps(Number(ZAP_SLIPPAGE_BPS))} less.
+              </>
+            )}
+          </p>
+        )}
+        {preview && <FormSummary rows={summary} />}
+        {short && (
+          <FundsNote>
+            {depositShortCopy({
+              after: after!,
+              perBuy,
+              paused: p.paused,
+              approx: pay === "ETH",
+              topUp: pay === "USDG" ? `Deposit ${fmtUsd(fullBuy)} or more for one full buy.` : `About ${fmtUsd(perBuy - after!)} more makes one full buy.`,
+            })}
+          </FundsNote>
+        )}
+        {preview && <FlowTimeline flow={preview.flow} />}
+        {p.boosted && (
+          <p className="flex items-start gap-1.5 text-[12px] text-ink-3">
+            <Icon name="bolt" size={12} className="mt-0.5 shrink-0 text-lime" />
+            This plan is boosted: the deposit is lent on Morpho Blue as it lands and earns until each buy.
+          </p>
+        )}
+        <button type="button" className="btn-primary h-10 w-full" disabled={!ok} onClick={submit}>
+          {preview ? `${needsApproval ? "Approve & deposit" : "Deposit"} · ${confirmations(preview.steps.length)}` : "Enter an amount"}
+        </button>
       </div>
-      {pay === "ETH" && wei && wei > 0n && (
-        <p className="text-[12px] text-ink-3">
-          Converted to <span className="num text-ink-2">{quote.data ? `≈ ${fmtUsd(quote.data.amountOut)}` : "…"}</span> USDG on deposit — the plan holds USDG,
-          never ETH. The swap has a {fmtBps(Number(ZAP_SLIPPAGE_BPS))} tolerance; if the pool cannot fill it in full, the deposit fails and nothing moves.
-        </p>
-      )}
-      {tooSmall && <Notice kind="error">The smallest deposit is {fmtUsd(minDeposit)}{pay === "ETH" ? " worth of ETH" : ""}.</Notice>}
-      {insufficient && <Notice kind="error">Not enough {pay} in your wallet.</Notice>}
-      {p.boosted && (
-        <p className="flex items-start gap-1.5 text-[12px] text-ink-3">
-          <Icon name="bolt" size={12} className="mt-0.5 shrink-0 text-lime" />
-          This plan is boosted: the deposit is lent on Morpho Blue as it lands and earns until each buy.
-        </p>
-      )}
-      <button type="button" className="btn-primary h-10 w-full" disabled={!ok} onClick={submit}>
-        {needsApproval ? "Approve & deposit" : "Deposit"}
-      </button>
-    </div>
     </Modal>
   );
 }
 
 function WithdrawForm(props: Parameters<typeof PlanDialog>[0]) {
-  const { dialog, symbol, info, onClose, onChange } = props;
+  const { dialog, symbol, info, bought, onClose, onChange } = props;
   const p = dialog.plan;
   const { ref, planLabel } = planRefOf(props);
   const available = planBalance(p);
+  const perBuy = p.amountPerEpoch;
   const [amount, setAmount] = useState("");
-  const wei = safeParse(amount, USDG_DECIMALS) ?? 0n;
-  const all = wei >= available;
-  const usdgOut = all ? available : wei;
+  // "Everything": set by MAX or by sliding to the end, dropped as soon as the amount is edited. While it holds, the
+  // amount shown follows the live balance (a boosted plan keeps earning while the form is open, and the positions poll
+  // brings that in) and the withdrawal goes out as the vault's MAX sentinel, so nothing gained after the click is left
+  // behind for a second withdrawal.
+  const [everything, setEverything] = useState(false);
+  const typed = safeParse(amount, USDG_DECIMALS) ?? 0n;
+  // A typed amount that would leave less than a cent behind (or asks for more than there is) is everything too.
+  const all = available > 0n && (everything || (typed > 0n && typed + USDG_DUST > available));
+  const usdgOut = all ? available : typed;
+  const remaining = available > usdgOut ? available - usdgOut : 0n;
+  const edit = (v: string) => {
+    setEverything(false);
+    setAmount(v);
+  };
+  // Whole dollars, with the end stop rounded up past the balance so the slider can land on all of it.
+  const sliderMax = Math.ceil(Number(formatUnits(available, USDG_DECIMALS)));
   const feeBps = info?.fees?.withdrawFeeBps ?? 0;
+  // The step this sends, drawn the way the flow dialog draws it; the order on screen at the click is the one sent.
+  const preview = usdgOut > 0n && usdgOut <= available ? buildWithdrawOrder({ ref, amount: usdgOut, all, feeBps, usdgIdle: p.usdgIdle, balanceBefore: available }) : null;
+  const left = preview ? withdrawLeftCopy({ remaining, perBuy, paused: p.paused, bought }) : undefined;
+  const summary: SummaryRow[] = [];
+  if (preview) {
+    summary.push({ k: "You withdraw", v: all ? `Everything · ${fmtUsd(usdgOut)}` : fmtUsd(usdgOut), words: all });
+    summary.push({ k: "Withdrawal fee", v: `${fmtBps(feeBps)} · ${fmtUsd(feeOf(usdgOut, feeBps))}` });
+    // A boosted balance still moves until the withdrawal lands, so "everything" is an estimate there.
+    summary.push({ k: "You receive", v: `${all && p.boosted ? "≈ " : ""}${fmtUsd(preview.receive)}`, tone: "strong" });
+    summary.push({ k: "Plan after", v: fmtUsd(remaining) });
+    if (bought !== false && remaining > 0n) summary.push({ k: "Covers", v: `${coverageCopy(remaining, perBuy)}${p.paused ? " once resumed" : ""}`, tone: remaining < perBuy ? "warn" : undefined, words: true });
+  }
   // The order as sent: setting it swaps the form for the flow dialog; clearing it (after a failure) brings the form back.
   const [order, setOrder] = useState<WithdrawOrder | null>(null);
   const seq = useTxSequence(() => onChange());
-  const ok = usdgOut > 0n && !seq.running;
+  const ok = !!preview && !seq.running;
   const submit = () => {
-    if (usdgOut === 0n || seq.running) return;
-    // "All" uses the vault's sentinel so a boosted balance that grew a hair since this render still clears out.
-    const o = buildWithdrawOrder({ ref, amount: usdgOut, all, feeBps, usdgIdle: p.usdgIdle, balanceBefore: available });
-    setOrder(o);
-    void seq.run(o.steps);
+    if (!preview || seq.running) return;
+    setOrder(preview);
+    void seq.run(preview.steps);
   };
   const closeFlow = () => {
     // Done, or closed while still waiting on the network: the whole dialog goes, so the amount cannot be sent twice.
@@ -909,29 +1120,37 @@ function WithdrawForm(props: Parameters<typeof PlanDialog>[0]) {
   if (order) return <PlanFlowDialog order={order} planLabel={planLabel} seq={seq} onClose={closeFlow} />;
   return (
     <Modal open onClose={onClose} title={`Withdraw · ${symbol} #${p.planId.toString()}`}>
-    <div className="space-y-4">
-      <AmountInput value={amount} onChange={setAmount} unit="USDG" large onMax={() => setAmount(formatUnits(available, USDG_DECIMALS))} />
-      <div>
-        <Slider value={Number(amount) || 0} min={0} max={Number(formatUnits(available, USDG_DECIMALS))} step={1} onChange={(v) => setAmount(String(v))} ariaLabel="Withdraw amount" />
-        <div className="flex justify-between text-[11px] text-ink-3">
-          <span>0</span>
-          <span>In plan: {fmtUsd(available)}</span>
+      <div className="space-y-4">
+        <AmountInput value={everything ? formatUnits(available, USDG_DECIMALS) : amount} onChange={edit} unit="USDG" large onMax={() => setEverything(true)} />
+        <div>
+          <Slider
+            value={all ? sliderMax : Number(amount) || 0}
+            min={0}
+            max={sliderMax}
+            step={1}
+            onChange={(v) => (v >= sliderMax ? setEverything(true) : edit(String(v)))}
+            ariaLabel="Withdraw amount"
+          />
+          <div className="flex justify-between text-[11px] text-ink-3">
+            <span>0</span>
+            <span>In plan: {fmtUsd(available)}</span>
+          </div>
         </div>
+        {available === 0n && <Notice kind="info">Nothing is left in the plan to withdraw.</Notice>}
+        {preview && <FormSummary rows={summary} />}
+        {left && <FundsNote tone={left.tone}>{left.text}</FundsNote>}
+        {preview && <FlowTimeline flow={preview.flow} />}
+        <button type="button" className="btn-primary h-10 w-full" disabled={!ok} onClick={submit}>
+          {preview ? `${all ? "Withdraw everything" : "Withdraw"} · ${confirmations(preview.steps.length)}` : available === 0n ? "Nothing to withdraw" : "Enter an amount"}
+        </button>
+        <p className="text-[11px] text-ink-3">
+          A {fmtBps(feeBps)} fee applies to withdrawn funds. Withdrawals are paid in USDG (ETH deposits were converted when they came in).
+          {all ? "" : " Stock you have already bought stays claimable."}
+          {p.boosted && p.boostValue > 0n
+            ? ` ${fmtUsd(p.boostValue)} of this plan is lent on Morpho Blue and is pulled back as part of the withdrawal (earnings included); if the market is short of liquidity the withdrawal fails and nothing moves.`
+            : ""}
+        </p>
       </div>
-      <div className="rounded-lg bg-surface-2 px-3">
-        <KV k="You receive" v={usdgOut > 0n ? fmtUsd(usdgOut - feeOf(usdgOut, feeBps)) : "—"} />
-      </div>
-      <button type="button" className="btn-primary h-10 w-full" disabled={!ok} onClick={submit}>
-        Withdraw
-      </button>
-      <p className="text-[11px] text-ink-3">
-        A {fmtBps(feeBps)} fee applies to withdrawn funds. Withdrawals are paid in USDG (ETH deposits were converted when they came in). Stock you have already
-        bought stays claimable.
-        {p.boosted && p.boostValue > 0n
-          ? ` ${fmtUsd(p.boostValue)} of this plan is lent on Morpho Blue and is pulled back as part of the withdrawal (earnings included); if the market is short of liquidity the withdrawal fails and nothing moves.`
-          : ""}
-      </p>
-    </div>
     </Modal>
   );
 }

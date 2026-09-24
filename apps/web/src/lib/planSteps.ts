@@ -8,14 +8,18 @@ import { claimLabel, recipientCopy } from "@/lib/removeSteps";
 
 /**
  * The single-plan actions on My plans — deposit, withdraw, claim, boost and unboost — as the writes
- * `useTxSequence` sends and the rows `TxFlowDialog` draws. Each builder runs ONCE, when the user commits, from
- * the numbers on screen at that moment, and its result is the dialog's snapshot: the overview keeps showing what
- * was sent while the live row changes underneath it (a mined claim zeroes the accrued stock, a mined boost flips
- * `boosted`), so it never rewrites itself mid-flight. Pure: no React, no wagmi, like `removeSteps.ts`.
+ * `useTxSequence` sends and the rows `TxFlowDialog` draws. Each builder runs from the numbers on screen (the
+ * deposit and withdraw forms build theirs on every render to preview the steps), and the order on screen when the
+ * user commits is the dialog's snapshot: the overview keeps showing what was sent while the live row changes
+ * underneath it (a mined claim zeroes the accrued stock, a mined boost flips `boosted`), so it never rewrites
+ * itself mid-flight. Pure: no React, no wagmi, like `removeSteps.ts`.
  */
 
-/** Which plan an order is for, and how to name its stock. */
-export type PlanRef = { vault: Address; planId: bigint; symbol: string; stockDecimals: number };
+/**
+ * Which plan an order is for, and how to name its stock: `symbol` is "$DCA" for our own token (`dca`, drawn with our
+ * mark, see `choiceLabel`), the ticker otherwise; `name` is what goes beside it ("DCA Token", "Apple").
+ */
+export type PlanRef = { vault: Address; planId: bigint; symbol: string; stockDecimals: number; name?: string; dca?: boolean };
 
 type Base = PlanRef & { steps: TxStep[]; flow: FlowStep[] };
 
@@ -33,14 +37,18 @@ export type DepositOrder = Base & {
 };
 export type WithdrawOrder = Base & {
   kind: "withdraw";
-  /** USDG taken out of the plan (the withdrawal fee comes out of this). */
+  /** USDG taken out of the plan (the withdrawal fee comes out of this); with `all`, the balance at click time. */
   amount: bigint;
+  /** Everything in the plan: sent as the vault's MAX sentinel, so whatever a boosted balance earned since the click goes too. */
+  all: boolean;
   /** What reaches the wallet: `amount` minus the withdrawal fee. */
   receive: bigint;
   feeBps: number;
   /** The part of `amount` that comes back from Morpho Blue first (idle USDG is used before the boosted balance). */
   fromBoost: bigint;
   balanceAfter: bigint;
+  /** `amount` and `receive` are what the mined receipt says was paid (`settledWithdraw`), not the click-time estimate. */
+  settled?: boolean;
 };
 export type ClaimOrder = Base & {
   kind: "claim";
@@ -214,6 +222,30 @@ export function boostLent(o: BoostOrder, logs: readonly Log[]): bigint | undefin
 }
 
 /**
+ * A withdraw-everything order restated with what its receipt says the vault paid (`IdleWithdrawn` for this plan): the
+ * MAX sentinel takes the balance at execution, which a boosted plan grows after the click. For the done state's tile
+ * and step; the order unchanged when the receipt has no such event.
+ */
+export function settledWithdraw(o: WithdrawOrder, logs: readonly Log[]): WithdrawOrder {
+  const e = parseEventLogs({ abi: PlanVaultAbi, eventName: "IdleWithdrawn", logs: logs as Log[] })
+    .filter((l) => l.address.toLowerCase() === o.vault.toLowerCase() && l.args.planId === o.planId)
+    .at(-1);
+  if (!e) return o;
+  const amount = e.args.usdgAmount;
+  const receive = amount - e.args.usdgFee;
+  // What the boosted part earned since the click came back from Morpho Blue with it.
+  const fromBoost = o.fromBoost > 0n && o.fromBoost + amount > o.amount ? o.fromBoost + amount - o.amount : 0n;
+  return {
+    ...o,
+    amount,
+    receive,
+    fromBoost,
+    settled: true,
+    flow: o.flow.map((f) => (f.label === STEP_WITHDRAW_PART ? { ...f, trailing: fmtUsd(receive) } : f)),
+  };
+}
+
+/**
  * What a failed step's custom error means for this order, in the product's voice; `undefined` when the step's own
  * error line already says enough (a wallet rejection, an undecoded revert).
  */
@@ -327,14 +359,25 @@ export function buildWithdrawOrder(i: { ref: PlanRef; amount: bigint; all: boole
   const flow: FlowStep[] = [
     {
       label: STEP_WITHDRAW_PART,
-      detail: `Sends ${fmtUsd(amount)} from the plan to your wallet, minus the ${fmtBps(i.feeBps)} withdrawal fee.${
+      detail: `Sends ${i.all ? `everything in the plan (${fmtUsd(amount)})` : `${fmtUsd(amount)} from the plan`} to your wallet, minus the ${fmtBps(i.feeBps)} withdrawal fee.${
         fromBoost > 0n ? ` ${fmtUsd(fromBoost)} of it comes back from Morpho Blue first, earnings included; if the market is short of liquidity nothing moves.` : ""
       }`,
       done: "Sent to your wallet",
       trailing: `≈ ${fmtUsd(receive)}`,
     },
   ];
-  return { ...ref, kind: "withdraw", steps, flow, amount, receive, feeBps: i.feeBps, fromBoost, balanceAfter: i.balanceBefore > amount ? i.balanceBefore - amount : 0n };
+  return {
+    ...ref,
+    kind: "withdraw",
+    steps,
+    flow,
+    amount,
+    all: i.all,
+    receive,
+    feeBps: i.feeBps,
+    fromBoost,
+    balanceAfter: !i.all && i.balanceBefore > amount ? i.balanceBefore - amount : 0n,
+  };
 }
 
 /**
@@ -426,7 +469,7 @@ export function buildPauseOrder(i: { ref: PlanRef; pause: boolean; balance: bigi
       label,
       detail: i.pause
         ? `Skips every buy until you resume it. The ${fmtUsd(i.balance)} stays in the plan${i.boosted ? ", lent on Morpho Blue and still earning" : ""}; you can still deposit, withdraw and claim.`
-        : `Buys ${fmtUsd(i.perBuy)} of ${ref.symbol} again from the next period, while the plan has funds.`,
+        : `Buys ${ref.symbol} again from the next period: up to ${fmtUsd(i.perBuy)} each period, or all the plan holds when that is less.`,
       done: i.pause ? "Paused" : "Resumed",
     },
   ];

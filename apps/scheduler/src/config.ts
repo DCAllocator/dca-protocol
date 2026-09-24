@@ -21,6 +21,8 @@ export type Config = {
   /** `limit` passed to `EpochKeeper.run`; 0 = the vault's `maxPlansPerTx`. */
   pageLimit: bigint;
   txTimeoutMs: number;
+  /** How often to look for plans no job covers (see `Scheduler.checkUncovered`); 0 = never. */
+  uncoveredCheckMs: number;
   /** Simulate only; never send. */
   dryRun: boolean;
   /** One tick, then exit (cron-friendly). */
@@ -63,6 +65,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): Config {
     maxPagesPerJob: Math.max(1, Math.floor(num("MAX_PAGES_PER_JOB", 20))),
     pageLimit: BigInt(Math.floor(num("PAGE_LIMIT", 0))),
     txTimeoutMs: num("TX_TIMEOUT_SECONDS", 120) * 1000,
+    uncoveredCheckMs: num("UNCOVERED_CHECK_SECONDS", 300) * 1000,
     dryRun: bool("DRY_RUN") || argv.includes("--dry-run"),
     once: bool("ONCE") || argv.includes("--once"),
   };

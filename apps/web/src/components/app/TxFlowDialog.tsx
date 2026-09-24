@@ -140,13 +140,6 @@ export function TxFlowDialog({
   }, [open, seq.done, announceReady]);
   if (!open) return null;
 
-  // Sent steps map onto the non-skipped rows in order.
-  let sent = 0;
-  const rows = flow.map((f) => {
-    if (f.skipped || f.deferred) return { flow: f, state: undefined };
-    const state = seq.steps[sent++] as TxStepState | undefined;
-    return { flow: f, state };
-  });
   const total = seq.steps.length;
   const current = Math.min(total, seq.steps.filter((s) => s.phase === "done").length + 1);
   // Once the wallet has signed, the current step is on the network: say so instead of asking for a confirmation.
@@ -241,51 +234,7 @@ export function TxFlowDialog({
         <div className="card-pad grid gap-4">
           {summary}
 
-          <ol className="grid">
-            {rows.map(({ flow: f, state }, i) => {
-              const phase = f.deferred ? "deferred" : f.skipped ? "skipped" : (state?.phase ?? "todo");
-              const last = i === rows.length - 1;
-              const filled = phase === "done" || phase === "skipped";
-              return (
-                <li key={f.label} className={`relative flex gap-3.5 ${last ? "" : "pb-5"}`}>
-                  {!last && (
-                    <span aria-hidden className="absolute top-9 bottom-1 left-4 w-px bg-line">
-                      <span className={`absolute inset-0 origin-top bg-lime transition-transform duration-500 ease-out ${filled ? "scale-y-100" : "scale-y-0"}`} />
-                    </span>
-                  )}
-                  <StepMark phase={phase} n={i + 1} />
-                  <div className="min-w-0 flex-1 pt-1">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className={`text-[14px] font-medium ${phase === "todo" || phase === "deferred" ? "text-ink-2" : "text-ink"}`}>{f.label}</span>
-                      {(f.trailing !== undefined || state?.hash) && (
-                        <span className="flex shrink-0 items-center gap-2">
-                          {f.trailing !== undefined && <span className="num text-[12px] text-ink-3">{f.trailing}</span>}
-                          {state?.hash && <HashLink hash={state.hash} />}
-                        </span>
-                      )}
-                    </div>
-                    <div className={`mt-0.5 text-[12.5px] leading-normal ${phase === "error" ? "text-bad" : phase === "signing" ? "text-ink-2" : "text-ink-3"}`}>
-                      {phase === "skipped"
-                        ? f.skipped
-                        : phase === "deferred"
-                          ? f.deferred
-                        : phase === "signing"
-                          ? (state?.note ?? "Confirm in your wallet…")
-                          : phase === "mining"
-                            ? waiting
-                              ? "Sent, still waiting for the network — it has not failed. Check the hash on the explorer."
-                              : "Sent — waiting for the network…"
-                            : phase === "done"
-                              ? (f.done ?? "Confirmed")
-                              : phase === "error"
-                                ? friendly(state?.error)
-                                : f.detail}
-                    </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
+          <FlowTimeline flow={flow} steps={seq.steps} waiting={waiting} />
 
           {status === "error" &&
             (maybeSent ? (
@@ -332,6 +281,68 @@ export function TxFlowDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The timeline itself: one row per `FlowStep`, with the sent steps (`steps`, in order) mapped onto the rows that are
+ * neither skipped nor deferred. Without `steps` every such row is still to do — how a form previews, in the same
+ * rows, what it is about to send.
+ */
+export function FlowTimeline({ flow, steps = [], waiting = false }: { flow: FlowStep[]; steps?: readonly TxStepState[]; waiting?: boolean }) {
+  // Sent steps map onto the non-skipped rows in order.
+  let sent = 0;
+  const rows = flow.map((f) => {
+    if (f.skipped || f.deferred) return { flow: f, state: undefined };
+    const state = steps[sent++] as TxStepState | undefined;
+    return { flow: f, state };
+  });
+  return (
+    <ol className="grid">
+      {rows.map(({ flow: f, state }, i) => {
+        const phase = f.deferred ? "deferred" : f.skipped ? "skipped" : (state?.phase ?? "todo");
+        const last = i === rows.length - 1;
+        const filled = phase === "done" || phase === "skipped";
+        return (
+          <li key={f.label} className={`relative flex gap-3.5 ${last ? "" : "pb-5"}`}>
+            {!last && (
+              <span aria-hidden className="absolute top-9 bottom-1 left-4 w-px bg-line">
+                <span className={`absolute inset-0 origin-top bg-lime transition-transform duration-500 ease-out ${filled ? "scale-y-100" : "scale-y-0"}`} />
+              </span>
+            )}
+            <StepMark phase={phase} n={i + 1} />
+            <div className="min-w-0 flex-1 pt-1">
+              <div className="flex items-center justify-between gap-3">
+                <span className={`text-[14px] font-medium ${phase === "todo" || phase === "deferred" ? "text-ink-2" : "text-ink"}`}>{f.label}</span>
+                {(f.trailing !== undefined || state?.hash) && (
+                  <span className="flex shrink-0 items-center gap-2">
+                    {f.trailing !== undefined && <span className="num text-[12px] text-ink-3">{f.trailing}</span>}
+                    {state?.hash && <HashLink hash={state.hash} />}
+                  </span>
+                )}
+              </div>
+              <div className={`mt-0.5 text-[12.5px] leading-normal ${phase === "error" ? "text-bad" : phase === "signing" ? "text-ink-2" : "text-ink-3"}`}>
+                {phase === "skipped"
+                  ? f.skipped
+                  : phase === "deferred"
+                    ? f.deferred
+                  : phase === "signing"
+                    ? (state?.note ?? "Confirm in your wallet…")
+                    : phase === "mining"
+                      ? waiting
+                        ? "Sent, still waiting for the network — it has not failed. Check the hash on the explorer."
+                        : "Sent — waiting for the network…"
+                      : phase === "done"
+                        ? (f.done ?? "Confirmed")
+                        : phase === "error"
+                          ? friendly(state?.error)
+                          : f.detail}
+              </div>
+            </div>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 

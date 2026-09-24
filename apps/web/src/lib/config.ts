@@ -13,6 +13,8 @@ export const ADDRESSES = {
   directory: addr(process.env.NEXT_PUBLIC_DIRECTORY, "NEXT_PUBLIC_DIRECTORY"),
   claimHelper: addr(process.env.NEXT_PUBLIC_CLAIM_HELPER, "NEXT_PUBLIC_CLAIM_HELPER"),
   zap: addr(process.env.NEXT_PUBLIC_ZAP, "NEXT_PUBLIC_ZAP"),
+  /** EpochKeeper: its job list is what actually gets bought (see `useBuyable`). Unset = no filtering. */
+  keeper: addr(process.env.NEXT_PUBLIC_KEEPER, "NEXT_PUBLIC_KEEPER"),
 };
 
 export const ZERO: Address = "0x0000000000000000000000000000000000000000";
@@ -116,17 +118,19 @@ export const DCA_PERK_DEFAULTS = {
 export const DOCS_PATH = "/app/docs";
 
 /**
- * Where the landing page's "Buy $DCA" sends people. The token launches through Pons; until that link is set
- * (NEXT_PUBLIC_BUY_DCA_URL) the button goes to the in-app token page. An https URL is opened in a new tab
- * (see components/BuyDcaLink.tsx); it is also the "Buy on Pons" hand-off /app/buy shows when the router
- * has no USDG → $DCA route on this chain.
+ * The off-site $DCA listing (the Pons token page), NEXT_PUBLIC_BUY_DCA_URL; empty when unset. Every in-site
+ * "Buy $DCA" goes to /app/buy (components/BuyDcaLink.tsx; in the app `BuyDcaButton`, which links only while
+ * `useBuyDcaAvailable`), which swaps in-app when the router can and otherwise hands off here, in a new tab. Only an
+ * http(s) URL is a hand-off (`BUY_DCA_EXTERNAL`): an in-app path would send /app/buy back to itself. /v2's
+ * "Buy $DCA on Pons" links here directly.
  */
-export const BUY_DCA_URL = process.env.NEXT_PUBLIC_BUY_DCA_URL ?? "/app/token";
+export const BUY_DCA_URL = process.env.NEXT_PUBLIC_BUY_DCA_URL ?? "";
 
 /**
- * Forces the "Buy $DCA" tab (and the in-app swap at /app/buy) on, regardless of whether the router can quote
- * USDG → $DCA: always on the local anvil, and on a real chain with NEXT_PUBLIC_ENABLE_BUY_TAB=1. Without it
- * the tab lights only when `useBuyDcaRoute` finds a routable pool — an ETH-paired Pons / Uniswap v4 pool
- * is not one (the router rejects native-ETH pools), so a launch through Pons needs this flag or a WETH-side route.
+ * Forces every in-app "Buy $DCA" (the tab, the sidebar and token-page buttons: `useBuyDcaAvailable`) on, regardless of
+ * whether the router can quote USDG → $DCA: always on the local anvil, and on a real chain with
+ * NEXT_PUBLIC_ENABLE_BUY_TAB=1. Without it (or an off-site BUY_DCA_URL) they link only when `useBuyDcaRoute` finds a
+ * routable pool — an ETH-paired Pons / Uniswap v4 pool is not one (the router rejects native-ETH pools), so a launch
+ * through Pons needs this flag, the Pons URL, or a WETH-side route.
  */
 export const BUY_DCA_TAB_FORCED = activeChain.id === 31337 || flagOn(process.env.NEXT_PUBLIC_ENABLE_BUY_TAB);

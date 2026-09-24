@@ -45,4 +45,8 @@ transaction endpoint (see `SECURITY.md`). The bot never passes a `routeOverride`
   block, the bot mines one with a 0-value self-transfer, then re-checks.
 - **Missed epochs are skipped, never caught up** — that is the vault's rule, not the bot's. A long outage costs at
   most one epoch per stock.
+- **Plans no job covers.** `dueJobs()` only walks the keeper's job list, so plans on an approved stock with no active
+  job for their vault are never bought. Every `UNCOVERED_CHECK_SECONDS` (default 300, 0 = off) the bot checks every
+  job vault against its registry's approved stocks and logs a warning per pair that holds plans (once, and again when
+  the count changes). Fix with `keeper.addJob(vault, stock)` once the stock has a route and, if required, a price feed.
 - Ctrl-C finishes the transaction in flight, then exits.

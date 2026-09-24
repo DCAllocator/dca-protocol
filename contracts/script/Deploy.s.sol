@@ -65,6 +65,19 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 /// (`REQUIRE_PRICE_FEED`, default true): with it on, every approved stock must have a feed or the script aborts.
 /// `SEQUENCER_FEED` / `SEQUENCER_GRACE` (default 3600) wire Chainlink's L2 sequencer uptime feed when available.
 ///
+/// $DCA as a plan asset (opt-in, off by default): `LIST_DCA=true` (needs `DCA`) lists the token in the registry as
+/// "DCA" (approved, not fee-on-transfer, first in `approvedStocks()`), so every vault gets a keeper job for it like
+/// any Stock Token, and sets `DCA_PRICE_FEED` on every vault with the stocks' staleness windows. With
+/// `REQUIRE_PRICE_FEED` on, `DCA_PRICE_FEED` is required. Robinhood Chain has no Chainlink feed for $DCA, so set it
+/// to `PriceGuardLib.UNGUARDED` (0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF): $DCA is then bought without the price
+/// floor, and what stops a sandwich is its own trading tax — the attacker pays it on both legs, while the router's
+/// impact cap bounds what they can capture — so only do this while every pool the router may use for $DCA charges
+/// that tax, and keep `maxPriceImpactBps` at most twice the per-leg cost (tax + LP fee). Before turning it on, check
+/// that the token transfers 1:1 (a transfer tax makes it fee-on-transfer, which the vaults refuse outright), that an
+/// approved USDG or WETH route reaches it (the V4 adapter takes no native-ETH pools), and give it a page cap sized to
+/// its pool in `PAGE_NOTIONAL_CAPS`. With a real feed instead, its all-in trade cost (LP fee, launchpad fee, creator
+/// tax, impact) plus `swapSlippageBps` must fit inside `PRICE_GUARD_BPS`.
+///
 /// Post-deploy (multisig): call `acceptOwnership()` on registry, router, adapters, vaults, keeper, directory,
 /// boost strategy, fee receiver. Before the first buyback, make sure every V3 pool on the $DCA route has enough
 /// observation cardinality for the receiver's TWAP window (`pool.increaseObservationCardinalityNext`).
@@ -95,6 +108,8 @@ contract Deploy is Script {
         bool requirePriceFeed;
         address sequencerFeed;
         uint32 sequencerGrace;
+        bool listDca;
+        address dcaPriceFeed;
     }
 
     struct Out {
@@ -143,8 +158,8 @@ contract Deploy is Script {
             o.router.setAdapter(3, address(o.ramses));
         }
 
-        // Stocks from STOCKS="NVDA:0x..,AAPL:0x.." (optional at deploy; can be listed later).
-        _listStocks(o.registry);
+        // Stocks from STOCKS="NVDA:0x..,AAPL:0x.." (optional at deploy; can be listed later), $DCA first with LIST_DCA.
+        _listStocks(o.registry, e);
         // Approved hops from V3_POOLS="1:0x..,3:0x.." (both directions of each pool).
         _approvePools(o.router, e.v3Pools);
 
@@ -311,7 +326,14 @@ contract Deploy is Script {
         e.requirePriceFeed = vm.envOr("REQUIRE_PRICE_FEED", true);
         e.sequencerFeed = vm.envOr("SEQUENCER_FEED", address(0));
         e.sequencerGrace = uint32(vm.envOr("SEQUENCER_GRACE", uint256(3_600)));
+        e.listDca = vm.envOr("LIST_DCA", false);
+        e.dcaPriceFeed = vm.envOr("DCA_PRICE_FEED", address(0));
         require(e.usdg != address(0) && e.weth != address(0), "USDG / WETH required");
+        require(!e.listDca || e.dca != address(0), "LIST_DCA=true: DCA required");
+        require(
+            !e.listDca || !e.requirePriceFeed || e.dcaPriceFeed != address(0),
+            "LIST_DCA=true: DCA_PRICE_FEED required (a feed, or PriceGuardLib.UNGUARDED to rely on the DCA tax)"
+        );
         require(e.morpho == address(0) || e.morphoMarketId != bytes32(0), "MORPHO set: MORPHO_MARKET_ID required");
         require(e.feeRecipient != address(0), "FEE_RECIPIENT required");
         if (block.chainid == 4663) {
@@ -339,8 +361,10 @@ contract Deploy is Script {
         feeHalve = _cfgUint("feeHalveThreshold") * unit;
     }
 
-    /// @dev STOCKS="NVDA:0xabc...,AAPL:0xdef..." — listed as approved, not fee-on-transfer.
-    function _listStocks(StockRegistry registry) internal {
+    /// @dev STOCKS="NVDA:0xabc...,AAPL:0xdef..." — listed as approved, not fee-on-transfer. With LIST_DCA, $DCA is
+    ///      listed the same way first, as "DCA".
+    function _listStocks(StockRegistry registry, Env memory e) internal {
+        if (e.listDca) registry.listStock(e.dca, "DCA", false, true);
         string memory raw = vm.envOr("STOCKS", string(""));
         if (bytes(raw).length == 0) return;
         string[] memory entries = vm.split(raw, ",");
@@ -365,6 +389,13 @@ contract Deploy is Script {
                 for (uint256 v; v < 4; ++v) {
                     vaults[v].setPriceFeed(stock, feed, v == HOURLY ? e.hourlyFeedMaxStaleness : e.feedMaxStaleness);
                 }
+            }
+        }
+        if (e.listDca && e.dcaPriceFeed != address(0)) {
+            for (uint256 v; v < 4; ++v) {
+                vaults[v].setPriceFeed(
+                    e.dca, e.dcaPriceFeed, v == HOURLY ? e.hourlyFeedMaxStaleness : e.feedMaxStaleness
+                );
             }
         }
         if (e.requirePriceFeed) {

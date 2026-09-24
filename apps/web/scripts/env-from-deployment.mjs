@@ -45,6 +45,7 @@ const env = [
   `NEXT_PUBLIC_DIRECTORY=${d.directory}`,
   `NEXT_PUBLIC_CLAIM_HELPER=${d.claimHelper}`,
   `NEXT_PUBLIC_ZAP=${d.zap}`,
+  `NEXT_PUBLIC_KEEPER=${d.keeper}`,
   // Local stacks only: the short-epoch TestVault. Shown when the dev server runs with NEXT_PUBLIC_SHOW_TEST_VAULT=1.
   ...(d.testVault ? [`NEXT_PUBLIC_TEST_VAULT=${d.testVault}`] : []),
   `NEXT_PUBLIC_WC_PROJECT_ID=${process.env.NEXT_PUBLIC_WC_PROJECT_ID ?? ""}`,

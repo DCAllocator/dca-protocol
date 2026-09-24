@@ -1,7 +1,8 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Countdown, Icon, StockAvatar } from "@/components/ui";
+import { Countdown, Icon } from "@/components/ui";
+import { ChoiceAvatar } from "@/components/app/create/fields";
 import { fmtBps, fmtPct, fmtUnits, fmtUsd, short } from "@/lib/format";
 import { tickerName } from "@/lib/tickers";
 import { BOOST } from "@/lib/config";
@@ -13,12 +14,12 @@ import type { PlanOrder } from "@/lib/planSteps";
  * describes what was sent even after the live row has moved on.
  */
 export function PlanFlowSummary({ order, planLabel }: { order: PlanOrder; /** "Daily · #3" */ planLabel: string }) {
-  const name = tickerName(order.symbol);
+  const name = order.name ?? tickerName(order.symbol);
   const { headline, sub, rows, tone, footnote } = describe(order);
   return (
     <div className={`rounded-xl border px-3.5 py-3 ${tone === "boost" ? "boost-summary border-lime/40 bg-surface-3" : "border-line bg-surface-3"}`}>
       <div className="flex items-center gap-3">
-        <StockAvatar symbol={order.symbol} size={36} />
+        <ChoiceAvatar symbol={order.symbol} dca={order.dca} size={36} />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2 text-[14px] font-medium text-ink">
             {order.symbol}
@@ -75,12 +76,13 @@ function describe(o: PlanOrder): Described {
     case "withdraw":
       return {
         headline: `−${fmtUsd(o.amount)}`,
-        sub: "out of the plan",
+        sub: o.all ? "everything in the plan" : "out of the plan",
         rows: [
           ...(o.fromBoost > 0n ? ([["From Morpho Blue", fmtUsd(o.fromBoost)]] as Row[]) : []),
           ["Withdrawal fee", fmtBps(o.feeBps)],
-          ["You receive", `≈ ${fmtUsd(o.receive)}`],
-          ["Plan balance after", `≈ ${fmtUsd(o.balanceAfter)}`],
+          // Read off the receipt once mined (`settled`); the click-time estimate until then.
+          ["You receive", `${o.settled ? "" : "≈ "}${fmtUsd(o.receive)}`],
+          ["Plan balance after", `${o.settled ? "" : "≈ "}${fmtUsd(o.balanceAfter)}`],
         ],
       };
     case "claim":

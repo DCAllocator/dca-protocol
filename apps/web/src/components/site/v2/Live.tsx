@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useDirectory, useVaults, useStocks, useRankedStocks, useBoostApys, usePerkThresholds, useDcaToken, boostAvailable } from "@/hooks/useProtocol";
+import { useDirectory, useVaults, useStocks, useRankedStocks, useBoostApys, usePerkThresholds, useDcaToken, boostAvailable, isDcaToken } from "@/hooks/useProtocol";
 import { useFeeReceiver, useBurnLogs } from "@/hooks/useFeeReceiver";
 import { Countdown, StockAvatar } from "@/components/ui";
-import { StockGrid } from "@/components/site/LandingLive";
+import { StockGrid, useStockHref } from "@/components/site/LandingLive";
 import { fmtUsd, fmtUsdCompact, fmtUnits, fmtUnitsCompact, fmtPct, short } from "@/lib/format";
 import { VAULT_META, isZero, type ProductionVaultKind } from "@/lib/config";
 import { tickerName } from "@/lib/tickers";
@@ -122,10 +122,11 @@ function supplyShare(burned?: bigint): string {
 
 /* ------------------------------------------------------------------ tape */
 
-/** Infinite ticker tape: the degen-adjacent tickers first, then the registry by market cap. */
+/** Infinite ticker tape: the degen-adjacent tickers first, then the registry by market cap. Links as in `useStockHref`. */
 export function StockTape({ label }: { label?: string }) {
   const { dir, configured } = useDirectory();
   const { ranked, ready } = useRankedStocks(dir);
+  const stockHref = useStockHref();
   const symbols = useMemo(() => {
     const live = ready && configured && ranked.length > 0 ? ranked.map((s) => s.symbol) : Object.keys(marketCapSnapshot.marketCaps).slice(0, 40);
     const pinned: string[] = V2.degenAdjacent.filter((s) => live.includes(s) || !(ready && configured));
@@ -134,7 +135,7 @@ export function StockTape({ label }: { label?: string }) {
   const row = (key: string) => (
     <div key={key} className="flex shrink-0 items-center" aria-hidden={key === "b"}>
       {symbols.map((sym) => (
-        <Link key={sym} href="/app/create" className="flex items-center gap-2 px-5 py-2.5 text-[13px] text-ink-2 transition-colors hover:text-ink">
+        <Link key={sym} href={stockHref(sym)} className="flex items-center gap-2 px-5 py-2.5 text-[13px] text-ink-2 transition-colors hover:text-ink">
           <StockAvatar symbol={sym} size={22} />
           <span className="v2-num font-semibold text-ink">{sym}</span>
           <span className="hidden text-ink-3 sm:inline">{tickerName(sym)}</span>
@@ -188,7 +189,9 @@ export function useMachine() {
   const queued = fr.live ? (fr.reserveUsdg ?? 0n) + ((fr.pendingUsdg ?? 0n) * BigInt(fr.buybackBps)) / 10_000n : undefined;
   const hasBurned = !!burned && burned > 0n;
   const liveStrip = hasBurned && notional >= V2.liveStripMinNotional;
-  return { dir, ready, configured, infos, byKind, notional, idle, epochs, stocks: stocks.length, fr, token, burned, queued, hasBurned, liveStrip };
+  // $DCA can be listed in the registry too; it is not a Stock Token.
+  const stockTokens = stocks.filter((s) => !isDcaToken(dir, s.address)).length;
+  return { dir, ready, configured, infos, byKind, notional, idle, epochs, stocks: stockTokens, fr, token, burned, queued, hasBurned, liveStrip };
 }
 
 /** "$DCA burned · 12,345" with a live dot; the designed pre-burn state before the first distribution. */
@@ -613,7 +616,7 @@ export function VaultTable() {
         <span>Deposit 0</span>
         <span>Withdraw idle {pct(withdraw)}</span>
         <span>Claim {pct(claim)} (0 with {fmtUnitsCompact(t.autoDistribute, 18)} $DCA)</span>
-        <span>Min {min !== undefined ? fmtUsd(min) : "$10"} per buy and per deposit</span>
+        <span>Min {min !== undefined ? fmtUsd(min) : "$10"} per buy (a final buy can be smaller) and per deposit</span>
         <span>USDG or ETH</span>
       </div>
     </div>
@@ -624,6 +627,7 @@ export function VaultTable() {
 
 export function StocksLive() {
   const m = useMachine();
+  const stockHref = useStockHref();
   const count = m.stocks > 0 ? String(m.stocks) : String(SNAPSHOT_COUNT);
   const tiles: [string, string][] = [
     [count, m.stocks > 0 ? "Stock Tokens · registry, live" : "Stock Tokens · CoinGecko snapshot"],
@@ -644,7 +648,7 @@ export function StocksLive() {
       <div className="mt-6 flex flex-wrap items-center gap-2">
         <span className="mr-1 text-[11.5px] font-medium uppercase tracking-[0.08em] text-ink-3">Degen adjacent</span>
         {V2.degenAdjacent.map((s) => (
-          <Link key={s} href="/app/create" className="inline-flex h-8 items-center gap-2 rounded-md border border-line bg-surface-3 px-2.5 text-[13px] font-semibold text-ink transition-colors hover:border-ink">
+          <Link key={s} href={stockHref(s)} className="inline-flex h-8 items-center gap-2 rounded-md border border-line bg-surface-3 px-2.5 text-[13px] font-semibold text-ink transition-colors hover:border-ink">
             <StockAvatar symbol={s} size={18} />
             <span className="v2-num">{s}</span>
           </Link>

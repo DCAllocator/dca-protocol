@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { formatEther, formatUnits, parseEther, parseUnits } from "viem";
+import { formatEther, formatUnits, parseEther, parseUnits, type Address } from "viem";
 import { useAccount, useReadContract } from "wagmi";
 import { useDirectory, useRankedStocks, useVaults, useUser, useQuote, useBoostApys, boostAvailable, TOP_STOCKS, type Stock } from "@/hooks/useProtocol";
 import { useTxSequence, type TxStep } from "@/hooks/useTx";
@@ -10,8 +10,10 @@ import { PlanVaultAbi, ERC20Abi } from "@/abi";
 import { PageHeader, Notice, Spinner, StockAvatar, Segmented, Countdown, Icon, HashLink } from "@/components/ui";
 import { BoostCard } from "@/components/app/BoostCard";
 import { ConnectButton } from "@/components/ConnectButton";
+import { ChoiceAvatar, choiceLabel } from "@/components/app/create/fields";
+import { useStockParam } from "@/components/app/create/useCreatePlan";
+import { coverageCopy } from "@/lib/planFunds";
 import { fmtUsd, fmtUnits, fmtBps, fmtPct, tsToShort, feeOf } from "@/lib/format";
-import { tickerName } from "@/lib/tickers";
 import { VAULT_KINDS, VAULT_META, ZERO, DOCS_PATH, USDG_DECIMALS, BOOST, buysPerMonthOf, type VaultKind } from "@/lib/config";
 
 type Pay = "USDG" | "ETH";
@@ -33,11 +35,22 @@ const ZAP_SLIPPAGE_BPS = 50n;
 export default function CreatePlan() {
   const { address } = useAccount();
   const { dir, vaults, configured } = useDirectory();
-  const { stocks, ranked, top, ready: rankReady } = useRankedStocks(dir);
+  const [kind, setKind] = useState<VaultKind>("weekly");
+  // Only stocks this frequency's vault will actually buy (an active keeper job, and a price feed where required).
+  const { stocks, ranked, top, dca, choices, preferred, ready: rankReady } = useRankedStocks(dir, vaults?.[kind]);
   const { infos, byKind, refetch: refetchVaults } = useVaults(vaults);
 
-  const [stock, setStock] = useState<string>("");
-  const [kind, setKind] = useState<VaultKind>("weekly");
+  const param = useStockParam(dir, kind, setKind);
+  const { clear: clearParam } = param;
+  const [stock, setPicked] = useState<string>("");
+  /** The user's own pick (every picker calls this): it also drops a `?stock=` link. */
+  const setStock = useCallback(
+    (address: string) => {
+      clearParam();
+      setPicked(address);
+    },
+    [clearParam],
+  );
   const [perBuy, setPerBuy] = useState("100");
   const [pay, setPay] = useState<Pay>("USDG");
   const [upfront, setUpfront] = useState("");
@@ -50,9 +63,16 @@ export default function CreatePlan() {
   const { apyOf } = useBoostApys(infos);
   const boostApy = apyOf(info?.boostStrategy);
   const user = useUser(dir, vault);
-  // Until the user picks, the plan buys the most popular stock (once the ranking is in).
-  const stockObj = stocks.find((s) => s.address === stock) ?? top[0];
+  // Until the user picks: the `?stock=` link's stock while it stands, else $DCA where this frequency buys it, else the most
+  // popular stock (once the ranking is in). A pick (or link) the frequency does not buy reads "Pick a stock" rather than
+  // silently becoming a different stock.
+  const stockObj = stock
+    ? stocks.find((s) => s.address === stock)
+    : param.active
+      ? stocks.find((s) => s.address === param.stock?.address)
+      : preferred;
   const stockAddr = stockObj?.address;
+  const picked = stockObj && choiceLabel(stockObj, dca?.address);
 
   const perBuyWei = safeParse(perBuy, USDG_DECIMALS);
   const upfrontWei = pay === "USDG" ? safeParse(upfront, USDG_DECIMALS) : safeParseEth(upfront);
@@ -148,12 +168,12 @@ export default function CreatePlan() {
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="grid min-w-0 gap-3.5">
           {/* 1 · Stock */}
-          <Step n={1} title="Buy" done={!!stockObj} hint={stocks.length > 0 ? `${stocks.length} stocks listed` : undefined}>
+          <Step n={1} title="Buy" done={!!stockObj} hint={ranked.length > 0 ? `${ranked.length} stocks listed` : undefined}>
             {stocks.length === 0 ? (
               <p className="text-[13px] text-ink-3">No stocks are listed yet.</p>
             ) : (
               <>
-                <StockSelect stocks={ranked} value={stockAddr ?? ""} onSelect={setStock} />
+                <StockSelect stocks={choices} value={stockAddr ?? ""} onSelect={setStock} dca={dca?.address} />
                 {(!rankReady || top.length > 0) && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="mr-1 text-[12.5px] text-ink-3">Popular</span>
@@ -179,6 +199,7 @@ export default function CreatePlan() {
                 )}
               </>
             )}
+            {param.unavailable && <Notice>{param.unavailable} isn&apos;t available for plans yet.</Notice>}
           </Step>
 
           {/* 2 · Frequency */}
@@ -283,9 +304,10 @@ export default function CreatePlan() {
                     A plan needs at least {fmtUsd(minDeposit)}
                     {pay === "ETH" ? " worth of ETH" : ""} to start.
                   </span>
-                ) : buysCovered !== undefined && buysCovered > 0 ? (
+                ) : buysCovered !== undefined && buysCovered > 0 && upfrontUsdg !== undefined && perBuyWei ? (
                   <>
-                    Covers <span className="text-ink-2">{buysCovered.toLocaleString()}</span> {buysCovered === 1 ? "buy" : "buys"}. Top up any time from My plans.
+                    {/* Worded as on My plans: "3 buys", or "3 buys + a $50.00 final buy" when a remainder makes one smaller last buy. */}
+                    Covers <span className="text-ink-2">{coverageCopy(upfrontUsdg, perBuyWei)}</span>. Top up any time from My plans.
                   </>
                 ) : fundedEnough && upfrontUsdg !== undefined ? (
                   <>
@@ -327,11 +349,11 @@ export default function CreatePlan() {
           ) : (
             <div className="step-body">
               <div className="flex items-center gap-3">
-                <StockAvatar symbol={stockObj?.symbol ?? "?"} size={32} />
+                <ChoiceAvatar symbol={stockObj?.symbol ?? "?"} dca={picked?.dca} size={32} />
                 <div className="min-w-0">
                   <div className="truncate text-[15px] font-medium text-ink">
-                    {stockObj?.symbol ?? "—"}
-                    {stockObj && tickerName(stockObj.symbol) !== stockObj.symbol && <span className="ml-1.5 font-normal text-ink-3">{tickerName(stockObj.symbol)}</span>}
+                    {picked?.symbol ?? "—"}
+                    {picked && picked.name !== picked.symbol && <span className="ml-1.5 font-normal text-ink-3">{picked.name}</span>}
                   </div>
                   <div className="text-[12.5px] text-ink-3">
                     {fmtUsd(perBuyWei ?? 0n)} every {per}
@@ -407,13 +429,15 @@ export default function CreatePlan() {
 
               <p className="text-[12px] leading-normal text-ink-3">
                 A {fmtBps(feeBps)} fee is taken on each buy before the swap
-                {info?.fees ? `; claiming stock costs ${fmtBps(info.fees.claimFeeBps)} (free for $DCA holders)` : ""}. Buys route through on-chain liquidity with a{" "}
+                {info?.fees ? `; claiming ${picked?.dca ? "$DCA" : "stock"} costs ${fmtBps(info.fees.claimFeeBps)} (free for $DCA holders)` : ""}. Buys route through on-chain liquidity with a{" "}
                 {fmtBps(info?.fees?.swapSlippageBps)} slippage tolerance.
                 {pay === "ETH" && upfrontWei && upfrontWei > 0n
                   ? ` Your ETH is swapped to USDG on chain with a ${fmtBps(Number(ZAP_SLIPPAGE_BPS))} tolerance; if the price moves more than that the transaction fails and nothing is taken.`
                   : ""}
                 {boost && canBoost ? " Boosted funds are lent on Morpho Blue between buys; the rate is variable and lending carries liquidity and bad-debt risk. No extra fee." : ""}{" "}
-                Stock Tokens are economic exposure, not shareholder rights.{" "}
+                {picked?.dca
+                  ? "$DCA is a protocol utility token, not equity or a promise of returns. The $DCA a plan buys counts toward holder perks once it is in your wallet."
+                  : "Stock Tokens are economic exposure, not shareholder rights."}{" "}
                 <span className="text-ink-2">Hold $DCA</span> for stock sent straight to your wallet and lower fees —{" "}
                 <Link href={`${DOCS_PATH}#dca`} className="text-lime hover:underline">
                   find out more →
@@ -427,8 +451,8 @@ export default function CreatePlan() {
   );
 }
 
-/** Token-selector style stock picker: the current pick on a tile, a searchable list (ranked, popular first) beneath. */
-function StockSelect({ stocks, value, onSelect }: { stocks: Stock[]; value: string; onSelect: (address: string) => void }) {
+/** Token-selector style stock picker: the current pick on a tile, a searchable list ($DCA, then ranked, popular first) beneath. */
+function StockSelect({ stocks, value, onSelect, dca }: { stocks: Stock[]; value: string; onSelect: (address: string) => void; dca?: Address }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -448,18 +472,24 @@ function StockSelect({ stocks, value, onSelect }: { stocks: Stock[]; value: stri
   }, [open]);
 
   const q = query.trim().toLowerCase();
-  const filtered = q ? stocks.filter((s) => s.symbol.toLowerCase().includes(q) || tickerName(s.symbol).toLowerCase().includes(q)) : stocks;
+  const filtered = q
+    ? stocks.filter((s) => {
+        const l = choiceLabel(s, dca);
+        return l.symbol.toLowerCase().includes(q) || l.name.toLowerCase().includes(q);
+      })
+    : stocks;
   const selected = stocks.find((s) => s.address === value);
+  const sel = selected && choiceLabel(selected, dca);
 
   return (
     <div ref={wrapRef} className="relative">
       <button type="button" onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open} className="tile flex h-12 w-full items-center gap-3 px-3">
-        {selected ? (
+        {selected && sel ? (
           <>
-            <StockAvatar symbol={selected.symbol} size={26} />
+            <ChoiceAvatar symbol={selected.symbol} dca={sel.dca} size={26} />
             <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink">
-              {selected.symbol}
-              {tickerName(selected.symbol) !== selected.symbol && <span className="ml-1.5 font-normal text-ink-3">{tickerName(selected.symbol)}</span>}
+              {sel.symbol}
+              {sel.name !== sel.symbol && <span className="ml-1.5 font-normal text-ink-3">{sel.name}</span>}
             </span>
           </>
         ) : (
@@ -477,6 +507,7 @@ function StockSelect({ stocks, value, onSelect }: { stocks: Stock[]; value: stri
             <div className="px-3 py-6 text-center text-[12.5px] text-ink-3">No stocks match &ldquo;{query}&rdquo;.</div>
           ) : (
             filtered.map((s) => {
+              const l = choiceLabel(s, dca);
               return (
                 <button
                   key={s.address}
@@ -490,10 +521,10 @@ function StockSelect({ stocks, value, onSelect }: { stocks: Stock[]; value: stri
                   }}
                   className={`menu-item gap-2.5 ${s.address === value ? "bg-surface-4 text-ink" : ""}`}
                 >
-                  <StockAvatar symbol={s.symbol} size={22} />
+                  <ChoiceAvatar symbol={s.symbol} dca={l.dca} size={22} />
                   <span className="min-w-0 flex-1 truncate text-left">
-                    <span className="text-[13px] font-medium text-ink">{s.symbol}</span>
-                    {tickerName(s.symbol) !== s.symbol && <span className="ml-1.5 text-[12px] text-ink-3">{tickerName(s.symbol)}</span>}
+                    <span className="text-[13px] font-medium text-ink">{l.symbol}</span>
+                    {l.name !== l.symbol && <span className="ml-1.5 text-[12px] text-ink-3">{l.name}</span>}
                   </span>
                 </button>
               );

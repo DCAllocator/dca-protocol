@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { Wordmark } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { BuyDcaLink } from "@/components/BuyDcaLink";
 import { DOCS_PATH } from "@/lib/config";
 import {
   AddressRow,
@@ -36,15 +37,14 @@ const RISK = "$DCA carries no right to revenue or any distribution. Burns are pr
 const GEO = "Interface not available in the US, UK, Canada, Australia or sanctioned regions.";
 const AFFILIATION = "This project is not affiliated with, endorsed by, or officially connected with Robinhood Markets, Inc.";
 
-function BuyDca({ className = "btn-primary", children = "Buy $DCA on Pons" }: { className?: string; children?: ReactNode }) {
+/** "Buy $DCA on Pons" straight to the listing once it is set; until then "Buy $DCA" to /app/buy, like the landing page. */
+function BuyDca({ className = "btn-primary", children }: { className?: string; children?: ReactNode }) {
   return V2.buyIsExternal ? (
     <a href={V2.buyUrl} target="_blank" rel="noreferrer" className={className}>
-      {children} <IconExt />
+      {children ?? "Buy $DCA on Pons"} <IconExt />
     </a>
   ) : (
-    <Link href={V2.buyUrl} className={className}>
-      {children}
-    </Link>
+    <BuyDcaLink className={className}>{children ?? "Buy $DCA"}</BuyDcaLink>
   );
 }
 
@@ -637,8 +637,8 @@ export function V2Faq() {
     [
       "Who can use it, and what's the minimum?",
       <>
-        The interface is not available in the US, UK, Canada, Australia or sanctioned regions; the contracts are permissionless. $10 per buy and $10 per
-        deposit. Pay in USDG, or ETH converted to USDG on deposit.
+        The interface is not available in the US, UK, Canada, Australia or sanctioned regions; the contracts are permissionless. At least $10 per buy
+        (a final buy can be smaller) and $10 per deposit. Pay in USDG, or ETH converted to USDG on deposit.
       </>,
     ],
   ];

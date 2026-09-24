@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useAccount } from "wagmi";
-import { useDirectory, useVaults, useStocks, useRankedStocks, useBoostApys, usePositions, boostAvailable } from "@/hooks/useProtocol";
+import { useDirectory, useVaults, useStocks, useRankedStocks, useBoostApys, usePositions, useKindsBuying, boostAvailable, isDcaToken, findStock } from "@/hooks/useProtocol";
 import { Countdown, StockAvatar } from "@/components/ui";
 import { fmtUsd, fmtPct } from "@/lib/format";
 import { VAULT_META } from "@/lib/config";
@@ -12,6 +12,27 @@ import { tickerName } from "@/lib/tickers";
 
 /** How long a click waits for the wallet / positions before giving up and going to Create plan. */
 const LAUNCH_WAIT_MS = 3_000;
+
+/** Create plan with `symbol` preselected (see `useStockParam`); the landing pages link it through `useStockHref`. */
+export const createPlanHref = (symbol: string) => `/app/create?stock=${encodeURIComponent(symbol)}`;
+
+/**
+ * Where a landing-page ticker links: Create plan on that stock (`createPlanHref`) when some production vault buys it
+ * (`useKindsBuying`), else plain Create plan, since a deep link to a stock nothing buys would only open on a notice.
+ * Plain until the stock list and the keeper's pairs are in.
+ */
+export function useStockHref() {
+  const { dir } = useDirectory();
+  const { stocks } = useStocks(dir?.registry);
+  const { kindsBuying } = useKindsBuying();
+  return useCallback(
+    (symbol: string) => {
+      const s = findStock(stocks, symbol);
+      return s && kindsBuying(s.address)?.length ? createPlanHref(symbol) : "/app/create";
+    },
+    [stocks, kindsBuying],
+  );
+}
 
 /**
  * "Launch app" lands where the visitor should start: My plans when the connected wallet already has plans,
@@ -62,6 +83,8 @@ export function LandingStats() {
   const { dir, vaults, configured } = useDirectory();
   const { infos } = useVaults(vaults);
   const { stocks } = useStocks(dir?.registry);
+  // $DCA can be listed in the registry too; it is not a stock token.
+  const stockTokens = stocks.filter((s) => !isDcaToken(dir, s.address)).length;
   // Vaults hold USDG only (ETH is converted on deposit), so "waiting to buy" is exactly the idle USDG.
   const usdgIdle = infos.reduce((a, v) => a + (v.totalUsdgIdle ?? 0n), 0n);
   const notional = infos.reduce((a, v) => a + (v.totalNotionalUsdg ?? 0n), 0n);
@@ -71,7 +94,7 @@ export function LandingStats() {
     ["Stock bought through DCA", ready ? fmtUsd(notional) : "—"],
     ["Capital waiting to buy", ready ? fmtUsd(usdgIdle) : "—"],
     ["Buys executed", ready ? epochs.toString() : "—"],
-    ["Stock tokens listed", ready ? String(stocks.length) : "—"],
+    ["Stock tokens listed", ready ? String(stockTokens) : "—"],
   ];
   return (
     <div className="grid grid-cols-2 divide-line border-y border-line md:grid-cols-4 md:divide-x">
@@ -184,10 +207,14 @@ export function BoostTeaser() {
 
 const GRID_SIZE = 17;
 
-/** Registry stocks ranked by market cap, top tiles + a "more" tile with the real remainder. */
+/**
+ * Registry stocks ranked by market cap, top tiles (each opens Create plan, on that stock where a vault buys it: see
+ * `useStockHref`) + a "more" tile with the real remainder.
+ */
 export function StockGrid() {
   const { dir, configured } = useDirectory();
   const { ranked, ready } = useRankedStocks(dir);
+  const stockHref = useStockHref();
   // Before the registry answers, a handful of well-known tickers keep the layout from jumping.
   const placeholder = ["SPY", "NVDA", "GLD", "GOOGL", "AAPL", "META", "TSLA", "AMZN", "MSTR", "MSFT", "PLTR", "COIN"];
   const symbols = ready && configured ? ranked.map((s) => s.symbol) : placeholder;
@@ -196,7 +223,7 @@ export function StockGrid() {
   return (
     <div className="mt-8 grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-6">
       {shown.map((sym) => (
-        <Link key={sym} href="/app/create" className="flex min-w-0 items-center gap-3 rounded-lg border border-line bg-surface-3 p-3.5 transition-colors hover:border-ink">
+        <Link key={sym} href={stockHref(sym)} className="flex min-w-0 items-center gap-3 rounded-lg border border-line bg-surface-3 p-3.5 transition-colors hover:border-ink">
           <StockAvatar symbol={sym} size={34} />
           <span className="min-w-0">
             <span className="block text-[14px] font-semibold text-ink">{sym}</span>

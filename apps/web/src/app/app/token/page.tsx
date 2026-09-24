@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useDirectory, useVaults, useUser, useDcaToken, vaultList } from "@/hooks/useProtocol";
 import { useEpochLogs, sumLastDays } from "@/hooks/useLogs";
 import { PageHeader, StatCard, Card, Notice, Dot, KV } from "@/components/ui";
+import { AddToWalletButton } from "@/components/app/AddToWalletButton";
+import { BuyDcaButton } from "@/components/app/create/CreateTabs";
 import { fmtUsd, fmtUsdCompact, fmtUnits, fmtBps, short } from "@/lib/format";
 import { VAULT_META, DOCS_PATH, isZero } from "@/lib/config";
 import { activeChain } from "@/lib/chain";
@@ -36,14 +38,20 @@ export default function TokenPage() {
         title="DCA Token"
         description="$DCA is the protocol token. Holding it changes how your plans behave — no staking, no lock-ups."
         right={
-          user.address && !noToken ? (
-            <div className="text-right">
-              <div className="text-[12px] text-ink-3">Your balance</div>
-              <div className="text-[22px] font-semibold tracking-tight text-ink">
-                {fmtUnits(dcaBal, 18, 0)} <span className="text-[14px] text-ink-3">$DCA</span>
-              </div>
-            </div>
-          ) : undefined
+          noToken ? undefined : (
+            <>
+              {user.address && (
+                <div className="text-right">
+                  <div className="text-[12px] text-ink-3">Your balance</div>
+                  <div className="text-[22px] font-semibold tracking-tight text-ink">
+                    {fmtUnits(dcaBal, 18, 0)} <span className="text-[14px] text-ink-3">$DCA</span>
+                  </div>
+                  <AddToWalletButton address={dir.dca} symbol="DCA" decimals={18} />
+                </div>
+              )}
+              <BuyDcaButton className="btn-primary" />
+            </>
+          )
         }
       />
 
