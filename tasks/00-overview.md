@@ -1,6 +1,6 @@
 # Post-testing changes — overview
 
-Date: 2026-09-23. Baseline commit at planning time: `5ec278c` (main) plus a large uncommitted tree (see "Step 0").
+Date: 2026-09-23. Baseline commit at planning time: `e5cda0d` (main) plus a large uncommitted tree (see "Step 0").
 
 ## Workstreams (grouped by shared code and root cause)
 

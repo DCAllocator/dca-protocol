@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Target** | [`contracts/src/treasury/FeeReceiver.sol`](../contracts/src/treasury/FeeReceiver.sol) (378 LoC, 8,510 bytes deployed) on top of `636c643`; solc 0.8.28, via-ir, OZ 5.1.0. Deploy wiring in `script/Deploy.s.sol` / `script/DeployLocal.s.sol`. |
+| **Target** | [`contracts/src/treasury/FeeReceiver.sol`](../contracts/src/treasury/FeeReceiver.sol) (378 LoC, 8,510 bytes deployed) on top of `4ea7ba0`; solc 0.8.28, via-ir, OZ 5.1.0. Deploy wiring in `script/Deploy.s.sol` / `script/DeployLocal.s.sol`. |
 | **Date** | 2026-09-22 |
 | **Scope** | The new contract and its interaction with the audited vaults (`feeRecipient`), the `AggregatorRouter` and the `$DCA` token. Vault / router code is unchanged and out of scope (see [`AUDIT.md`](../AUDIT.md)). |
 | **Method** | Threat model first (§2), then line-by-line review of the final code; 47 unit tests, 3 vault-integration tests and a 5-invariant handler suite (`fail_on_revert = true`, CI depth: fuzz 2048, invariants 256×64); Slither 0.11.6; end-to-end run of `DeployLocal` on a throwaway anvil with a real `AggregatorRouter → UniV3Adapter → pool` buyback. Six weaknesses were found in earlier drafts of the design during this pass and fixed before the code was finalised (§3). |

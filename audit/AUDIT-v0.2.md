@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Target** | `contracts/src/**` at tag `v0.2` (commit `8abc39f`; diff vs `v0.1`: 15 files, +604/−635 in `src` + `script`); solc 0.8.28, via-ir, OZ 5.1.0. Apps migrated in `babe8f3`. |
+| **Target** | `contracts/src/**` at tag `v0.2` (commit `64cd2f6`; diff vs `v0.1`: 15 files, +604/−635 in `src` + `script`); solc 0.8.28, via-ir, OZ 5.1.0. Apps migrated in `3929fc7`. |
 | **Date** | 2026-09-20 |
 | **Previous report** | [`audit/AUDIT-v0.1.md`](AUDIT-v0.1.md) — 2 High, 3 Medium, 6 Low, 15 Info |
 | **Method** | Line-by-line re-review of every changed file; every v0.1 finding re-tested against the remediated code with a permanent regression test (`contracts/test/audit/`, 30 tests); existing suites rewritten for the new API; invariants tightened and re-run at CI depth (fuzz 2048, invariants 256×64); Slither 0.11.6; coverage; contract sizes. |
@@ -77,7 +77,7 @@ Nothing else surfaced: reentrancy (all entries `nonReentrant`, incl. `prunePlan`
 | I-12 | Confirm Robinhood Chain's ArbOS supports `PUSH0` / `MCOPY` (`evm_version = cancun`); bump OZ to latest 5.x. |
 | I-13 | Owner powers apply instantly (`setRouter`, `approveHop`, `setFees`, `setOperator`, `setMinimums`); put the owner behind a timelock and monitor `HopApproved` / `HopRevoked` / `RouterSet` / `OperatorSet`. |
 
-## 5. App migration (done — commit `babe8f3`, after tag `v0.2`)
+## 5. App migration (done — commit `3929fc7`, after tag `v0.2`)
 
 Both apps now consume the v0.2 ABI (`pnpm --filter @dca/web abi`, `pnpm --filter @dca/scheduler abi`). Points specific to the changed zap behaviour:
 
