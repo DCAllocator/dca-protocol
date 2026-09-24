@@ -1,13 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useAccount, useBalance, useReadContract, useReadContracts, usePublicClient } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
 import type { Address } from "viem";
-import { VaultDirectoryAbi, StockRegistryAbi, PlanVaultAbi, ERC20Abi, ClaimHelperAbi, AggregatorRouterAbi, MorphoBlueStrategyAbi, IMorphoAbi } from "@/abi";
+import { VaultDirectoryAbi, StockRegistryAbi, PlanVaultAbi, EpochKeeperAbi, ERC20Abi, ClaimHelperAbi, AggregatorRouterAbi, MorphoBlueStrategyAbi, IMorphoAbi } from "@/abi";
 import { Market, UnsupportedMarketIrmError } from "@morpho-org/blue-sdk";
 import type { PublicClient } from "viem";
-import { ADDRESSES, isZero, TEST_VAULT, VAULT_KINDS, SECONDS_PER_YEAR, DCA_PERK_DEFAULTS, USDG_DECIMALS, type VaultKind } from "@/lib/config";
+import { ADDRESSES, isZero, TEST_VAULT, VAULT_KINDS, PRODUCTION_VAULT_KINDS, SECONDS_PER_YEAR, DCA_PERK_DEFAULTS, USDG_DECIMALS, type VaultKind, type ProductionVaultKind } from "@/lib/config";
 import { valueOf } from "@/lib/format";
 import { usePersistedQuery } from "@/lib/persistedQuery";
 import marketCapSnapshot from "@/data/market-caps.json";
@@ -85,7 +85,8 @@ const NO_STOCKS: Stock[] = [];
 
 /**
  * Approved stocks + metadata from the registry, as one query (see `readStockList`). Persisted across page loads
- * (lib/persistedQuery): a reload renders the last good list at once and revalidates it in the background.
+ * (lib/persistedQuery): a reload renders the last good list at once and revalidates it in the background. `fresh` is
+ * true once a list is in and no fetch is running, i.e. past that background refetch (a restored copy may be stale).
  */
 export function useStocks(registry?: Address) {
   const client = usePublicClient();
@@ -99,7 +100,71 @@ export function useStocks(registry?: Address) {
   });
   const stocks = q.data ?? NO_STOCKS;
   const bySymbol = useMemo(() => Object.fromEntries(stocks.map((s) => [s.address.toLowerCase(), s])), [stocks]);
-  return { stocks, byAddress: bySymbol, isLoading: q.isLoading };
+  return { stocks, byAddress: bySymbol, isLoading: q.isLoading, fresh: q.data !== undefined && !q.isFetching };
+}
+
+/** The stock `query` names, by address or ticker (either case), e.g. a `?stock=` value; undefined when none does. */
+export function findStock(stocks: readonly Stock[], query: string): Stock | undefined {
+  const q = query.trim().toLowerCase();
+  if (!q) return undefined;
+  return stocks.find((s) => s.address.toLowerCase() === q) ?? stocks.find((s) => s.symbol.toLowerCase() === q);
+}
+
+const pairKey = (vault: Address, stock: Address) => `${vault.toLowerCase()}:${stock.toLowerCase()}`;
+
+/**
+ * Every (vault, stock) pair that actually gets bought, as `vault:stock` keys. Approved in the registry is not enough:
+ * a vault only buys when an EpochKeeper operator runs that pair's job, and it refuses a stock that has no price feed
+ * while `requireFeed` is on (fail-closed). So a pair counts when it has an active job and, where the vault requires
+ * one, a feed. One `jobs()` read, then every job vault's `priceGuard()` and every job's `priceFeed()` in one tick
+ * (one Multicall3 aggregate where the chain has it, as in `readStockList`).
+ */
+async function readBuyable(client: PublicClient, keeper: Address): Promise<string[]> {
+  const jobs = (await client.readContract({ address: keeper, abi: EpochKeeperAbi, functionName: "jobs" })).filter((j) => j.active);
+  const jobVaults = [...new Set(jobs.map((j) => j.vault))];
+  const [guards, feeds] = await Promise.all([
+    Promise.all(jobVaults.map((v) => client.readContract({ address: v, abi: PlanVaultAbi, functionName: "priceGuard" }))),
+    Promise.all(jobs.map((j) => client.readContract({ address: j.vault, abi: PlanVaultAbi, functionName: "priceFeed", args: [j.stock] }))),
+  ]);
+  const requireFeed = new Map(jobVaults.map((v, i) => [v, guards[i][1]]));
+  return jobs.filter((j, i) => !requireFeed.get(j.vault) || !isZero(feeds[i][0])).map((j) => pairKey(j.vault, j.stock));
+}
+
+/**
+ * Whether a vault will actually buy a stock (see `readBuyable`). `isBuyable` answers undefined until the pairs have
+ * loaded. Without NEXT_PUBLIC_KEEPER there is nothing to check against, so every pair counts as buyable. Persisted like
+ * the stock list, so a reload filters the picker without waiting for the chain.
+ */
+export function useBuyable({ enabled = true }: { enabled?: boolean } = {}) {
+  const client = usePublicClient();
+  const keeper = isZero(ADDRESSES.keeper) ? undefined : ADDRESSES.keeper;
+  const q = usePersistedQuery({
+    name: "buyable",
+    address: keeper,
+    enabled: enabled && !!client,
+    staleTime: 60_000,
+    refetchInterval: false,
+    queryFn: () => readBuyable(client!, keeper!),
+  });
+  const pairs = useMemo(() => (q.data ? new Set(q.data) : undefined), [q.data]);
+  const isBuyable = useCallback((vault: Address, stock: Address): boolean | undefined => (keeper ? pairs?.has(pairKey(vault, stock)) : true), [keeper, pairs]);
+  // `fresh`: past the background refetch of a restored copy, as in `useStocks`.
+  return { isBuyable, ready: !keeper || !!pairs, fresh: !keeper || (!!pairs && !q.isFetching) };
+}
+
+/**
+ * The production frequencies whose vault buys `stock` (see `useBuyable`), fastest first; undefined until the directory
+ * and the keeper's pairs are in. Without NEXT_PUBLIC_KEEPER every frequency counts. The landing pages' stock links and
+ * Create plan's `?stock=` go by it; the local test vault never counts. `fresh` as in `useBuyable`.
+ */
+export function useKindsBuying() {
+  const { vaults } = useDirectory();
+  const { isBuyable, ready, fresh } = useBuyable();
+  const kindsBuying = useCallback(
+    (stock: Address): ProductionVaultKind[] | undefined => (vaults && ready ? PRODUCTION_VAULT_KINDS.filter((k) => isBuyable(vaults[k], stock)) : undefined),
+    [vaults, ready, isBuyable],
+  );
+  return { kindsBuying, fresh: !!vaults && fresh };
 }
 
 export type FeeConfig = {
@@ -501,7 +566,7 @@ export function usePrices(router?: Address, usdg?: Address, tokens?: { address: 
   return { prices: q.data ?? ({} as PriceMap), isLoading: q.isLoading, ready: q.data !== undefined };
 }
 
-/** Number of stocks the create page shows as "Popular". */
+/** Number of largest stocks shown as pills: the stock picker dialog's, and /app/create/legacy's "Popular" row. */
 export const TOP_STOCKS = 5;
 
 /**
@@ -517,20 +582,44 @@ export const TOP_STOCKS = 5;
  * No prices here on purpose: quoting every registry stock through the router cost one `eth_call` per
  * stock per minute on every page that ranks stocks, and the picker does not need a price to choose a
  * stock. Pages that show USD values (dashboard, plans, token) call `usePrices` for just what they show.
+ *
+ * `buyableOn` (a stock picker's vault) narrows `stocks`, `ranked` and `top` to what that vault will actually buy
+ * (`useBuyable`), so a plan cannot be started on a stock that never gets bought; `ready` then also waits for that
+ * check. `byAddress` stays the whole registry, for lookups.
+ *
+ * $DCA, when the registry lists it (`isDcaToken`), is not a Stock Token and has no market cap: it stays in `stocks` but
+ * is left out of `ranked` and `top` (the ticker, the landing grids and the "Popular" chips stay Stock Tokens only) and
+ * comes back as `dca` instead. `choices` is what a picker lists — `dca` pinned first, then `ranked` — and `preferred`
+ * what it starts on: `dca`, else the largest Stock Token; undefined until `ready`. With $DCA unlisted (or not bought on
+ * `buyableOn`) `dca` is undefined and `choices` is `ranked`.
  */
-export function useRankedStocks(dir?: Directory) {
-  const { stocks, byAddress, isLoading: stocksLoading } = useStocks(dir?.registry);
+export function useRankedStocks(dir?: Directory, buyableOn?: Address) {
+  const { stocks: listed, byAddress, isLoading: stocksLoading } = useStocks(dir?.registry);
+  const { isBuyable, ready: buyableReady } = useBuyable({ enabled: !!buyableOn });
   return useMemo(() => {
-    const marketCapOf = (s: Stock) => STOCK_MARKET_CAPS[s.symbol.toUpperCase()];
-    const ranked = [...stocks].sort((a, b) => {
-      const diff = (marketCapOf(b) ?? 0) - (marketCapOf(a) ?? 0);
-      return diff !== 0 ? diff : a.symbol.localeCompare(b.symbol);
-    });
-    const ready = stocks.length > 0 && !stocksLoading;
+    const marketCapOf = (s: Stock) => (isDcaToken(dir, s.address) ? undefined : STOCK_MARKET_CAPS[s.symbol.toUpperCase()]);
+    const stocks = buyableOn ? listed.filter((s) => isBuyable(buyableOn, s.address)) : listed;
+    const dca = stocks.find((s) => isDcaToken(dir, s.address));
+    const ranked = stocks
+      .filter((s) => s !== dca)
+      .sort((a, b) => {
+        const diff = (marketCapOf(b) ?? 0) - (marketCapOf(a) ?? 0);
+        return diff !== 0 ? diff : a.symbol.localeCompare(b.symbol);
+      });
+    const choices = dca ? [dca, ...ranked] : ranked;
+    const ready = listed.length > 0 && !stocksLoading && (!buyableOn || buyableReady);
     const top = ready ? ranked.filter((s) => (marketCapOf(s) ?? 0) > 0).slice(0, TOP_STOCKS) : [];
-    return { stocks, byAddress, ranked, top, marketCapOf, ready };
-  }, [stocks, byAddress, stocksLoading]);
+    const preferred = ready ? (dca ?? top[0]) : undefined;
+    return { stocks, byAddress, ranked, top, dca, choices, preferred, marketCapOf, ready };
+  }, [dir, listed, byAddress, stocksLoading, buyableOn, isBuyable, buyableReady]);
 }
+
+/**
+ * Whether `address` is the protocol's own $DCA token (the directory's `dca`). The registry can list $DCA beside the
+ * Stock Tokens so plans can buy it; it is told apart by address, never by ticker (a Stock Token could share one).
+ */
+export const isDcaToken = (dir: Directory | undefined, address: Address | undefined): boolean =>
+  !!dir && !!address && !isZero(dir.dca) && address.toLowerCase() === dir.dca.toLowerCase();
 
 /** Stock still sitting on each vault (accrued, not yet claimed), per stock and in total. */
 export function useStockHoldings(vaults?: VaultMap, stocks?: Stock[]) {

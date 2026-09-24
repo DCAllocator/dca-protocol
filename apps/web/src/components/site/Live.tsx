@@ -1,6 +1,6 @@
 "use client";
 
-import { useDirectory, useVaults, useStocks, usePerkThresholds } from "@/hooks/useProtocol";
+import { useDirectory, useVaults, useStocks, usePerkThresholds, isDcaToken } from "@/hooks/useProtocol";
 import { Countdown, StockAvatar } from "@/components/ui";
 import { fmtUsd, fmtBps, fmtUnits, fmtUnitsCompact } from "@/lib/format";
 import { PRODUCTION_VAULT_KINDS, VAULT_META, type ProductionVaultKind } from "@/lib/config";
@@ -19,7 +19,7 @@ export function LiveStats() {
     ["Capital waiting to buy", ready ? fmtUsd(usdgIdle) : "—"],
     ["Stock bought to date", ready ? fmtUsd(notional) : "—"],
     ["Epochs executed", ready ? epochs.toString() : "—"],
-    ["Stocks listed", ready ? String(stocks.length) : "—"],
+    ["Stocks listed", ready ? String(stocks.filter((s) => !isDcaToken(dir, s.address)).length) : "—"],
   ];
   return (
     <div className="grid grid-cols-2 divide-line border-y border-line md:grid-cols-4 md:divide-x">

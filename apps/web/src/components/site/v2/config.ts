@@ -9,7 +9,7 @@ import { BUY_DCA_URL } from "@/lib/config";
 const env = (v: string | undefined) => (v && /^https?:\/\//.test(v) ? v : undefined);
 
 export const V2 = {
-  /** "Buy $DCA on Pons": the Pons token page once NEXT_PUBLIC_BUY_DCA_URL is set, the in-app token page until then. */
+  /** "Buy $DCA on Pons": the Pons token page once NEXT_PUBLIC_BUY_DCA_URL is set; until then the button is "Buy $DCA" to /app/buy. */
   buyUrl: BUY_DCA_URL,
   buyIsExternal: /^https?:\/\//.test(BUY_DCA_URL),
   ponsUrl: env(process.env.NEXT_PUBLIC_PONS_URL) ?? env(process.env.NEXT_PUBLIC_BUY_DCA_URL),

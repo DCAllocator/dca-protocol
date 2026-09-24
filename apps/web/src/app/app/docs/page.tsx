@@ -41,12 +41,12 @@ export default function Docs() {
               <li>
                 <b>Hourly</b> plans buy every hour, on the hour (UTC), around the clock. <b>Daily</b> plans buy every day at 00:00 UTC. <b>Weekly</b> plans buy every Monday at 00:00 UTC. <b>Monthly</b> plans buy every 30 days.
               </li>
-              <li>Each buy spends the amount you set, as long as the plan has funds. If a plan runs dry it simply waits.</li>
+              <li>Each buy spends the amount you set. A plan holding less than that spends what it has on its next buy, then waits until you top it up.</li>
               <li>
                 ETH is converted to USDG the moment you deposit it (0.5% price tolerance; any sliver the pool cannot fill is returned to you), so the plan
                 always holds USDG and withdrawals are paid in USDG.
               </li>
-              <li>Each buy is at least $10, and a plan needs at least $10 to start or to top up.</li>
+              <li>The amount per buy is at least $10, and a plan needs at least $10 to start or to top up.</li>
               <li>Stock you buy is held for you on the vault until you claim it — or is sent straight to your wallet if you hold $DCA.</li>
               <li>If a scheduled buy is ever missed it is skipped, never doubled up. You are charged at most once per period.</li>
             </ul>

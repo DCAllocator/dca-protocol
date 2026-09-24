@@ -25,9 +25,11 @@ apps/web/tsconfig.tsbuildinfo
 
 # Local-chain artifacts
 contracts/deployments/31337.json
+contracts/deployments/*-fork-*.json
 contracts/cache/*/31337/
 .claude/launch.json
 apps/scheduler/dist/
 
 # Vercel CLI link (vercel link)
 .vercel
+.env*

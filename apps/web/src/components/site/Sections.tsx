@@ -175,7 +175,7 @@ export function Faq() {
     ["What does it cost?", "One fee per buy: 0.90% hourly, 0.75% daily, 0.50% weekly, 0.25% monthly. Withdrawing idle funds or claiming stock costs 0.25%. Depositing is free. Every fee is capped at 0.90% in the contract."],
     ["Can I stop or get my money back?", "Yes. Pause a plan, change the amount, or withdraw idle USDG at any time. Stock you have already bought is yours to claim."],
     ["Can I pay with ETH?", "Yes. ETH is converted to USDG the moment you deposit it, with a 0.5% price tolerance, so the plan always holds USDG. Withdrawals are paid in USDG."],
-    ["Is there a minimum?", "Each buy is at least $10, and a plan needs at least $10 to start (or to top up). That keeps tiny plans from clogging the shared buy for everyone."],
+    ["Is there a minimum?", "The amount per buy is at least $10 (a plan's final buy can be smaller), and a plan needs at least $10 to start (or to top up). That keeps tiny plans from clogging the shared buy for everyone."],
     ["Who can use DCA?", "DCA is not available to US persons or in the United Kingdom, Canada, Australia and sanctioned regions. The contracts are public; this interface is not offered there."],
     ["Is it audited?", "Not yet. The code is open, fully tested and documented, but you should treat it as early software and only use funds you can afford to lose."],
   ];

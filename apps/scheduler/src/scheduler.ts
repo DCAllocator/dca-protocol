@@ -57,6 +57,9 @@ export class Scheduler {
   private seen?: { ts: number; seenAtMs: number };
   private announcedBoundary?: number;
   private stopping = false;
+  /** Pairs `checkUncovered` last reported (`vault:stock` → plans), so each is logged once per change, not every pass. */
+  private uncovered = new Map<string, { plans: number; label: string }>();
+  private lastUncoveredCheck = 0;
 
   constructor(private readonly cfg: Config) {}
 
@@ -193,6 +196,10 @@ export class Scheduler {
         await this.runJob(idx, job);
       }
     }
+    if (this.cfg.uncoveredCheckMs > 0 && !this.stopping && Date.now() - this.lastUncoveredCheck >= this.cfg.uncoveredCheckMs) {
+      this.lastUncoveredCheck = Date.now();
+      await this.checkUncovered(jobs).catch((e) => log.warn("uncovered-plan check failed", { error: describeError(e) }));
+    }
     return this.nextDelay(jobs);
   }
 
@@ -259,6 +266,52 @@ export class Scheduler {
       if (s.completed) return;
     }
     log.warn(`${label}: reached MAX_PAGES_PER_JOB=${this.cfg.maxPagesPerJob}; continuing next tick`, { job: index });
+  }
+
+  /**
+   * Plans nothing will ever buy: a vault holds plans on an approved stock, but the keeper has no active job for that
+   * pair (a stock approved after deploy, a job switched off, the local stack's long-tail tickers). `dueJobs()` only
+   * walks the job list, so those plans would otherwise sit unfilled without a word. Every job vault is checked against
+   * its registry's approved stocks; a pair is logged when first seen and whenever its plan count changes.
+   */
+  private async checkUncovered(jobs: Job[]): Promise<void> {
+    const covered = new Set(jobs.filter((j) => j.active).map((j) => pairKey(j.vault, j.stock)));
+    const approvedOf = new Map<string, readonly Address[]>();
+    const pairs: { vault: Address; stock: Address }[] = [];
+    for (const vault of new Set(jobs.map((j) => j.vault))) {
+      const registry = await this.pub.readContract({ address: vault, abi: PlanVaultAbi, functionName: "registry" });
+      let approved = approvedOf.get(registry);
+      if (!approved) {
+        approved = await this.pub.readContract({ address: registry, abi: StockRegistryAbi, functionName: "approvedStocks" });
+        approvedOf.set(registry, approved);
+      }
+      for (const stock of approved) if (!covered.has(pairKey(vault, stock))) pairs.push({ vault, stock });
+    }
+    const counts: bigint[] = [];
+    for (let i = 0; i < pairs.length; i += READ_BATCH) {
+      const batch = pairs.slice(i, i + READ_BATCH);
+      counts.push(
+        ...(await Promise.all(
+          batch.map(({ vault, stock }) => this.pub.readContract({ address: vault, abi: PlanVaultAbi, functionName: "stockPlanCount", args: [stock] })),
+        )),
+      );
+    }
+    const found = new Map<string, { plans: number; label: string }>();
+    for (const [i, { vault, stock }] of pairs.entries()) {
+      const plans = Number(counts[i]);
+      if (plans === 0) continue;
+      const key = pairKey(vault, stock);
+      const label = this.uncovered.get(key)?.label ?? (await this.label({ vault, stock, active: false }));
+      found.set(key, { plans, label });
+      if (this.uncovered.get(key)?.plans === plans) continue;
+      log.warn(`${label}: ${plans} plan(s), but the keeper has no active job for this stock — they are never bought`, {
+        vault,
+        stock,
+        fix: "keeper.addJob(vault, stock), once the stock has a route and (if the vault requires one) a price feed",
+      });
+    }
+    for (const [key, { label }] of this.uncovered) if (!found.has(key)) log.info(`${label}: no longer has plans without a keeper job`);
+    this.uncovered = found;
   }
 
   private summarize(receipt: TransactionReceipt, job: Job) {
@@ -430,6 +483,9 @@ export class Scheduler {
 // Helpers
 // ----------------------------------------------------------------------
 
+/** Concurrent reads per round in `checkUncovered` (one per vault × approved stock without a job). */
+const READ_BATCH = 100;
+const pairKey = (vault: Address, stock: Address) => `${vault}:${stock}`.toLowerCase();
 const epochAt = (m: VaultMeta, t: number) => Math.floor((t - m.origin) / m.epochLength);
 const nextBoundary = (m: VaultMeta, t: number) => m.origin + (epochAt(m, t) + 1) * m.epochLength;
 const short = (a: Address) => `${a.slice(0, 6)}…${a.slice(-4)}`;

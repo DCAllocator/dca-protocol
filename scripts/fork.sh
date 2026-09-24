@@ -79,7 +79,7 @@ BOT="${ADDR[5]}"; BOT_PK="${PK[5]}"
 log "Deploying the local stack (mocks + router/vaults/keeper + ${TEST_EPOCH_MINUTES}-minute test vault)"
 ( cd "$CONTRACTS" && TREASURY="$TREASURY" TEST1="$TEST1" TEST2="$TEST2" TEST3="$TEST3" BOT="$BOT" \
   TEST_EPOCH_MINUTES="$TEST_EPOCH_MINUTES" \
-  forge script script/DeployLocal.s.sol --rpc-url "$RPC" --broadcast --private-key "$DEPLOYER_PK" )
+  forge script script/DeployLocal.s.sol --rpc-url "$RPC" --broadcast --slow --private-key "$DEPLOYER_PK" )
 DEPLOY_JSON="$CONTRACTS/deployments/31337.json"
 [[ -f "$DEPLOY_JSON" ]] || { echo "Deploy failed: $DEPLOY_JSON not written"; exit 1; }
 USDG=$(python3 -c "import json;print(json.load(open('$DEPLOY_JSON'))['usdg'])")

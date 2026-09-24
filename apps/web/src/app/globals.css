@@ -208,6 +208,47 @@ body {
 .tbl tbody tr:hover .stick-r {
   background: var(--color-surface-3);
 }
+/* a notice under a row (My plans: a plan short of funds): it hangs from the row above, with no rule between the two,
+   wraps, and stays in view when the table scrolls sideways — pinned left and no wider than the scroll box (`tbl-scroll`,
+   the container `cqw` measures), not the table */
+.tbl-scroll {
+  container-type: inline-size;
+}
+.tbl tbody tr.has-note td {
+  @apply border-b-0;
+}
+.tbl tbody tr.row-note td {
+  @apply pt-0 whitespace-normal;
+}
+.tbl tbody tr.row-note:hover td {
+  @apply bg-transparent;
+}
+.tbl .row-note-body {
+  position: sticky;
+  left: 0.75rem;
+  max-width: calc(100cqw - 1.5rem);
+}
+/* the note's Deposit: a text link at the end of the line, not a second button beside the row's own. Underlined at
+   rest, so it reads as a link without relying on its colour (lime is close to ink-2 in lightness). */
+.tbl .row-note-action {
+  @apply font-medium whitespace-nowrap text-lime-text underline decoration-1 underline-offset-2 hover:decoration-2 disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50;
+}
+/* light register: lime-text only just clears 4.5:1 on the card, and the amber wash below would take it under */
+:root[data-theme="light"] .tbl tr.note-warn .row-note-action {
+  color: color-mix(in srgb, var(--color-lime-text) 90%, black);
+}
+/* a plan that is out of funds (or down to dust): the row and its note share a faint amber wash — an indicator you
+   notice on a scan, not an alert. Opaque mixes (not a tint over the cell), so the pinned action cell still hides
+   what scrolls under it; background-color only, so a boosted row keeps its lime wash on top. */
+.tbl tbody tr.note-warn td {
+  background-color: color-mix(in srgb, var(--color-warn) 6%, var(--color-surface-2));
+}
+.tbl tbody tr.note-warn:hover td {
+  background-color: color-mix(in srgb, var(--color-warn) 6%, var(--color-surface-3));
+}
+.tbl tbody tr.row-note.note-warn:hover td {
+  background-color: color-mix(in srgb, var(--color-warn) 6%, var(--color-surface-2));
+}
 @utility num {
   @apply font-mono tabular-nums;
 }

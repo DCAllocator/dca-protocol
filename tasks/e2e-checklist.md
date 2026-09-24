@@ -23,7 +23,7 @@ Columns: ID | Item | Precondition (chain state + knobs) | Steps | Expected | Obs
 | E4 | 02 | Gas limit cut in MetaMask (mined, reverts) | error toast with decoded reason; no inline error |
 | E5 | 03 | Remove a plan with balance, boost and accrued stock on the 1-minute TestVault | N steps mine; wallet USDG += balance − fee; row disappears only after verification; toast |
 | E6 | 03 | Remove during a pending epoch (multi-page via `advanceEpoch(limit=1)`) / Escape during mining / reject the prune | prune deferred with "Finish delete"; dialog stays open; "Try again" sends only `prunePlan` |
-| E7 | 05 | /app/create and / | picker shows no prices and no "—"; no router `quote` calls in the network log |
+| E7 | 05 | /app/create, /app/create/2 and / | no per-stock router `quote` calls in the network log: the stock picker dialog's prices and caps come from `/api/stock-market`, and its one router quote is $DCA's own price (`useDcaToken`) where the frequency lists $DCA |
 | E8 | 05 | Add-to-wallet with MetaMask on 31337 | MetaMask dialog pre-filled; confirm/decline/close paths toast; no inline error |
 | E9 | 06 | /app/create vs /app/create/2 with identical inputs | orders read as specified; `cast tx <hash> input` byte-identical |
 | E10 | 06 | Buy $DCA tab on 31337; /app/buy 100 USDG | tab visible; ≈ 997 mDCA quoted; approve → swap; balances update; rejection leaves "Try again" |

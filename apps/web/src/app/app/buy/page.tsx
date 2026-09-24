@@ -2,18 +2,22 @@
 
 import Link from "next/link";
 import { useDirectory, useBuyDcaRoute } from "@/hooks/useProtocol";
+import type { Address } from "viem";
 import { Notice, Icon } from "@/components/ui";
-import { BuyDcaLink, BUY_DCA_EXTERNAL } from "@/components/BuyDcaLink";
+import { AddToWalletButton } from "@/components/app/AddToWalletButton";
+import { BUY_DCA_EXTERNAL } from "@/components/BuyDcaLink";
 import { CreateTabs } from "@/components/app/create/CreateTabs";
 import { BuyDcaCard } from "@/components/app/create/BuyDcaCard";
 import { NotConfigured } from "@/components/app/create/blocks";
-import { BUY_DCA_URL } from "@/lib/config";
+import { BUY_DCA_URL, isZero } from "@/lib/config";
 
 /**
  * /app/buy — the "Buy $DCA" tab. Hybrid: when the router can route USDG → $DCA on this chain the in-app
  * swap card is shown; when it cannot and BUY_DCA_URL points off-site (the Pons listing) a hand-off card
- * takes over; otherwise the token page's "no route yet" notice. The tab strip above is shared with
- * /app/create and /app/create/2 and navigates client-side, so the wallet stays connected.
+ * takes over; otherwise a "no route yet" notice that points to Start a plan. The tab strip above is shared with
+ * /app/create and /app/create/2 and navigates client-side, so the wallet stays connected. Every in-site
+ * "Buy $DCA" (landing, sidebar, token page) lands here; the in-app ones only link while `useBuyDcaAvailable` says
+ * there is something to buy, the hand-off is only ever off-site, and the notice never points back at a "Buy $DCA".
  */
 export default function BuyDcaPage() {
   const { dir, configured, isLoading } = useDirectory();
@@ -32,15 +36,15 @@ export default function BuyDcaPage() {
   } else if (route.available && dir) {
     body = <BuyDcaCard dir={dir} />;
   } else if (BUY_DCA_EXTERNAL) {
-    body = <PonsHandoff />;
+    body = <PonsHandoff dca={dir && !isZero(dir.dca) ? dir.dca : undefined} />;
   } else {
     body = (
       <>
         <Notice kind="info">No $DCA/USDG route on this chain yet.</Notice>
         <p className="mt-3 text-center text-[12.5px] text-ink-3">
           Until a pool is approved on the router there is nothing to buy in-app.{" "}
-          <Link href="/app/token" className="text-lime hover:underline">
-            About the token →
+          <Link href="/app/create" className="text-lime hover:underline">
+            Start a plan instead →
           </Link>
         </p>
       </>
@@ -55,8 +59,8 @@ export default function BuyDcaPage() {
   );
 }
 
-/** Shown when the router has no in-app route but the token is listed off-site: send people there. */
-function PonsHandoff() {
+/** Shown when the router has no in-app route but the token is listed off-site: send people there (and offer "Add to MetaMask"). */
+function PonsHandoff({ dca }: { dca?: Address }) {
   const host = (() => {
     try {
       return new URL(BUY_DCA_URL).host;
@@ -72,13 +76,14 @@ function PonsHandoff() {
         tab.
       </p>
       <div className="mt-5 grid gap-2">
-        <BuyDcaLink className="btn-primary btn-lg w-full rounded-xl">
+        <a href={BUY_DCA_URL} target="_blank" rel="noreferrer" className="btn-primary btn-lg w-full rounded-xl">
           Buy on Pons
           <Icon name="external" size={13} className="ml-1.5" />
-        </BuyDcaLink>
+        </a>
         <Link href="/app/create" className="btn-ghost w-full">
           Start a plan instead
         </Link>
+        {dca && <AddToWalletButton address={dca} symbol="DCA" decimals={18} className="justify-self-center" />}
       </div>
       <p className="mt-3 text-[11.5px] text-ink-3">{host}</p>
     </div>

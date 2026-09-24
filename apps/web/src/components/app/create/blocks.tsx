@@ -2,23 +2,24 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Notice, Spinner, StockAvatar, Countdown, Icon, Tip } from "@/components/ui";
+import { formatUnits } from "viem";
+import { Notice, Spinner, Countdown, Icon, Tip } from "@/components/ui";
 import { BoostCard } from "@/components/app/BoostCard";
 import { TxFlowDialog } from "@/components/app/TxFlowDialog";
 import { ConnectButton } from "@/components/ConnectButton";
 import { AddToWalletButton, useAddToWalletVisible } from "@/components/app/AddToWalletButton";
-import { usePerkThresholds } from "@/hooks/useProtocol";
+import { usePerkThresholds, useDcaToken } from "@/hooks/useProtocol";
 import { fmtUsd, fmtUnits, fmtUnitsCompact, fmtBps, tsToShort } from "@/lib/format";
-import { tickerName } from "@/lib/tickers";
-import { VAULT_KINDS, DOCS_PATH, isZero, type VaultKind } from "@/lib/config";
+import { VAULT_KINDS, DOCS_PATH, USDG_DECIMALS, isZero, type VaultKind } from "@/lib/config";
 import { ZAP_SLIPPAGE_BPS, type CreatePlanModel, type Pay } from "./useCreatePlan";
-import { Box, Coin, Detail, Dropdown, OrderSummary, StockPicker, StockPickerDialog, clean, everyLabel } from "./fields";
+import { Box, ChoiceAvatar, Coin, Detail, Dropdown, OrderSummary, StockPickerDialog, choiceLabel, clean, everyLabel } from "./fields";
+import { BuyDcaButton } from "./CreateTabs";
 
 /*
  * The create card, cut into blocks. A page is a list of these in some order, all fed the same model `m`
  * from `useCreatePlan()`; nothing in a block changes what is sent — only how the form reads. `/app/create`
  * is the swap-card order (fund → buy → every | per buy); `/app/create/2` is the sentence order
- * (spend X every Y → on → fund plan → summary).
+ * (spend X every Y → on → fund plan → summary). Both pick the stock with the same row and dialog (`StockRow`).
  */
 
 type Props = { m: CreatePlanModel };
@@ -169,10 +170,13 @@ function RunsLine({ m }: Props) {
   );
 }
 
-/** The down arrow between "Fund with" and "Buy" on the swap-card layout. */
+/**
+ * The down arrow between "Fund with" and "Buy" on the swap-card layout. Decorative: its full-width strip overlaps both
+ * boxes, so it lets clicks through — the top of the "Buy" row must still open the stock picker.
+ */
 export function Arrow() {
   return (
-    <div className="relative z-10 -my-2.5 flex justify-center" aria-hidden>
+    <div className="pointer-events-none relative z-10 -my-2.5 flex justify-center" aria-hidden>
       <span className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-line-strong bg-surface-2 text-ink-3">
         <Icon name="arrow" size={14} className="rotate-90" />
       </span>
@@ -180,54 +184,30 @@ export function Arrow() {
   );
 }
 
-/** The stock: company name, the searchable pill, and the "Popular" chips (skeletons until the ranking is in). */
-export function StockBox({ m, label = "Buy", className = "" }: Props & { label?: string; className?: string }) {
-  const { stockObj, stockAddr, ranked, top, rankReady, setStock } = m;
+/** One line when the page was opened on a `?stock=` ticker that no frequency buys: the form keeps its usual default. */
+function ParamUnavailable({ m, className = "" }: Props & { className?: string }) {
+  if (!m.paramUnavailable) return null;
   return (
-    <Box label={label} className={className}>
-      <div className="flex items-center justify-between gap-3">
-        {/* The selected-stock line: name, then "Add to wallet" where the price used to be (outside the picker's option rows). */}
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 truncate text-[13px] text-ink-3">{stockObj ? tickerName(stockObj.symbol) : "Pick a stock"}</span>
-          {stockObj && <AddToWalletButton address={stockObj.address} symbol={stockObj.symbol} decimals={stockObj.decimals} className="shrink-0" />}
-        </span>
-        <StockPicker stocks={ranked} value={stockAddr ?? ""} onSelect={setStock} />
-      </div>
-      {(!rankReady || top.length > 0) && (
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          {rankReady
-            ? top.map((s) => {
-                const active = stockAddr === s.address;
-                return (
-                  <button
-                    key={s.address}
-                    type="button"
-                    onClick={() => setStock(s.address)}
-                    className={`inline-flex h-6 items-center gap-1 rounded-full border pr-2 pl-0.5 text-[11.5px] font-medium transition-colors ${
-                      active ? "border-lime bg-lime/10 text-ink" : "border-line text-ink-2 hover:border-line-strong hover:text-ink"
-                    }`}
-                  >
-                    <StockAvatar symbol={s.symbol} size={18} />
-                    {s.symbol}
-                  </button>
-                );
-              })
-            : Array.from({ length: 5 }, (_, i) => <span key={i} className="h-6 w-16 animate-pulse rounded-full bg-surface-4" aria-hidden />)}
-        </div>
-      )}
-    </Box>
+    <div className={className}>
+      <Notice>{m.paramUnavailable} isn&apos;t available for plans yet.</Notice>
+    </div>
   );
 }
 
 /**
- * /app/create/2's stock field: one row, the label on the left and the chosen stock on the right; the whole row opens
- * the picker dialog (search, the largest stocks as pills, price and market cap per row). Once a wallet is connected
- * the row also carries "Add to MetaMask" for the chosen stock — outside the row's button, never nested in it.
+ * The stock field (/app/create's "Buy", /app/create/2's "On"): one row, the label on the left and the chosen stock on
+ * the right; the whole row opens the picker dialog (search, the largest stocks as pills, price and market cap per row).
+ * With `addToWallet` and a wallet connected, the row also carries "Add to MetaMask" for the chosen stock under it —
+ * outside the row's button, never nested in it (only /app/create asks for it). $DCA, when this frequency buys it,
+ * heads the dialog's list with the router price the token page shows.
  */
-export function StockRow({ m, label = "On", className = "" }: Props & { label?: string; className?: string }) {
+export function StockRow({ m, label = "On", addToWallet = false, className = "" }: Props & { label?: string; addToWallet?: boolean; className?: string }) {
   const [open, setOpen] = useState(false);
   const walletLine = useAddToWalletVisible();
-  const { stockObj, stockAddr, ranked, rankReady, setStock } = m;
+  const { stockObj, stockAddr, choices, dca, dir, rankReady, setStock } = m;
+  const picked = stockObj && choiceLabel(stockObj, dca?.address);
+  const token = useDcaToken(dca ? dir : undefined);
+  const usd = (v?: bigint) => (v === undefined ? undefined : Number(formatUnits(v, USDG_DECIMALS)));
   return (
     <>
       <div
@@ -240,13 +220,13 @@ export function StockRow({ m, label = "On", className = "" }: Props & { label?: 
             type="button"
             onClick={() => setOpen(true)}
             aria-haspopup="dialog"
-            aria-label={stockObj ? `Stock: ${stockObj.symbol}, ${tickerName(stockObj.symbol)}. Change` : "Select a stock"}
+            aria-label={stockObj && picked ? `Stock: ${picked.symbol}, ${picked.name}. Change` : "Select a stock"}
             className="flex h-8 items-center gap-2 text-[17px] font-semibold text-ink after:absolute after:inset-0 after:rounded-xl"
           >
-            {stockObj ? (
+            {stockObj && picked ? (
               <>
-                <StockAvatar symbol={stockObj.symbol} size={28} />
-                {stockObj.symbol}
+                <ChoiceAvatar symbol={stockObj.symbol} dca={picked.dca} size={28} />
+                {picked.symbol}
               </>
             ) : rankReady ? (
               <span className="text-[15px] font-medium text-ink-2">Select stock</span>
@@ -255,10 +235,22 @@ export function StockRow({ m, label = "On", className = "" }: Props & { label?: 
             )}
             <Icon name="chevron" size={16} className="text-ink-3" />
           </button>
-          {/* {stockObj && walletLine && <AddToWalletButton address={stockObj.address} symbol={stockObj.symbol} decimals={stockObj.decimals} className="relative z-10" />} */}
+          {/* z-10 lifts it over the stretched ::after above, so it is its own click target. */}
+          {addToWallet && stockObj && walletLine && (
+            <AddToWalletButton address={stockObj.address} symbol={stockObj.symbol} decimals={stockObj.decimals} className="relative z-10" />
+          )}
         </span>
       </div>
-      <StockPickerDialog open={open} onClose={() => setOpen(false)} stocks={ranked} value={stockAddr ?? ""} onSelect={setStock} />
+      <ParamUnavailable m={m} className="mt-2" />
+      <StockPickerDialog
+        open={open}
+        onClose={() => setOpen(false)}
+        stocks={choices}
+        value={stockAddr ?? ""}
+        onSelect={setStock}
+        dca={dca?.address}
+        dcaQuote={{ price: usd(token.price), marketCap: usd(token.marketCap) }}
+      />
     </>
   );
 }
@@ -386,13 +378,14 @@ export function MonthlyLine({ m }: Props) {
  * paused or topped up and come from the vault's schedule (first buy = next period start, one period per buy).
  */
 export function PlanSummary({ m }: Props) {
-  const { perBuyOk, perBuyWei, stockObj, kind, runs, upfrontUsdg, fundedEnough, underfunded, lastBuyAt, monthly, pay } = m;
+  const { perBuyOk, perBuyWei, stockObj, dca, kind, runs, upfrontUsdg, fundedEnough, underfunded, lastBuyAt, monthly, pay } = m;
   if (!perBuyOk || !stockObj) return null;
   const approx = pay === "ETH" ? "≈ " : "";
   const funded = !!runs && fundedEnough && upfrontUsdg !== undefined;
   return (
     <p className="mt-3 text-center text-[12.5px] leading-relaxed text-ink-3">
-      <span className="num text-ink">{fmtUsd(perBuyWei)}</span> of <span className="font-medium text-ink">{stockObj.symbol}</span> every {everyLabel(kind)}
+      <span className="num text-ink">{fmtUsd(perBuyWei)}</span> of <span className="font-medium text-ink">{choiceLabel(stockObj, dca?.address).symbol}</span> every{" "}
+      {everyLabel(kind)}
       {underfunded ? (
         <>
           {" · "}
@@ -440,44 +433,68 @@ function fmtWhen(ts: bigint, kind: VaultKind): string {
 
 /**
  * $DCA holder-perk banner under the create card: holding the threshold (100k $DCA by default, read live from the
- * vaults) has every buy sent straight to the wallet and halves the per-buy fee. Links to the Buy $DCA tab. A wallet
- * that already clears both thresholds sees a quiet confirmation instead; with no $DCA on this deployment, nothing.
+ * vaults) has every buy sent straight to the wallet and halves the per-buy fee. Links to the Buy $DCA tab
+ * (`BuyDcaButton`: disabled while there is nothing to buy). A wallet that already clears both thresholds sees a quiet
+ * confirmation instead; with no $DCA on this deployment, nothing. `title` puts a bold headline over the copy
+ * (/app/create: "Hold $DCA for automatic distributions"), which then gives the amounts rather than repeat "Hold". The
+ * headline stays over the confirmation too: every local test wallet holds past the thresholds, so it would never show.
  */
-export function DcaPerksBanner({ m }: Props) {
+export function DcaPerksBanner({ m, title }: Props & { title?: string }) {
   const t = usePerkThresholds();
   const { dir, address, dcaBal } = m;
   if (!dir || isZero(dir.dca)) return null;
   const bal = dcaBal ?? 0n;
   if (address && bal >= t.autoDistribute && bal >= t.feeHalve) {
+    const working = "Your $DCA is working: every buy is sent straight to your wallet and your buy fee is halved.";
     return (
       <div className="mt-3 flex items-center gap-2.5 rounded-xl border border-line px-4 py-3 text-[12.5px] text-ink-2">
         <Icon name="check" size={14} className="shrink-0 text-good" />
-        <span>Your $DCA is working: every buy is sent straight to your wallet and your buy fee is halved.</span>
+        {title ? (
+          <div className="min-w-0 leading-snug">
+            <p className="mb-0.5 text-[13px] font-semibold text-ink">{title}</p>
+            <p>{working}</p>
+          </div>
+        ) : (
+          <span>{working}</span>
+        )}
       </div>
     );
   }
   const same = t.autoDistribute === t.feeHalve;
+  const amount = (v: bigint, unit = true) => (
+    <span className="font-semibold text-ink">
+      {fmtUnitsCompact(v, 18)}
+      {unit && " $DCA"}
+    </span>
+  );
   return (
     <div className="mt-3 flex items-center gap-3 rounded-xl border border-lime/25 bg-lime/[0.07] px-3.5 py-3 sm:px-4">
       <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lime text-lime-ink" aria-hidden>
         <Icon name="bolt" size={15} />
       </span>
-      <p className="min-w-0 flex-1 text-[12.5px] leading-snug text-ink-2">
-        {same ? (
-          <>
-            Hold <span className="font-semibold text-ink">{fmtUnitsCompact(t.feeHalve, 18)} $DCA</span> and your stock is sent straight to your wallet{" "}
-            <span className="font-semibold text-ink">and</span> your fees are halved.
-          </>
-        ) : (
-          <>
-            Hold <span className="font-semibold text-ink">{fmtUnitsCompact(t.autoDistribute, 18)} $DCA</span> and your stock is sent straight to your wallet;
-            hold <span className="font-semibold text-ink">{fmtUnitsCompact(t.feeHalve, 18)}</span> and your fees are halved too.
-          </>
-        )}
-      </p>
-      <Link href="/app/buy" className="btn-secondary h-8 shrink-0 rounded-lg px-3 text-[12.5px]">
-        Buy $DCA
-      </Link>
+      <div className="min-w-0 flex-1 text-[12.5px] leading-snug text-ink-2">
+        {title && <p className="mb-0.5 text-[13px] font-semibold text-ink">{title}</p>}
+        <p>
+          {title ? (
+            same ? (
+              <>From {amount(t.feeHalve)}, every buy is sent straight to your wallet and your buy fee is halved.</>
+            ) : (
+              <>
+                From {amount(t.autoDistribute)}, every buy is sent straight to your wallet; from {amount(t.feeHalve, false)}, your buy fee is halved too.
+              </>
+            )
+          ) : same ? (
+            <>
+              Hold {amount(t.feeHalve)} and your stock is sent straight to your wallet <span className="font-semibold text-ink">and</span> your fees are halved.
+            </>
+          ) : (
+            <>
+              Hold {amount(t.autoDistribute)} and your stock is sent straight to your wallet; hold {amount(t.feeHalve, false)} and your fees are halved too.
+            </>
+          )}
+        </p>
+      </div>
+      <BuyDcaButton className="btn-secondary h-8 shrink-0 rounded-lg px-3 text-[12.5px]" />
     </div>
   );
 }
@@ -563,13 +580,16 @@ export function CreateFlowDialog({ m }: Props) {
   );
 }
 
-/** The small print under the card. */
+/** The small print under the card; with $DCA chosen, the utility-token line the Buy $DCA card carries instead. */
 export function Footnote({ m }: Props) {
-  const { info } = m;
+  const { info, stockObj, dca } = m;
+  const isDca = !!stockObj && choiceLabel(stockObj, dca?.address).dca;
   return (
     <p className="mt-3 px-2 text-center text-[11.5px] leading-normal text-ink-3">
-      Stock Tokens are economic exposure, not shareholder rights.
-      {info?.fees ? ` Claiming stock costs ${fmtBps(info.fees.claimFeeBps)} (free for $DCA holders).` : ""}{" "}
+      {isDca
+        ? "$DCA is a protocol utility token, not equity or a promise of returns. The $DCA a plan buys counts toward holder perks once it is in your wallet."
+        : "Stock Tokens are economic exposure, not shareholder rights."}
+      {info?.fees ? ` Claiming ${isDca ? "$DCA" : "stock"} costs ${fmtBps(info.fees.claimFeeBps)} (free for $DCA holders).` : ""}{" "}
       <Link href={`${DOCS_PATH}#dca`} className="text-lime hover:underline">
         About $DCA →
       </Link>

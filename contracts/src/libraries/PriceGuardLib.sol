@@ -21,15 +21,30 @@ import {PriceGuard, PriceFeed} from "../vault/VaultTypes.sol";
 ///      the ERC-8056 `uiMultiplier`, i.e. they price one RAW token, which is what the pools trade. USDG is
 ///      treated as 1 USD. Robinhood Chain is an Arbitrum Orbit chain: an optional L2 sequencer uptime feed with
 ///      a grace period is supported (Chainlink's recommendation for L2s). A stale, zero or missing feed is a
-///      refusal, never a silent pass, when `requireFeed` is on.
+///      refusal, never a silent pass, when `requireFeed` is on. The one deliberate pass is a stock the owner has
+///      marked `UNGUARDED`.
 library PriceGuardLib {
     uint16 internal constant MAX_DEVIATION_BPS = 1_000;
     uint256 internal constant BPS = 10_000;
 
-    /// @notice Set (or clear with `feed == address(0)`) the reference feed of `stock`.
+    /// @notice Feed value that marks a stock as deliberately bought without an external price floor:
+    ///         `setPriceFeed(stock, UNGUARDED, 0)`. Meant for $DCA, which has no Chainlink feed and whose own
+    ///         trading tax is what defends it: a sandwich pays that tax on both legs, while the router's impact cap
+    ///         keeps a page's own price move (all an attacker can capture) below it. The router quote, slippage,
+    ///         impact cap and page cap still apply; `requireFeed` counts the stock as configured. Do not use it for a
+    ///         token that trades anywhere the vault can route without that tax.
+    address internal constant UNGUARDED = address(type(uint160).max);
+
+    /// @notice Set (or clear with `feed == address(0)`) the reference feed of `stock`; `UNGUARDED` (any
+    ///         `maxStaleness`, stored as 0) opts the stock out of the floor.
     function setFeed(mapping(address => PriceFeed) storage feeds, address stock, address feed, uint32 maxStaleness)
         external
     {
+        if (feed == UNGUARDED) {
+            feeds[stock] = PriceFeed({feed: UNGUARDED, maxStaleness: 0, feedDecimals: 0, stockDecimals: 0});
+            emit IPlanVault.PriceFeedSet(stock, UNGUARDED, 0);
+            return;
+        }
         if (feed == address(0)) {
             delete feeds[stock];
             emit IPlanVault.PriceFeedSet(stock, address(0), 0);
@@ -68,7 +83,8 @@ library PriceGuardLib {
     }
 
     /// @notice Revert unless `minOut` — the least the swap is allowed to deliver for `amountIn` USDG — is within
-    ///         `maxDeviationBps` of the reference output. Stocks without a feed pass only when `requireFeed` is off.
+    ///         `maxDeviationBps` of the reference output. Stocks without a feed pass only when `requireFeed` is off;
+    ///         an `UNGUARDED` stock always passes.
     function check(
         PriceGuard storage g,
         mapping(address => PriceFeed) storage feeds,
@@ -77,6 +93,7 @@ library PriceGuardLib {
         uint256 minOut,
         uint8 usdgDecimals
     ) external view {
+        if (feeds[stock].feed == UNGUARDED) return;
         (uint256 expected, bool hasFeed) = referenceOut(g, feeds, stock, amountIn, usdgDecimals);
         if (!hasFeed) {
             if (g.requireFeed) revert IPlanVault.PriceFeedMissing(stock);
@@ -86,7 +103,8 @@ library PriceGuardLib {
         if (minOut < floor) revert IPlanVault.PriceDeviates(stock, minOut, floor);
     }
 
-    /// @notice Stock (raw units) that `amountIn` USDG buys at the feed price, or (0, false) if `stock` has no feed.
+    /// @notice Stock (raw units) that `amountIn` USDG buys at the feed price, or (0, false) if `stock` has no feed
+    ///         (or is `UNGUARDED`).
     ///         Reverts `PriceFeedStale` / `SequencerDown` instead of returning an unusable reference.
     function referenceOut(
         PriceGuard storage g,
@@ -97,7 +115,7 @@ library PriceGuardLib {
     ) public view returns (uint256 expected, bool hasFeed) {
         PriceFeed storage f = feeds[stock];
         address feed = f.feed;
-        if (feed == address(0)) return (0, false);
+        if (feed == address(0) || feed == UNGUARDED) return (0, false);
         _checkSequencer(g);
         (, int256 answer,, uint256 updatedAt,) = AggregatorV3Interface(feed).latestRoundData();
         // forge-lint: disable-next-line(block-timestamp)

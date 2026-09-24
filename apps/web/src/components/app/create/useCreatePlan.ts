@@ -1,24 +1,53 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { formatEther, formatUnits, parseEther } from "viem";
 import { useAccount, useReadContract } from "wagmi";
-import { useDirectory, useRankedStocks, useVaults, useUser, useQuote, useBoostApys, boostAvailable } from "@/hooks/useProtocol";
+import { useDirectory, useRankedStocks, useStocks, useKindsBuying, useVaults, useUser, useQuote, useBoostApys, boostAvailable, findStock, type Directory } from "@/hooks/useProtocol";
 import { useTxSequence, type TxStep } from "@/hooks/useTx";
 import { PlanVaultAbi, ERC20Abi } from "@/abi";
 import type { FlowStep } from "@/components/app/TxFlowDialog";
-import { fmtUsd, fmtUnits, feeOf } from "@/lib/format";
+import { fmtUsd, fmtUnits, feeOf, short } from "@/lib/format";
 import { VAULT_META, ZERO, USDG_DECIMALS, buysPerMonthOf, type VaultKind } from "@/lib/config";
+import { coverageCopy } from "@/lib/planFunds";
 import { safeParse, safeParseEth, trimEth } from "./fields";
 
 export type Pay = "USDG" | "ETH";
 /** What "Start plan" was pressed with, frozen for the transaction dialog so later refetches cannot reshape it mid-flight. */
-export type Order = { flow: FlowStep[]; symbol: string; perBuy: bigint; kind: VaultKind; funded: string; boost: boolean };
+export type Order = { flow: FlowStep[]; symbol: string; dca: boolean; perBuy: bigint; kind: VaultKind; funded: string; boost: boolean };
 
 export const PER_MIN_FALLBACK = 10n * 10n ** BigInt(USDG_DECIMALS); // vault default until the chain answers
 export const ETH_GAS_RESERVE = parseEther("0.01");
 /** Slippage applied to the ETH → USDG conversion quote when starting a plan with ETH. */
 export const ZAP_SLIPPAGE_BPS = 50n;
+
+/**
+ * `?stock=<ticker or address>` (the landing pages' stock links): the stock the form opens on, kept until the user picks
+ * one themselves (`clear`, which the form's pickers call). It is looked up by ticker or address in the current registry
+ * list on every render, so a list restored from the last visit and then replaced by the refetch still resolves. Once
+ * the fresh list and the keeper's pairs are in, it is decided once: a frequency that does not buy it switches to the
+ * first one that does; when none does, or the registry does not list it, `unavailable` names it for the Buy block's
+ * notice and the usual default stands. While `active`, the form's pick is `stock` if this frequency buys it, else
+ * nothing ("Pick a stock", like any pick the frequency does not buy). Read from `window.location` after mount:
+ * `useSearchParams` would need a Suspense boundary around the page.
+ */
+export function useStockParam(dir: Directory | undefined, kind: VaultKind, setKind: (kind: VaultKind) => void) {
+  const [wanted, setWanted] = useState<string | null>(null);
+  const [settled, setSettled] = useState(false);
+  useEffect(() => setWanted(new URLSearchParams(window.location.search).get("stock")?.trim() || null), []);
+  const { stocks: listed, fresh: listFresh } = useStocks(dir?.registry);
+  const { kindsBuying, fresh: pairsFresh } = useKindsBuying();
+  const hit = wanted ? findStock(listed, wanted) : undefined;
+  const kinds = hit ? kindsBuying(hit.address) : undefined;
+  useEffect(() => {
+    if (!wanted || settled || !listFresh || !pairsFresh) return;
+    setSettled(true);
+    if (kinds && kinds.length > 0 && !kinds.some((k) => k === kind)) setKind(kinds[0]);
+  }, [wanted, settled, listFresh, pairsFresh, kinds, kind, setKind]);
+  const clear = useCallback(() => setWanted(null), []);
+  const unavailable = wanted && settled && !kinds?.length ? (hit?.symbol ?? (/^0x[0-9a-f]{40}$/i.test(wanted) ? short(wanted) : wanted.toUpperCase())) : undefined;
+  return { active: !!wanted && !unavailable, stock: hit, unavailable, clear };
+}
 
 /** Everything a create-plan layout needs: the hook's return value, passed to the blocks as `m`. */
 export type CreatePlanModel = ReturnType<typeof useCreatePlan>;
@@ -32,11 +61,22 @@ export type CreatePlanModel = ReturnType<typeof useCreatePlan>;
 export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKind } = {}) {
   const { address } = useAccount();
   const { dir, vaults, configured } = useDirectory();
-  const { stocks, ranked, top, ready: rankReady } = useRankedStocks(dir);
+  const [kind, setKind] = useState<VaultKind>(defaultKind);
+  // Only stocks this frequency's vault will actually buy (an active keeper job, and a price feed where required).
+  const { stocks, ranked, top, dca, choices, preferred, ready: rankReady } = useRankedStocks(dir, vaults?.[kind]);
   const { infos, byKind, refetch: refetchVaults } = useVaults(vaults);
 
-  const [stock, setStock] = useState<string>("");
-  const [kind, setKind] = useState<VaultKind>(defaultKind);
+  const param = useStockParam(dir, kind, setKind);
+  const { clear: clearParam } = param;
+  const [stock, setPicked] = useState<string>("");
+  /** The user's own pick (every picker calls this): it also drops a `?stock=` link. */
+  const setStock = useCallback(
+    (address: string) => {
+      clearParam();
+      setPicked(address);
+    },
+    [clearParam],
+  );
   const [perBuy, setPerBuy] = useState("100");
   const [pay, setPay] = useState<Pay>("USDG");
   const [upfront, setUpfront] = useState("");
@@ -51,8 +91,14 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
   const { apyOf } = useBoostApys(infos);
   const boostApy = apyOf(info?.boostStrategy);
   const user = useUser(dir, vault);
-  // Until the user picks, the plan buys the most popular stock (once the ranking is in).
-  const stockObj = stocks.find((s) => s.address === stock) ?? top[0];
+  // Until the user picks: the `?stock=` link's stock while it stands, else $DCA where this frequency buys it, else the most
+  // popular stock (once the ranking is in). A pick (or link) the frequency does not buy reads "Pick a stock" rather than
+  // silently becoming a different stock.
+  const stockObj = stock
+    ? stocks.find((s) => s.address === stock)
+    : param.active
+      ? stocks.find((s) => s.address === param.stock?.address)
+      : preferred;
   const stockAddr = stockObj?.address;
 
   const perBuyWei = safeParse(perBuy, USDG_DECIMALS);
@@ -154,6 +200,7 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
     setOrder({
       flow,
       symbol: stockObj?.symbol ?? "?",
+      dca: !!dca && stockObj?.address === dca.address,
       perBuy: perBuyWei,
       kind,
       funded: pay === "USDG" ? fmtUsd(usdgAmount) : `${fmtUnits(value, 18)} ETH${zapQuote.data ? ` (≈ ${fmtUsd(zapQuote.data.amountOut)})` : ""}`,
@@ -188,10 +235,13 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
    * valid and the user may mean to top it up.
    */
   const underfunded = fundedEnough && upfrontUsdg !== undefined && !!perBuyWei && upfrontUsdg < perBuyWei;
-  /** How far the funding goes: "covers N buys", or "less than one buy" (see `underfunded`); undefined until funded. */
+  /**
+   * How far the funding goes, worded as on My plans (`coverageCopy`): "covers N buys", "covers N buys + a $X final buy",
+   * or "less than one buy" (see `underfunded`); undefined until funded.
+   */
   const coverage =
-    buysCovered !== undefined && buysCovered > 0
-      ? `covers ${buysCovered.toLocaleString()} ${buysCovered === 1 ? "buy" : "buys"}`
+    buysCovered !== undefined && buysCovered > 0 && upfrontUsdg !== undefined && perBuyWei
+      ? `covers ${coverageCopy(upfrontUsdg, perBuyWei)}`
       : underfunded
         ? "less than one buy"
         : undefined;
@@ -202,14 +252,18 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
     dir,
     configured,
     info,
-    // stock
+    // stock ($DCA, when this frequency buys it, is `dca`: first in `choices`, never in `ranked` / `top`)
     stocks,
     ranked,
     top,
+    dca,
+    choices,
     rankReady,
     stockObj,
     stockAddr,
     setStock,
+    // a `?stock=` ticker no frequency buys (or the registry does not list), for the Buy block's notice
+    paramUnavailable: param.unavailable,
     // frequency
     kind,
     setKind,

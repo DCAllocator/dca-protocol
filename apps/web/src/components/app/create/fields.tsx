@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { parseEther, parseUnits } from "viem";
+import { parseEther, parseUnits, type Address } from "viem";
 import { TOP_STOCKS, type Stock } from "@/hooks/useProtocol";
 import { useStockMarket, fmtPrice, fmtCap, fmtChange } from "@/hooks/useStockMarket";
 import { StockAvatar, Icon, Tip, Modal } from "@/components/ui";
+import { Logo } from "@/components/Logo";
 import { fmtUsd } from "@/lib/format";
 import { tickerName } from "@/lib/tickers";
 import { BOOST, VAULT_META, type VaultKind } from "@/lib/config";
@@ -56,16 +57,32 @@ export function Detail({ k, children }: { k: string; children: ReactNode }) {
   );
 }
 
+/** $DCA as the pickers show it (see `choiceLabel`). */
+const DCA_CHOICE = { dca: true, symbol: "$DCA", name: "DCA Token" } as const;
+
+/**
+ * How a picker shows a choice: $DCA — the registry entry `useRankedStocks` matched to the directory's token by address,
+ * passed in as `dca` — as "$DCA" / "DCA Token"; a Stock Token by its ticker and company name. Never decided by ticker.
+ */
+export function choiceLabel(s: { address: Address; symbol: string }, dca?: Address): { dca: boolean; symbol: string; name: string } {
+  return dca && s.address.toLowerCase() === dca.toLowerCase() ? DCA_CHOICE : { dca: false, symbol: s.symbol, name: tickerName(s.symbol) };
+}
+
+/** A choice's mark: our own for $DCA, the company's logo for a Stock Token. */
+export function ChoiceAvatar({ symbol, dca = false, size = 24 }: { symbol: string; dca?: boolean; size?: number }) {
+  return dca ? <Logo size={size} /> : <StockAvatar symbol={symbol} size={size} />;
+}
+
 /** The plan being started, recalled at the top of the transaction dialog. */
 export function OrderSummary({ order }: { order: Order }) {
-  const name = tickerName(order.symbol);
+  const { symbol, name } = order.dca ? DCA_CHOICE : { symbol: order.symbol, name: tickerName(order.symbol) };
   return (
     <div className="flex items-center gap-3 rounded-xl border border-line bg-surface-3 px-3.5 py-3">
-      <StockAvatar symbol={order.symbol} size={36} />
+      <ChoiceAvatar symbol={order.symbol} dca={order.dca} size={36} />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2 text-[14px] font-medium text-ink">
-          {order.symbol}
-          {name !== order.symbol && <span className="truncate text-[12.5px] font-normal text-ink-3">{name}</span>}
+          {symbol}
+          {name !== symbol && <span className="truncate text-[12.5px] font-normal text-ink-3">{name}</span>}
         </div>
         <div className="text-[12.5px] text-ink-3">
           <span className="num text-ink-2">{fmtUsd(order.perBuy)}</span> every {everyLabel(order.kind)} · funded with <span className="num text-ink-2">{order.funded}</span>
@@ -81,17 +98,30 @@ export function OrderSummary({ order }: { order: Order }) {
   );
 }
 
-/** USDG / ETH mark for the funding pill. */
+/** USDG / ETH mark for the funding pill: a lime "$" for USDG, Ethereum's blue mark for ETH. */
 export function Coin({ unit }: { unit: Pay }) {
+  if (unit === "ETH") return <EthMark />;
   return (
-    <span
-      className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
-        unit === "USDG" ? "bg-lime text-lime-ink" : "bg-surface-4 text-ink"
-      }`}
-      aria-hidden
-    >
-      {unit === "USDG" ? "$" : "Ξ"}
+    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-lime text-[11px] font-bold text-lime-ink" aria-hidden>
+      $
     </span>
+  );
+}
+
+/** Ethereum's mark, white on its blue (#627EEA) disc, the way wallets and exchanges show ETH. Same box as `Coin`. */
+function EthMark() {
+  return (
+    <svg viewBox="0 0 32 32" className="h-6 w-6 shrink-0" aria-hidden>
+      <circle cx="16" cy="16" r="16" fill="#627EEA" />
+      <g fill="#FFF">
+        <path fillOpacity=".602" d="M16.498 4v8.87l7.497 3.35z" />
+        <path d="M16.498 4 9 16.22l7.498-3.35z" />
+        <path fillOpacity=".602" d="M16.498 21.968v6.027L24 17.616z" />
+        <path d="M16.498 27.995v-6.028L9 17.616z" />
+        <path fillOpacity=".2" d="m16.498 20.573 7.497-4.353-7.497-3.348z" />
+        <path fillOpacity=".602" d="m9 16.22 7.498 4.353v-7.701z" />
+      </g>
+    </svg>
   );
 }
 
@@ -155,68 +185,13 @@ export function Dropdown({
 }
 
 /**
- * Token-selector pill for the stock, with the ranked, searchable list beneath. No prices on purpose: the
- * picker does not need one to choose a stock, and quoting every registry stock cost one eth_call each.
- */
-export function StockPicker({ stocks, value, onSelect }: { stocks: Stock[]; value: string; onSelect: (address: string) => void }) {
-  const [query, setQuery] = useState("");
-  const q = query.trim().toLowerCase();
-  const filtered = q ? stocks.filter((s) => s.symbol.toLowerCase().includes(q) || tickerName(s.symbol).toLowerCase().includes(q)) : stocks;
-  const selected = stocks.find((s) => s.address === value);
-  return (
-    <Dropdown
-      width="w-[min(20rem,calc(100vw-3rem))]"
-      trigger={
-        selected ? (
-          <>
-            <StockAvatar symbol={selected.symbol} size={24} />
-            {selected.symbol}
-          </>
-        ) : (
-          <span className="pl-1.5 font-medium text-ink-2">Select stock</span>
-        )
-      }
-    >
-      {(close) => (
-        <>
-          <div className="sticky top-0 border-b border-line bg-surface-3 p-1.5">
-            <input autoFocus className="input h-9" placeholder="Search a stock (e.g. NVDA, Apple)" value={query} onChange={(e) => setQuery(e.target.value)} />
-          </div>
-          {filtered.length === 0 ? (
-            <div className="px-3 py-6 text-center text-[12.5px] text-ink-3">No stocks match &ldquo;{query}&rdquo;.</div>
-          ) : (
-            filtered.map((s) => (
-              <button
-                key={s.address}
-                type="button"
-                role="option"
-                aria-selected={s.address === value}
-                onClick={() => {
-                  onSelect(s.address);
-                  setQuery("");
-                  close();
-                }}
-                className={`menu-item gap-2.5 ${s.address === value ? "bg-surface-4 text-ink" : ""}`}
-              >
-                <StockAvatar symbol={s.symbol} size={22} />
-                <span className="min-w-0 flex-1 truncate text-left">
-                  <span className="text-[13px] font-medium text-ink">{s.symbol}</span>
-                  {tickerName(s.symbol) !== s.symbol && <span className="ml-1.5 text-[12px] text-ink-3">{tickerName(s.symbol)}</span>}
-                </span>
-              </button>
-            ))
-          )}
-        </>
-      )}
-    </Dropdown>
-  );
-}
-
-/**
- * The stock picker as a dialog (/app/create/2's "On" row opens it): a search box, the largest stocks as pills, then
- * every approved stock as a row with its ticker, name, price, 24 h change and market cap. Ordered by live on-chain
+ * The stock picker as a dialog (both create cards' stock row opens it, see `StockRow`): a search box, the largest
+ * stocks as pills, then every approved stock as a row with its ticker, name, price, 24 h change and market cap. Ordered by live on-chain
  * market cap (/api/stock-market); until that answers — or if it is down — the snapshot order `stocks` arrives in
  * stands and the numbers show dashes, so picking never waits on prices. Enter picks the first match.
+ *
+ * $DCA (`dca`, see `choiceLabel`) is not on that feed: it stays pinned first, is never one of the market-cap pills, and
+ * its row shows `dcaQuote` (the protocol router's price, as on the token page) or dashes.
  */
 export function StockPickerDialog({
   open,
@@ -224,6 +199,8 @@ export function StockPickerDialog({
   stocks,
   value,
   onSelect,
+  dca,
+  dcaQuote,
   pillCount = TOP_STOCKS,
 }: {
   open: boolean;
@@ -231,6 +208,8 @@ export function StockPickerDialog({
   stocks: Stock[];
   value: string;
   onSelect: (address: string) => void;
+  dca?: Address;
+  dcaQuote?: { price?: number; marketCap?: number };
   pillCount?: number;
 }) {
   const { quoteOf, ready } = useStockMarket();
@@ -244,24 +223,31 @@ export function StockPickerDialog({
     if (window.matchMedia("(pointer: fine)").matches) requestAnimationFrame(() => input.current?.focus());
   }, [open]);
 
+  const isDca = (s: Stock) => choiceLabel(s, dca).dca;
   const ranked = useMemo(() => {
+    const pin = (s: Stock) => (choiceLabel(s, dca).dca ? 1 : 0);
     const cap = (s: Stock) => quoteOf(s.symbol)?.marketCap ?? -1;
     return stocks
       .map((s, i) => ({ s, i }))
-      .sort((a, b) => cap(b.s) - cap(a.s) || a.i - b.i)
+      .sort((a, b) => pin(b.s) - pin(a.s) || cap(b.s) - cap(a.s) || a.i - b.i)
       .map((x) => x.s);
-  }, [stocks, quoteOf]);
+  }, [stocks, quoteOf, dca]);
+  const quoteFor = (s: Stock): { price?: number; change24h?: number | null; marketCap?: number | null } | undefined =>
+    isDca(s) ? dcaQuote : quoteOf(s.symbol);
+  const symbolOf = (s: Stock) => choiceLabel(s, dca).symbol;
   const nameOf = (s: Stock) => {
-    const mapped = tickerName(s.symbol);
-    return mapped !== s.symbol ? mapped : (quoteOf(s.symbol)?.name ?? s.symbol);
+    const { name } = choiceLabel(s, dca);
+    return isDca(s) || name !== s.symbol ? name : (quoteOf(s.symbol)?.name ?? s.symbol);
   };
-  const pills = (ready ? ranked.filter((s) => (quoteOf(s.symbol)?.marketCap ?? 0) > 0) : ranked).slice(0, pillCount);
+  const pills = (ready ? ranked.filter((s) => (quoteOf(s.symbol)?.marketCap ?? 0) > 0) : ranked).filter((s) => !isDca(s)).slice(0, pillCount);
   const q = query.trim().toLowerCase();
+  // The registry ticker or the shown one: "dca" and "$dca" are both exact for $DCA.
+  const exact = (s: Stock) => s.symbol.toLowerCase() === q || symbolOf(s).toLowerCase() === q;
   const filtered = q
     ? ranked
-        .filter((s) => s.symbol.toLowerCase().includes(q) || nameOf(s).toLowerCase().includes(q))
+        .filter((s) => symbolOf(s).toLowerCase().includes(q) || nameOf(s).toLowerCase().includes(q))
         // An exact ticker ("F", "ON", "NOW") beats every name that merely contains the letters.
-        .sort((a, b) => Number(b.symbol.toLowerCase() === q) - Number(a.symbol.toLowerCase() === q))
+        .sort((a, b) => Number(exact(b)) - Number(exact(a)))
     : ranked;
   const pick = (address: string) => {
     onSelect(address);
@@ -321,7 +307,7 @@ export function StockPickerDialog({
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">No stocks match &ldquo;{query}&rdquo;.</div>
         ) : (
           filtered.map((s) => {
-            const quote = quoteOf(s.symbol);
+            const quote = quoteFor(s);
             const selected = s.address === value;
             const change = quote?.change24h;
             return (
@@ -334,10 +320,10 @@ export function StockPickerDialog({
                 className={`grid w-full ${cols} items-center gap-3 rounded-lg px-2 py-2.5 text-left transition-colors hover:bg-surface-3 ${selected ? "bg-surface-3" : ""}`}
               >
                 <span className="flex min-w-0 items-center gap-3">
-                  <StockAvatar symbol={s.symbol} size={32} />
+                  <ChoiceAvatar symbol={s.symbol} dca={isDca(s)} size={32} />
                   <span className="min-w-0">
                     <span className="flex items-center gap-1.5 text-[14px] font-semibold text-ink">
-                      {s.symbol}
+                      {symbolOf(s)}
                       {selected && <Icon name="check" size={13} className="text-lime-text" />}
                     </span>
                     <span className="block truncate text-[12px] text-ink-3">{nameOf(s)}</span>
@@ -356,7 +342,9 @@ export function StockPickerDialog({
         )}
       </div>
       <p className="mt-3 text-[11px] leading-normal text-ink-3">
-        {ready ? "Prices and on-chain market caps via CoinGecko, refreshed every minute. Plans buy at the on-chain price when each buy runs." : "Loading prices…"}
+        {ready
+          ? `Prices and on-chain market caps via CoinGecko${dca ? " ($DCA: the protocol's router)" : ""}, refreshed every minute. Plans buy at the on-chain price when each buy runs.`
+          : "Loading prices…"}
       </p>
     </Modal>
   );
