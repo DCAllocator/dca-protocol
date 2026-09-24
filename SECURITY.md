@@ -1,4 +1,4 @@
-# SECURITY.md — DCA threat model (V1, post-audit)
+# SECURITY.md — DCA threat model (V1, after the automated AI reviews in AUDIT.md; no third-party audit yet)
 
 Scope: `contracts/src/` contracts as deployed by `contracts/script/Deploy.s.sol` on Robinhood Chain (4663). This document lists what can go wrong, what the code does about it, and what it deliberately does not. The v0.1 audit and the v0.2 re-audit are in [`AUDIT.md`](AUDIT.md); the regression suite for every finding is `contracts/test/audit/`.
 
