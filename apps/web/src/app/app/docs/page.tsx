@@ -41,7 +41,10 @@ export default function Docs() {
               <li>
                 <b>Hourly</b> plans buy every hour, on the hour (UTC), around the clock. <b>Daily</b> plans buy every day at 00:00 UTC. <b>Weekly</b> plans buy every Monday at 00:00 UTC. <b>Monthly</b> plans buy every 30 days.
               </li>
-              <li>Each buy spends the amount you set. A plan holding less than that spends what it has on its next buy, then waits until you top it up.</li>
+              <li>
+                Each buy spends the amount you set. A plan holding less than that spends what it has on its next buy, then waits until you top it up.
+                While it waits, its Status column in My plans reads <b>Needs funds</b>.
+              </li>
               <li>
                 ETH is converted to USDG the moment you deposit it (0.5% price tolerance; any sliver the pool cannot fill is returned to you), so the plan
                 always holds USDG and withdrawals are paid in USDG.
