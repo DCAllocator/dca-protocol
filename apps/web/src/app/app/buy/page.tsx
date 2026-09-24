@@ -12,12 +12,15 @@ import { NotConfigured } from "@/components/app/create/blocks";
 import { BUY_DCA_URL, isZero } from "@/lib/config";
 
 /**
- * /app/buy — the "Buy $DCA" tab. Hybrid: when the router can route USDG → $DCA on this chain the in-app
- * swap card is shown; when it cannot and BUY_DCA_URL points off-site (the Pons listing) a hand-off card
- * takes over; otherwise a "no route yet" notice that points to Start a plan. The tab strip above is shared with
- * /app/create and /app/create/2 and navigates client-side, so the wallet stays connected. Every in-site
- * "Buy $DCA" (landing, sidebar, token page) lands here; the in-app ones only link while `useBuyDcaAvailable` says
- * there is something to buy, the hand-off is only ever off-site, and the notice never points back at a "Buy $DCA".
+ * /app/buy — the "Buy $DCA" tab. Hybrid: when the router can route USDG or ETH into $DCA on this chain
+ * (`useBuyDcaRoute`), the in-app swap card is shown, paid in either and smart-routed whichever token $DCA is paired
+ * with — USDG, WETH or both (see `BuyDcaCard`) — opening on the pay token the probe answered for. When it cannot and
+ * BUY_DCA_URL points off-site (the Pons listing) a hand-off card takes over: that is also the case for a native-ETH
+ * Uniswap v4 launch pool, which the router cannot route at all. Otherwise a "no route yet" notice that points to Start
+ * a plan. The tab strip above is shared with /app/create and /app/create/2 and navigates client-side, so the wallet
+ * stays connected. Every in-site "Buy $DCA" (landing, sidebar, token page) lands here; the in-app ones only link while
+ * `useBuyDcaAvailable` says there is something to buy, the hand-off is only ever off-site, and the notice never points
+ * back at a "Buy $DCA".
  */
 export default function BuyDcaPage() {
   const { dir, configured, isLoading } = useDirectory();
@@ -34,13 +37,13 @@ export default function BuyDcaPage() {
       </div>
     );
   } else if (route.available && dir) {
-    body = <BuyDcaCard dir={dir} />;
+    body = <BuyDcaCard dir={dir} initialPay={route.payWith} />;
   } else if (BUY_DCA_EXTERNAL) {
     body = <PonsHandoff dca={dir && !isZero(dir.dca) ? dir.dca : undefined} />;
   } else {
     body = (
       <>
-        <Notice kind="info">No $DCA/USDG route on this chain yet.</Notice>
+        <Notice kind="info">No route to $DCA on this chain yet.</Notice>
         <p className="mt-3 text-center text-[12.5px] text-ink-3">
           Until a pool is approved on the router there is nothing to buy in-app.{" "}
           <Link href="/app/create" className="text-lime hover:underline">
@@ -72,8 +75,8 @@ function PonsHandoff({ dca }: { dca?: Address }) {
     <div className="rounded-2xl border border-line bg-surface-2 p-5 text-center sm:p-6">
       <h2 className="text-[18px] font-semibold tracking-tight text-ink">$DCA trades on Pons</h2>
       <p className="mt-2 text-[13.5px] leading-relaxed text-ink-2">
-        The protocol&apos;s router has no USDG → $DCA route on this chain yet, so buying in-app is off. The token is listed on Pons; the link opens in a new
-        tab.
+        The protocol&apos;s router has no route from USDG or ETH to $DCA on this chain yet, so buying in-app is off. The token is listed on Pons; the link
+        opens in a new tab.
       </p>
       <div className="mt-5 grid gap-2">
         <a href={BUY_DCA_URL} target="_blank" rel="noreferrer" className="btn-primary btn-lg w-full rounded-xl">

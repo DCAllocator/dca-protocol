@@ -9,7 +9,9 @@ import { PlanVaultAbi, ERC20Abi } from "@/abi";
 import type { FlowStep } from "@/components/app/TxFlowDialog";
 import { fmtUsd, fmtUnits, feeOf, short } from "@/lib/format";
 import { VAULT_META, ZERO, USDG_DECIMALS, buysPerMonthOf, type VaultKind } from "@/lib/config";
-import { coverageCopy } from "@/lib/planFunds";
+import { coverageCopy, USDG_DUST } from "@/lib/planFunds";
+import { FREQUENCY_PARAM, parseFrequencyParam } from "@/lib/createLinks";
+import { ESTIMATE_PROBE_USDG, stockFor } from "@/lib/planEstimate";
 import { safeParse, safeParseEth, trimEth } from "./fields";
 
 export type Pay = "USDG" | "ETH";
@@ -26,12 +28,14 @@ export const ZAP_SLIPPAGE_BPS = 50n;
  * one themselves (`clear`, which the form's pickers call). It is looked up by ticker or address in the current registry
  * list on every render, so a list restored from the last visit and then replaced by the refetch still resolves. Once
  * the fresh list and the keeper's pairs are in, it is decided once: a frequency that does not buy it switches to the
- * first one that does; when none does, or the registry does not list it, `unavailable` names it for the Buy block's
- * notice and the usual default stands. While `active`, the form's pick is `stock` if this frequency buys it, else
- * nothing ("Pick a stock", like any pick the frequency does not buy). Read from `window.location` after mount:
- * `useSearchParams` would need a Suspense boundary around the page.
+ * first one that does — unless `keepKind` (the link also named a `?frequency=`, see `useFrequencyParam`: the frequency
+ * asked for wins, and is never silently swapped for another); when none does, or the registry does not list it,
+ * `unavailable` names it for the stock row's notice and the usual default stands. While `active`, the form's pick is
+ * `stock` if this frequency buys it, else nothing ("Pick a stock", like any pick the frequency does not buy) — and
+ * `offKind` names it, so the stock row can say why it is empty (other frequencies do buy it). Read from
+ * `window.location` after mount: `useSearchParams` would need a Suspense boundary around the page.
  */
-export function useStockParam(dir: Directory | undefined, kind: VaultKind, setKind: (kind: VaultKind) => void) {
+export function useStockParam(dir: Directory | undefined, kind: VaultKind, setKind: (kind: VaultKind) => void, { keepKind = false }: { keepKind?: boolean } = {}) {
   const [wanted, setWanted] = useState<string | null>(null);
   const [settled, setSettled] = useState(false);
   useEffect(() => setWanted(new URLSearchParams(window.location.search).get("stock")?.trim() || null), []);
@@ -42,11 +46,33 @@ export function useStockParam(dir: Directory | undefined, kind: VaultKind, setKi
   useEffect(() => {
     if (!wanted || settled || !listFresh || !pairsFresh) return;
     setSettled(true);
-    if (kinds && kinds.length > 0 && !kinds.some((k) => k === kind)) setKind(kinds[0]);
-  }, [wanted, settled, listFresh, pairsFresh, kinds, kind, setKind]);
+    if (!keepKind && kinds && kinds.length > 0 && !kinds.some((k) => k === kind)) setKind(kinds[0]);
+  }, [wanted, settled, listFresh, pairsFresh, kinds, kind, setKind, keepKind]);
   const clear = useCallback(() => setWanted(null), []);
   const unavailable = wanted && settled && !kinds?.length ? (hit?.symbol ?? (/^0x[0-9a-f]{40}$/i.test(wanted) ? short(wanted) : wanted.toUpperCase())) : undefined;
-  return { active: !!wanted && !unavailable, stock: hit, unavailable, clear };
+  const offKind = wanted && settled && hit && kinds?.length && !kinds.some((k) => k === kind) ? hit : undefined;
+  return { active: !!wanted && !unavailable, stock: hit, unavailable, offKind, clear };
+}
+
+/**
+ * `?frequency=hourly|daily|weekly|monthly` (the landing pages' vault rows and plan cards, see `frequencyHref`): the
+ * frequency the form opens on, applied once right after mount — read from `window.location` like `?stock=`, and in the
+ * same commit as `useStockParam`'s read, so both are known before the stock link is decided. An unknown value, or the
+ * dev-only `test` kind while its vault is not shown, is ignored and `defaultKind` stands (`parseFrequencyParam`).
+ * Returns the frequency the link asked for, if any: pass it on as `useStockParam`'s `keepKind`. Picking another
+ * frequency afterwards is the user's call; nothing re-applies the link.
+ */
+export function useFrequencyParam(setKind: (kind: VaultKind) => void): VaultKind | undefined {
+  const [asked, setAsked] = useState<VaultKind>();
+  useEffect(() => {
+    const k = parseFrequencyParam(new URLSearchParams(window.location.search).get(FREQUENCY_PARAM));
+    if (!k) return;
+    setAsked(k);
+    setKind(k);
+    // Once, on mount: a later render must not undo the user's own pick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return asked;
 }
 
 /** Everything a create-plan layout needs: the hook's return value, passed to the blocks as `m`. */
@@ -56,7 +82,8 @@ export type CreatePlanModel = ReturnType<typeof useCreatePlan>;
  * The create-plan form's state, derived values, validation and the transaction itself — everything except
  * the layout. `/app/create` and `/app/create/2` both render from this one model, so the `createPlan`
  * calldata, the frozen `Order` and the dialog's steps are identical whichever order the blocks are shown in;
- * the variants differ only in block order and labels. `defaultKind` is the frequency the form opens on.
+ * the variants differ only in block order and labels. `defaultKind` is the frequency the form opens on, unless the page
+ * was opened with a `?frequency=` link (`useFrequencyParam`).
  */
 export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKind } = {}) {
   const { address } = useAccount();
@@ -66,7 +93,8 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
   const { stocks, ranked, top, dca, choices, preferred, ready: rankReady } = useRankedStocks(dir, vaults?.[kind]);
   const { infos, byKind, refetch: refetchVaults } = useVaults(vaults);
 
-  const param = useStockParam(dir, kind, setKind);
+  const askedKind = useFrequencyParam(setKind);
+  const param = useStockParam(dir, kind, setKind, { keepKind: !!askedKind });
   const { clear: clearParam } = param;
   const [stock, setPicked] = useState<string>("");
   /** The user's own pick (every picker calls this): it also drops a `?stock=` link. */
@@ -222,6 +250,37 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
 
   const monthly = perBuyWei ? (perBuyWei * BigInt(Math.round(buysPerMonthOf(kind, info?.epochLength) * 100))) / 100n : 0n;
   const feeBps = user.effectiveFeeBps ?? info?.fees?.purchaseFeeBps;
+
+  /*
+   * The estimate: how much of the chosen stock ($DCA included) the buys get at today's price, net of the purchase fee
+   * (`feeBps`: this wallet's effective rate, the $DCA holder perk included), in the token's own units. Scaled from the
+   * router's quote for a fixed one-USDG buy (`ESTIMATE_PROBE_USDG`, bought USDG → stock the way the vault buys), not a
+   * quote for this plan's amount: the vault pools every plan's buy into one swap per period, so this plan's size alone
+   * says little about its fill. Every figure is undefined until the quote, the fee and a valid per-buy amount are known;
+   * the form never waits on it.
+   */
+  const estQuote = useQuote(dir?.router, dir?.usdg, stockAddr, ESTIMATE_PROBE_USDG);
+  /** Stock units `ESTIMATE_PROBE_USDG` buys now; undefined while loading or when the stock has no route. */
+  const estProbeOut = estQuote.data?.amountOut;
+  /** Stock one full buy gets, after the fee. */
+  const estPerBuy = perBuyOk && perBuyWei && feeBps !== undefined ? stockFor(perBuyWei, estProbeOut, feeBps) : undefined;
+  /**
+   * The buys the whole funding makes, counted like the "covers N buys" hint (`coverageCopy`): the full ones plus a
+   * smaller final one of a cent or more (a sub-cent remainder buys next to nothing and is not called a buy). One when
+   * `underfunded`: that single, smaller buy takes all of it.
+   */
+  const estBuys =
+    buysCovered !== undefined && lastBuyUsdg !== undefined && fundedEnough ? buysCovered + (lastBuyUsdg >= USDG_DUST ? 1 : 0) : undefined;
+  /** Stock the whole funding gets over those `estBuys`, each after its fee. Only for a funding the plan can start with. */
+  const estTotal =
+    estPerBuy !== undefined && estBuys !== undefined && buysCovered !== undefined && lastBuyUsdg !== undefined && feeBps !== undefined
+      ? estPerBuy * BigInt(buysCovered) + (lastBuyUsdg >= USDG_DUST ? (stockFor(lastBuyUsdg, estProbeOut, feeBps) ?? 0n) : 0n)
+      : undefined;
+  /**
+   * The estimate is on its way (the quote in flight, or in but the fee not yet): a layout keeps the line's place with
+   * "≈ …" rather than let everything under it jump when it lands — the quote is taken afresh for every stock picked.
+   */
+  const estPending = perBuyOk && !!stockAddr && estPerBuy === undefined && (estQuote.isLoading || (estProbeOut !== undefined && feeBps === undefined));
   /** Error line under the funding box; undefined when the funding amount is fine (or empty). */
   const fundHint = insufficient
     ? `Not enough ${pay} in your wallet.`
@@ -262,8 +321,10 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
     stockObj,
     stockAddr,
     setStock,
-    // a `?stock=` ticker no frequency buys (or the registry does not list), for the Buy block's notice
+    // a `?stock=` ticker no frequency buys (or the registry does not list), for the stock row's notice
     paramUnavailable: param.unavailable,
+    // a `?stock=` stock other frequencies buy but this one does not (the row reads "Select stock"), for the same notice
+    paramOffKind: param.offKind,
     // frequency
     kind,
     setKind,
@@ -305,6 +366,12 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
     // summary
     monthly,
     feeBps,
+    // estimate at today's price, net of `feeBps` (in the stock's own units)
+    estProbeOut,
+    estPerBuy,
+    estBuys,
+    estTotal,
+    estPending,
     // transaction
     needsApproval,
     canSubmit,

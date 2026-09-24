@@ -10,6 +10,7 @@ import { ConnectButton } from "@/components/ConnectButton";
 import { AddToWalletButton, useAddToWalletVisible } from "@/components/app/AddToWalletButton";
 import { usePerkThresholds, useDcaToken } from "@/hooks/useProtocol";
 import { fmtUsd, fmtUnits, fmtUnitsCompact, fmtBps, tsToShort } from "@/lib/format";
+import { fmtTokenAmount } from "@/lib/planEstimate";
 import { VAULT_KINDS, DOCS_PATH, USDG_DECIMALS, isZero, type VaultKind } from "@/lib/config";
 import { ZAP_SLIPPAGE_BPS, type CreatePlanModel, type Pay } from "./useCreatePlan";
 import { Box, ChoiceAvatar, Coin, Detail, Dropdown, OrderSummary, StockPickerDialog, choiceLabel, clean, everyLabel } from "./fields";
@@ -18,8 +19,9 @@ import { BuyDcaButton } from "./CreateTabs";
 /*
  * The create card, cut into blocks. A page is a list of these in some order, all fed the same model `m`
  * from `useCreatePlan()`; nothing in a block changes what is sent — only how the form reads. `/app/create`
- * is the swap-card order (fund → buy → every | per buy); `/app/create/2` is the sentence order
- * (spend X every Y → on → fund plan → summary). Both pick the stock with the same row and dialog (`StockRow`).
+ * is the swap-card order, whose labels read top to bottom as one sentence: "Fund plan with [X USDG] → to buy
+ * [stock] → every [day] | for [N USDG per buy]"; `/app/create/2` is the sentence order (spend X every Y → on →
+ * fund plan → summary). Both pick the stock with the same row and dialog (`StockRow`).
  */
 
 type Props = { m: CreatePlanModel };
@@ -39,11 +41,11 @@ export function NotConfigured() {
 }
 
 /**
- * Funding: the big amount, the USDG / ETH pill, the ≈ USDG line and the balance with HALF / MAX. `coverage`
- * adds the "covers N buys" hint under the balance line — variant B enters the funding last, so that is
- * where the hint belongs there; variant A shows it under the per-buy amount instead.
+ * Funding, the sentence's opening words on /app/create ("Fund plan with"): the big amount, the USDG / ETH pill, the
+ * ≈ USDG line and the balance with HALF / MAX. `coverage` adds the "covers N buys" hint under the balance line — for a
+ * layout that enters the funding last; /app/create shows it under the per-buy amount instead.
  */
-export function FundWithBox({ m, label = "Fund with", coverage = false, className = "" }: Props & { label?: string; coverage?: boolean; className?: string }) {
+export function FundWithBox({ m, label = "Fund plan with", coverage = false, className = "" }: Props & { label?: string; coverage?: boolean; className?: string }) {
   return (
     <Box label={label} error={m.fundHint} className={className}>
       <FundAmountFields m={m} />
@@ -74,6 +76,7 @@ function FundAmountFields({ m }: Props) {
               {pay}
             </>
           }
+          label={`Fund plan with ${pay}. Change currency`}
           width="w-60"
         >
           {(close) =>
@@ -171,8 +174,8 @@ function RunsLine({ m }: Props) {
 }
 
 /**
- * The down arrow between "Fund with" and "Buy" on the swap-card layout. Decorative: its full-width strip overlaps both
- * boxes, so it lets clicks through — the top of the "Buy" row must still open the stock picker.
+ * The down arrow between "Fund plan with" and "To buy" on the swap-card layout. Decorative: its full-width strip
+ * overlaps both boxes, so it lets clicks through — the top of the "To buy" row must still open the stock picker.
  */
 export function Arrow() {
   return (
@@ -184,18 +187,33 @@ export function Arrow() {
   );
 }
 
-/** One line when the page was opened on a `?stock=` ticker that no frequency buys: the form keeps its usual default. */
+/**
+ * One line when the page was opened on a `?stock=` link the stock row cannot show: a ticker no frequency buys (the form
+ * keeps its usual default), or one this frequency does not buy while others do — a `?frequency=` link that asked for it
+ * keeps its frequency, so the row reads "Select stock" and this says why.
+ */
 function ParamUnavailable({ m, className = "" }: Props & { className?: string }) {
-  if (!m.paramUnavailable) return null;
+  const { paramUnavailable, paramOffKind, dir, kind } = m;
+  if (!paramUnavailable && !paramOffKind) return null;
   return (
     <div className={className}>
-      <Notice>{m.paramUnavailable} isn&apos;t available for plans yet.</Notice>
+      <Notice>
+        {paramUnavailable ? (
+          <>{paramUnavailable} isn&apos;t available for plans yet.</>
+        ) : (
+          paramOffKind && (
+            <>
+              {choiceLabel(paramOffKind, dir?.dca).symbol} isn&apos;t bought every {everyLabel(kind)} yet. Pick another stock, or another frequency.
+            </>
+          )
+        )}
+      </Notice>
     </div>
   );
 }
 
 /**
- * The stock field (/app/create's "Buy", /app/create/2's "On"): one row, the label on the left and the chosen stock on
+ * The stock field (/app/create's "To buy", /app/create/2's "On"): one row, the label on the left and the chosen stock on
  * the right; the whole row opens the picker dialog (search, the largest stocks as pills, price and market cap per row).
  * With `addToWallet` and a wallet connected, the row also carries "Add to MetaMask" for the chosen stock under it —
  * outside the row's button, never nested in it (only /app/create asks for it). $DCA, when this frequency buys it,
@@ -220,7 +238,7 @@ export function StockRow({ m, label = "On", addToWallet = false, className = "" 
             type="button"
             onClick={() => setOpen(true)}
             aria-haspopup="dialog"
-            aria-label={stockObj && picked ? `Stock: ${picked.symbol}, ${picked.name}. Change` : "Select a stock"}
+            aria-label={stockObj && picked ? `Stock to buy: ${picked.symbol}, ${picked.name}. Change` : "Select stock to buy"}
             className="flex h-8 items-center gap-2 text-[17px] font-semibold text-ink after:absolute after:inset-0 after:rounded-xl"
           >
             {stockObj && picked ? (
@@ -263,6 +281,7 @@ export function FrequencyDropdown({ m, width = "w-40", align }: Props & { width?
       plain
       align={align}
       width={width}
+      label={`Buy every ${everyLabel(kind)}. Change frequency`}
       trigger={
         <>
           {everyLabel(kind)}
@@ -301,7 +320,7 @@ function PerBuyInput({ m, className }: Props & { className: string }) {
       value={m.perBuy}
       onChange={(e) => m.setPerBuy(clean(e.target.value))}
       placeholder="100"
-      aria-label="Amount per buy"
+      aria-label="Amount per buy, in USDG"
     />
   );
 }
@@ -311,17 +330,25 @@ function MinLine({ m }: Props) {
   return m.perBuyTooSmall ? <span className="text-bad">min {fmtUsd(m.minPerBuy)}</span> : <>min {fmtUsd(m.minPerBuy)}</>;
 }
 
-/** Variant A: "Every" (frequency) beside "Buy" (per-buy amount), with the coverage hint under the amount. */
+/**
+ * Variant A's last two words of the sentence, read left to right: "Every" (the frequency) beside "For" (the per-buy
+ * amount, its unit spelled out as "USDG per buy" so it cannot be mistaken for the funding), with the coverage hint —
+ * or the vault minimum — under the amount.
+ */
 export function EveryPerBuyGrid({ m }: Props) {
   return (
     <div className="mt-3 grid grid-cols-2 gap-3">
       <Box className="flex flex-col" label="Every" tip={EVERY_TIP}>
         <FrequencyDropdown m={m} />
       </Box>
-      <Box label="Buy">
+      <Box label="For">
         <div className="flex items-center gap-2">
           <PerBuyInput m={m} className="text-[20px] sm:text-[26px]" />
-          <span className="shrink-0 text-[12.5px] font-medium text-ink-2">USDG</span>
+          {/* Stacked, so the unit stays narrow beside the amount in a half-width box on a phone. */}
+          <span className="flex shrink-0 flex-col items-end text-[12.5px] leading-tight font-medium text-ink-2">
+            USDG
+            <span className="text-[11px] font-normal text-ink-3">per buy</span>
+          </span>
         </div>
         <div className="mt-1.5 text-[12px] text-ink-3">{m.perBuyTooSmall || !m.coverage ? <MinLine m={m} /> : m.coverage}</div>
       </Box>
@@ -362,12 +389,49 @@ export function SpendEverySentence({ m }: Props) {
   );
 }
 
-/** "≈ $X a month" once the per-buy amount is valid. */
-export function MonthlyLine({ m }: Props) {
+/** "≈ $X a month" once the per-buy amount is valid. No margin of its own: the page spaces it (see `EstimateLine`). */
+export function MonthlyLine({ m, className = "" }: Props & { className?: string }) {
   if (!m.perBuyOk) return null;
   return (
-    <p className="mt-2 text-[12.5px] text-ink-3">
+    <p className={`text-[12.5px] text-ink-3 ${className}`}>
       ≈ <span className="num text-ink-2">{fmtUsd(m.monthly)}</span> a month, spent while the plan has funds.
+    </p>
+  );
+}
+
+/**
+ * What the buys get at today's price: "At today's price ⓘ ≈ 0.5515 NVDA per buy · ≈ 5.5151 NVDA over 10 buys". Net of
+ * the purchase fee and in the token's own units (`estPerBuy` / `estTotal` / `estBuys` from the model); the whole-plan
+ * figure once the plan is funded for more than one buy, counted like the "covers N buys" hint. A plan funded for less
+ * than one buy (`underfunded`) makes one smaller buy that takes everything, so it shows what that one buy gets instead
+ * of a full buy it will never make. The ⓘ says how it is worked out and that each buy fills at its own time's price; it
+ * leads the line so its bubble, centred on it, stays on a phone's screen. While the quote is on its way (`estPending`)
+ * the line keeps its place with "≈ …", so nothing under it jumps; without a quote (no route) it renders nothing, so it
+ * never holds the form up. No margin of its own, like `MonthlyLine`.
+ */
+export function EstimateLine({ m, className = "" }: Props & { className?: string }) {
+  const { estPerBuy, estTotal, estBuys, estPending, underfunded, stockObj, dca, feeBps } = m;
+  if (!stockObj || (estPerBuy === undefined && !estPending)) return null;
+  const { symbol } = choiceLabel(stockObj, dca?.address);
+  // "≈" and the figure stay on one line together: a wrap never leaves the sign at the end of the line above.
+  const amount = (v: bigint) => <span className="num whitespace-nowrap text-ink-2">{`≈\u00a0${fmtTokenAmount(v, stockObj.decimals)} ${symbol}`}</span>;
+  const tip = `Estimated from the current on-chain price, after the ${feeBps !== undefined ? `${fmtBps(feeBps)} ` : ""}fee on each buy. Prices move: each buy fills at the price when it runs, so what you get will differ.`;
+  // Less than one buy: what that single, smaller buy gets (all of the funding).
+  const oneBuy = underfunded && estBuys === 1 ? estTotal : undefined;
+  return (
+    <p className={`text-[12.5px] leading-relaxed text-ink-3 ${className}`}>
+      <span className="inline-flex items-center gap-1">
+        At today&apos;s price <Tip text={tip} />
+      </span>{" "}
+      {estPerBuy === undefined ? (
+        <span className="text-ink-3">≈ …</span>
+      ) : oneBuy !== undefined ? (
+        <>{amount(oneBuy)} for the one buy</>
+      ) : (
+        <>
+          {amount(estPerBuy)} per buy
+        </>
+      )}
     </p>
   );
 }

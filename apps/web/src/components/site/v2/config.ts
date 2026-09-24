@@ -1,5 +1,6 @@
 import { activeChain } from "@/lib/chain";
 import { BUY_DCA_URL } from "@/lib/config";
+import { socialUrl } from "@/lib/socials";
 
 /**
  * /v2 landing: every outbound link is config-driven and hidden when unset (never a dead icon, never a bare
@@ -13,8 +14,9 @@ export const V2 = {
   buyUrl: BUY_DCA_URL,
   buyIsExternal: /^https?:\/\//.test(BUY_DCA_URL),
   ponsUrl: env(process.env.NEXT_PUBLIC_PONS_URL) ?? env(process.env.NEXT_PUBLIC_BUY_DCA_URL),
-  xUrl: env(process.env.NEXT_PUBLIC_X_URL),
-  telegramUrl: env(process.env.NEXT_PUBLIC_TELEGRAM_URL),
+  /** Community links come from lib/socials.ts (placeholders on the local test chain). */
+  xUrl: socialUrl("twitter"),
+  telegramUrl: socialUrl("telegram"),
   repoUrl: env(process.env.NEXT_PUBLIC_REPO_URL),
   chartUrl: env(process.env.NEXT_PUBLIC_CHART_URL),
   siteUrl: env(process.env.NEXT_PUBLIC_SITE_URL),

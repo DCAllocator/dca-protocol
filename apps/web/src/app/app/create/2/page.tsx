@@ -8,6 +8,7 @@ import {
   CreateDetails,
   CreateFlowDialog,
   DcaPerksBanner,
+  EstimateLine,
   Footnote,
   FundPlanBox,
   NotConfigured,
@@ -20,8 +21,9 @@ import {
  * Variant B of the create card, for side-by-side comparison with /app/create (a comparison URL only: no
  * traffic split, no analytics). Reads as a sentence: "Spend [amount] USDG every [day ▾]" → "On [stock ▾]" (a
  * row that opens the stock picker dialog) → "Fund plan" (the amount, how many times it runs, and a warning when it
- * is less than one buy) → boost → a one-line summary → button, with the $DCA holder-perk banner under the card. Same `useCreatePlan` model, so the
- * `createPlan` calldata, the frozen order and the dialog's steps are identical to /app/create for identical inputs.
+ * is less than one buy) → boost → a one-line summary (and what the buys get at today's price) → button, with the $DCA
+ * holder-perk banner under the card. Same `useCreatePlan` model, so the `createPlan` calldata, the frozen order and
+ * the dialog's steps are identical to /app/create for identical inputs.
  */
 export default function CreatePlanSentence() {
   const m = useCreatePlan({ defaultKind: "daily" });
@@ -35,6 +37,7 @@ export default function CreatePlanSentence() {
         <FundPlanBox m={m} className="mt-3" />
         <BoostBlock m={m} />
         <PlanSummary m={m} />
+        <EstimateLine m={m} className="mt-1 text-center" />
         <CreateCta m={m} />
         <CreateDetails m={m} />
       </div>

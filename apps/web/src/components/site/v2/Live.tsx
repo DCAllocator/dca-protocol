@@ -8,6 +8,7 @@ import { Countdown, StockAvatar } from "@/components/ui";
 import { StockGrid, useStockHref } from "@/components/site/LandingLive";
 import { fmtUsd, fmtUsdCompact, fmtUnits, fmtUnitsCompact, fmtPct, short } from "@/lib/format";
 import { VAULT_META, isZero, type ProductionVaultKind } from "@/lib/config";
+import { frequencyHref, startPlanLabel } from "@/lib/createLinks";
 import { tickerName } from "@/lib/tickers";
 import marketCapSnapshot from "@/data/market-caps.json";
 import { V2, DEAD, explorerAddress, explorerTx, pct, halfBps } from "./config";
@@ -599,7 +600,7 @@ export function VaultTable() {
                   <td className="v2-num text-right text-ink">{pct(halfBps(bps))}</td>
                   <td className="v2-num text-right">{m.ready ? <NextBuy kind={k} /> : <span className="text-ink-3">at launch</span>}</td>
                   <td className="text-right">
-                    <Link href="/app/create" className="btn-secondary btn-xs">
+                    <Link href={frequencyHref(k)} aria-label={startPlanLabel(k)} className="btn-secondary btn-xs">
                       Start
                     </Link>
                   </td>

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useDirectory, useVaults } from "@/hooks/useProtocol";
 import { Wordmark } from "@/components/Logo";
+import { SocialLinks } from "@/components/SocialLinks";
 import { Dot, Icon, type IconName } from "@/components/ui";
 import { BuyDcaButton } from "@/components/app/create/CreateTabs";
 import { fmtUsdCompact } from "@/lib/format";
@@ -83,6 +84,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         </nav>
 
         <div className="border-t border-line px-5 py-4 text-[11px] leading-relaxed text-ink-3">
+          <SocialLinks className="-ml-2 mb-2" />
           Stock Tokens are economic exposure, not shareholder rights. Not offered to US persons. Unaudited software.
         </div>
       </aside>

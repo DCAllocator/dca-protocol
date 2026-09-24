@@ -3,6 +3,8 @@ import type { ReactNode } from "react";
 import { Wordmark } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { BuyDcaLink } from "@/components/BuyDcaLink";
+import { SocialLinks } from "@/components/SocialLinks";
+import { SOCIALS } from "@/lib/socials";
 import { DOCS_PATH } from "@/lib/config";
 import {
   AddressRow,
@@ -63,34 +65,16 @@ function Src({ file, line }: { file: string; line?: string }) {
   );
 }
 
+/** The shared community icons plus the chart link (post-graduation only). */
 function Socials({ className = "" }: { className?: string }) {
-  const links: [string, string | undefined, ReactNode][] = [
-    [
-      "X",
-      V2.xUrl,
-      <svg key="x" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-        <path d="M18.9 2H22l-7.2 8.3L23 22h-6.7l-5.2-6.8L5 22H1.9l7.7-8.8L1 2h6.8l4.7 6.2L18.9 2zm-1.2 18h1.8L7.4 3.9H5.5L17.7 20z" />
-      </svg>,
-    ],
-    [
-      "Telegram",
-      V2.telegramUrl,
-      <svg key="tg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-        <path d="M9.4 15.6 9 20.4c.5 0 .8-.2 1.1-.5l2.6-2.5 5.4 4c1 .5 1.7.3 2-.9L23.6 3.6c.3-1.4-.5-2-1.5-1.6L1.7 9.8c-1.4.5-1.4 1.3-.2 1.7l5.2 1.6L18.7 5.5c.6-.4 1.1-.2.7.2L9.4 15.6z" />
-      </svg>,
-    ],
-    ["Chart", V2.chartUrl, <span key="c">Chart</span>],
-  ];
-  const shown = links.filter(([, href]) => !!href);
-  if (shown.length === 0) return null;
   return (
-    <span className={`flex items-center gap-1 ${className}`}>
-      {shown.map(([label, href, icon]) => (
-        <a key={label} href={href} target="_blank" rel="noreferrer" aria-label={label} title={label} className="inline-flex h-8 min-w-8 items-center justify-center rounded-md px-1.5 text-[12px] text-ink-2 hover:bg-hover hover:text-ink">
-          {icon}
+    <SocialLinks className={className} size={14}>
+      {V2.chartUrl && (
+        <a href={V2.chartUrl} target="_blank" rel="noreferrer" className="inline-flex h-8 min-w-8 items-center justify-center rounded-md px-1.5 text-[12px] text-ink-2 hover:bg-hover hover:text-ink">
+          Chart
         </a>
-      ))}
-    </span>
+      )}
+    </SocialLinks>
   );
 }
 
@@ -694,8 +678,8 @@ export function V2Footer() {
     ["Explorer", V2.explorer, true],
     ["Pons", V2.ponsUrl, true],
     ["Chart", V2.chartUrl, true],
-    ["X", V2.xUrl, true],
-    ["Telegram", V2.telegramUrl, true],
+    // GitHub is "Code" above.
+    ...SOCIALS.filter((s) => s.id !== "github").map((s): [string, string, boolean] => [s.label, s.href, true]),
     ["Docs", DOCS_PATH, false],
     ["Current landing", "/", false],
     ["Legacy landing", "/legacy", false],

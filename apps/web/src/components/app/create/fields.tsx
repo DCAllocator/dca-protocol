@@ -73,7 +73,10 @@ export function ChoiceAvatar({ symbol, dca = false, size = 24 }: { symbol: strin
   return dca ? <Logo size={size} /> : <StockAvatar symbol={symbol} size={size} />;
 }
 
-/** The plan being started, recalled at the top of the transaction dialog. */
+/**
+ * The plan being started, recalled at the top of the transaction dialog in the create card's own order: the stock,
+ * then "Funded with $1,000.00 · every day for $100.00 per buy".
+ */
 export function OrderSummary({ order }: { order: Order }) {
   const { symbol, name } = order.dca ? DCA_CHOICE : { symbol: order.symbol, name: tickerName(order.symbol) };
   return (
@@ -85,7 +88,7 @@ export function OrderSummary({ order }: { order: Order }) {
           {name !== symbol && <span className="truncate text-[12.5px] font-normal text-ink-3">{name}</span>}
         </div>
         <div className="text-[12.5px] text-ink-3">
-          <span className="num text-ink-2">{fmtUsd(order.perBuy)}</span> every {everyLabel(order.kind)} · funded with <span className="num text-ink-2">{order.funded}</span>
+          Funded with <span className="num text-ink-2">{order.funded}</span> · every {everyLabel(order.kind)} for <span className="num text-ink-2">{fmtUsd(order.perBuy)}</span> per buy
         </div>
       </div>
       {order.boost && (
@@ -129,7 +132,8 @@ function EthMark() {
  * Trigger + menu; closes on outside click, Escape or `close()` from the content. The default trigger is a
  * token pill hanging its menu from the right edge; `plain` is bare text on the box's own background, as
  * tall as the amount line it sits beside, with the menu hanging from the left. `align` overrides the side
- * the menu hangs from (a plain trigger near the right edge must hang its menu from the right).
+ * the menu hangs from (a plain trigger near the right edge must hang its menu from the right). `label` names the
+ * trigger for screen readers when its text alone ("day", "USDG") would not say what it sets; it should contain that text.
  */
 export function Dropdown({
   trigger,
@@ -137,12 +141,14 @@ export function Dropdown({
   width = "w-72",
   plain = false,
   align,
+  label,
 }: {
   trigger: ReactNode;
   children: (close: () => void) => ReactNode;
   width?: string;
   plain?: boolean;
   align?: "left" | "right";
+  label?: string;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -165,6 +171,7 @@ export function Dropdown({
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-label={label}
         onClick={() => setOpen((o) => !o)}
         className={
           plain

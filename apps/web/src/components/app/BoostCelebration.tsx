@@ -22,6 +22,10 @@ import { fmtPct } from "@/lib/format";
  * the done header simply cross-fades to "charged". The heading is the dialog's h2 (`titleId`): visible while running,
  * visually hidden once the plate carries the word. Everything decorative is aria-hidden, and the dialog's own status
  * region announces the outcome.
+ *
+ * The mark (`BoostMark`), the plate (`BoostStamp`) and the `Odometer` are exported for the landing page's Boost
+ * section (components/site/BoostShowcase.tsx), which replays the done hero from the same rules when it scrolls into
+ * view. They render exactly what the hero always rendered, so the dialog is unchanged.
  */
 
 /** The gauge fills over CHARGE_MS on an ease-in (≈ t²); tick i lights as the fill passes it. */
@@ -87,9 +91,9 @@ function Comet({ className }: { className: string }) {
 /**
  * "~4.12%" with each digit on an odometer strip that rolls up from 0 when the line rises: the last digit makes two
  * extra turns and the one before it one, so they settle left to right. At rest (and with reduced motion) each strip is
- * parked on its digit.
+ * parked on its digit. Visual only: whoever draws it puts it under aria-hidden and says the figure in text.
  */
-function Odometer({ text }: { text: string }) {
+export function Odometer({ text }: { text: string }) {
   const chars = [...text];
   const digits = chars.filter((c) => c >= "0" && c <= "9").length;
   let k = 0;
@@ -109,6 +113,86 @@ function Odometer({ text }: { text: string }) {
           </span>
         );
       })}
+    </span>
+  );
+}
+
+/**
+ * The 76px mark. Uncharged it is the armed mark: a dim disc and grey bolt in an unlit gauge, with the comet on the
+ * track (shown while running, hidden on error). `charged` adds every layer of the charge and discharge, landing on the
+ * lime disc with its idle orbit; those layers animate from the moment they mount. The done-only rules key off the hero
+ * (`.boost-hero[data-status="done"] …`: the spent armed disc and ticks, the comet fading out, the strain and the kick),
+ * so a charged mark sits inside an element with that class and status.
+ */
+export function BoostMark({ charged }: { charged: boolean }) {
+  return (
+    <div className="boost-cluster" aria-hidden>
+      {charged && (
+        <>
+          <span className="boost-glow" />
+          <span className="boost-wave" />
+          <span className="boost-wave boost-wave-2" />
+        </>
+      )}
+      <svg className="boost-gauge" viewBox="0 0 76 76" focusable="false">
+        <circle cx="38" cy="38" r="29" className="boost-track" />
+        {charged && <circle cx="38" cy="38" r="29" pathLength={100} transform="rotate(-90 38 38)" className="boost-meter" />}
+      </svg>
+      {/* twelve ticks: unlit while armed; once done each lights as the gauge passes it, then they fire outward */}
+      <svg className="boost-ticks" viewBox="0 0 76 76" focusable="false">
+        {TICKS.map((t) => (
+          <g key={t.angle} transform={`rotate(${t.angle} 38 38)`}>
+            <line x1="38" y1="2.5" x2="38" y2="5" className="boost-tick-track" />
+            {charged && <line x1="38" y1="2.5" x2="38" y2="5" className="boost-tick" style={{ animationDelay: `${t.delay}ms` }} />}
+          </g>
+        ))}
+      </svg>
+      <Comet className="boost-chase" />
+      {charged && (
+        <>
+          <Comet className="boost-orbit" />
+          {MOTES.map(([a, d]) => (
+            <span key={a} className="boost-mote" style={{ rotate: `${a}deg`, animationDelay: `${d}ms` }} />
+          ))}
+          {SPARKS.map(([a, r, d]) => (
+            <span key={a} className="boost-spark" style={{ rotate: `${a}deg`, "--boost-d": `${r}px`, animationDelay: `${DISCHARGE_AT + d}ms` } as Vars} />
+          ))}
+          {EMBERS.map(([a, r, d]) => (
+            <span key={a} className="boost-ember" style={{ rotate: `${a}deg`, "--boost-d": `${r}px`, animationDelay: `${DISCHARGE_AT + d}ms` } as Vars} />
+          ))}
+        </>
+      )}
+      <span className="boost-pre">
+        <Bolt />
+        {charged && <Bolt className="boost-warm" />}
+      </span>
+      {charged && (
+        <>
+          <span className="boost-disc">
+            <Bolt />
+          </span>
+          <span className="boost-flash" />
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The slanted plate that slams in over the outgoing title: an echo ring behind it, the lime plate with the bolt and
+ * `label`, and a sheen that crosses it once. Decorative (aria-hidden): the heading beside it carries the word.
+ */
+export function BoostStamp({ label }: { label: string }) {
+  return (
+    <span className="boost-stamp" aria-hidden>
+      <span className="boost-echo" />
+      <span className="boost-plate">
+        <span className="boost-plate-text">
+          <Bolt />
+          {label}
+        </span>
+        <span className="boost-sheen" />
+      </span>
     </span>
   );
 }
@@ -133,55 +217,7 @@ export function BoostCelebration({
   return (
     <div className="boost-hero" data-status={status}>
       {done && <span className="boost-flare" aria-hidden />}
-      <div className="boost-cluster" aria-hidden>
-        {done && (
-          <>
-            <span className="boost-glow" />
-            <span className="boost-wave" />
-            <span className="boost-wave boost-wave-2" />
-          </>
-        )}
-        <svg className="boost-gauge" viewBox="0 0 76 76" focusable="false">
-          <circle cx="38" cy="38" r="29" className="boost-track" />
-          {done && <circle cx="38" cy="38" r="29" pathLength={100} transform="rotate(-90 38 38)" className="boost-meter" />}
-        </svg>
-        {/* twelve ticks: unlit while armed; once done each lights as the gauge passes it, then they fire outward */}
-        <svg className="boost-ticks" viewBox="0 0 76 76" focusable="false">
-          {TICKS.map((t) => (
-            <g key={t.angle} transform={`rotate(${t.angle} 38 38)`}>
-              <line x1="38" y1="2.5" x2="38" y2="5" className="boost-tick-track" />
-              {done && <line x1="38" y1="2.5" x2="38" y2="5" className="boost-tick" style={{ animationDelay: `${t.delay}ms` }} />}
-            </g>
-          ))}
-        </svg>
-        <Comet className="boost-chase" />
-        {done && (
-          <>
-            <Comet className="boost-orbit" />
-            {MOTES.map(([a, d]) => (
-              <span key={a} className="boost-mote" style={{ rotate: `${a}deg`, animationDelay: `${d}ms` }} />
-            ))}
-            {SPARKS.map(([a, r, d]) => (
-              <span key={a} className="boost-spark" style={{ rotate: `${a}deg`, "--boost-d": `${r}px`, animationDelay: `${DISCHARGE_AT + d}ms` } as Vars} />
-            ))}
-            {EMBERS.map(([a, r, d]) => (
-              <span key={a} className="boost-ember" style={{ rotate: `${a}deg`, "--boost-d": `${r}px`, animationDelay: `${DISCHARGE_AT + d}ms` } as Vars} />
-            ))}
-          </>
-        )}
-        <span className="boost-pre">
-          <Bolt />
-          {done && <Bolt className="boost-warm" />}
-        </span>
-        {done && (
-          <>
-            <span className="boost-disc">
-              <Bolt />
-            </span>
-            <span className="boost-flash" />
-          </>
-        )}
-      </div>
+      <BoostMark charged={done} />
 
       <div className="boost-word">
         <h2 id={titleId} className={done ? "sr-only" : "boost-title"}>
@@ -192,16 +228,7 @@ export function BoostCelebration({
             <span className="boost-title boost-title-out" aria-hidden>
               {titles.running}
             </span>
-            <span className="boost-stamp" aria-hidden>
-              <span className="boost-echo" />
-              <span className="boost-plate">
-                <span className="boost-plate-text">
-                  <Bolt />
-                  {label}
-                </span>
-                <span className="boost-sheen" />
-              </span>
-            </span>
+            <BoostStamp label={label} />
           </>
         )}
       </div>

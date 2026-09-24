@@ -752,13 +752,6 @@ function PlanRow({
                 text={`${symbol} isn't available for ${kind ? VAULT_META[kind].label.toLowerCase() : "this frequency's"} plans, so this plan never buys and spends nothing. Your balance stays in the plan: withdraw it or remove the plan.`}
               />
             )}
-            {/* The same chip the create flow's summary gives a boosted plan; decorative (the ticker cell says it for screen readers). */}
-            {p.boosted && (
-              <span className="chip-lime ml-1 gap-1" aria-hidden>
-                <Icon name="bolt" size={11} />
-                {BOOST.chip}
-              </span>
-            )}
           </span>
         </td>
         <td className="stick-r text-right">
