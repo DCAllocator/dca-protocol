@@ -63,7 +63,7 @@ export function DcaSection() {
               <h3 className="text-2xl font-semibold tracking-tight text-balance text-ink md:text-3xl">You DCA stocks. $DCA DCAs itself.</h3>
               {/* "on-chain." kept whole: a break at its hyphen ("on- / chain.") read as a typo at some widths */}
               <p className="lede mt-3 max-w-md">
-                A share of every purchase fee buys $DCA <span className="whitespace-nowrap">on-chain.</span> As the protocol is used, $DCA is bought back
+                A share of all fees buys $DCA <span className="whitespace-nowrap">on-chain.</span> As the protocol is used, $DCA is bought back
                 over time.
               </p>
               {buybacks && (

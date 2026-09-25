@@ -33,7 +33,7 @@ export function FinalCta() {
 
   const ticks = [
     "Stocks bought for you on schedule, from $10 a buy",
-    "A share of every purchase fee buys $DCA on-chain",
+    "A share of all fees buys $DCA on-chain",
     <PerksSplit
       key="perks"
       same={

@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useMemo, useRef, useState, type CSSProperties, type FocusEvent, type PointerEvent } from "react";
-import { createPlanHref, useStockHref } from "@/components/site/LandingLive";
+import { useStockHref } from "@/components/site/LandingLive";
 import { Icon } from "@/components/ui";
 import { fmtChange, fmtPrice, useStockMarket } from "@/hooks/useStockMarket";
-import { FREQUENCY_PARAM, frequencyHref } from "@/lib/createLinks";
+import { createHref } from "@/lib/createLinks";
 import { tickerName } from "@/lib/tickers";
 import { CYCLE_FALLBACK, SHOW_TILE_PRICES, STOCK_FALLBACK } from "./config";
 import { CycleWord, useCycleIndex, useInView } from "./motion";
@@ -15,7 +15,7 @@ import { TileMark, useBuyableStocks } from "./shared";
 /*
  * Stocks: "DCA into {TICKER}." with the ticker flipping through the first six tiles and a lime ring on the tile
  * that matches it, so the motion points at something you can tap. Every tile opens Create plan on its stock (and on the
- * visitor's buy interval once the plan builder was touched); the dashed tile counts the real buyable remainder.
+ * visitor's buy interval and amount once the plan builder was touched); the dashed tile counts the real buyable remainder.
  * Only stocks a vault actually buys are listed; until that list answers, a fixed set of well-known tickers holds the
  * layout. No prices unless SHOW_TILE_PRICES is approved.
  */
@@ -53,10 +53,10 @@ export function StocksV3() {
   const step = useCycleIndex(words.length, { interval: 1800, active: live && !hovered && !focused });
   const hot = words[step];
 
-  // The builder's interval rides along only where a vault buys this stock at that interval; else the plain deep link.
+  // The builder's interval and amount ride along only where a vault buys this stock at that interval; else the plain deep link.
   const tileHref = (sym: string) =>
-    draft.touched && kindsOf(sym)?.includes(draft.kind) ? `${createPlanHref(sym)}&${FREQUENCY_PARAM}=${draft.kind}` : stockHref(sym);
-  const ctaHref = draft.touched ? frequencyHref(draft.kind) : "/app/create";
+    draft.touched && kindsOf(sym)?.includes(draft.kind) ? createHref({ stock: sym, kind: draft.kind, amount: draft.amount }) : stockHref(sym);
+  const ctaHref = draft.touched ? createHref({ kind: draft.kind, amount: draft.amount }) : "/app/create";
 
   // "+ n more" is what is really left to buy beyond the tiles on screen, so a phone (7 tiles) counts more than a desktop.
   const remainder = (tiles: number) => (count === undefined ? 0 : count - Math.min(tiles, shown.length));

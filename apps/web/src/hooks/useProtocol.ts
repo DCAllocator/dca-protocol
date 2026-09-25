@@ -877,11 +877,14 @@ export function useRankedStocks(dir?: Directory, buyableOn?: Address) {
 export const isDcaToken = (dir: Directory | undefined, address: Address | undefined): boolean =>
   !!dir && !!address && !isZero(dir.dca) && address.toLowerCase() === dir.dca.toLowerCase();
 
-/** Stock still sitting on each vault (accrued, not yet claimed), per stock and in total. */
-export function useStockHoldings(vaults?: VaultMap, stocks?: Stock[]) {
+/**
+ * Stock still sitting on each vault (accrued, not yet claimed), per stock and in total. `kinds` narrows the vaults read
+ * (the landing counts the production vaults only); `ready` flips once the reads have answered.
+ */
+export function useStockHoldings(vaults?: VaultMap, stocks?: Stock[], kinds: readonly VaultKind[] = VAULT_KINDS) {
   const contracts =
     vaults && stocks
-      ? VAULT_KINDS.flatMap((k) =>
+      ? kinds.flatMap((k) =>
           stocks.map((s) => ({ address: vaults[k], abi: PlanVaultAbi, functionName: "totalStockAccrued", args: [s.address] }) as const),
         )
       : [];
@@ -889,8 +892,9 @@ export function useStockHoldings(vaults?: VaultMap, stocks?: Stock[]) {
   return useMemo(() => {
     const perStock: Record<string, bigint> = {};
     const perVault = Object.fromEntries(VAULT_KINDS.map((k) => [k, {}])) as Record<VaultKind, Record<string, bigint>>;
-    if (!vaults || !stocks) return { perStock, perVault, isLoading: q.isLoading };
-    VAULT_KINDS.forEach((k, vi) => {
+    const ready = q.data !== undefined;
+    if (!vaults || !stocks) return { perStock, perVault, isLoading: q.isLoading, ready };
+    kinds.forEach((k, vi) => {
       stocks.forEach((s, si) => {
         const v = (q.data?.[vi * stocks.length + si]?.result as bigint | undefined) ?? 0n;
         const key = s.address.toLowerCase();
@@ -898,9 +902,9 @@ export function useStockHoldings(vaults?: VaultMap, stocks?: Stock[]) {
         perStock[key] = (perStock[key] ?? 0n) + v;
       });
     });
-    return { perStock, perVault, isLoading: q.isLoading };
+    return { perStock, perVault, isLoading: q.isLoading, ready };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vaults, stocks, q.data, q.isLoading]);
+  }, [vaults, stocks, kinds, q.data, q.isLoading]);
 }
 
 /**

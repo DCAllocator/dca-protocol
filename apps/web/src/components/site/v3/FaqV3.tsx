@@ -16,9 +16,9 @@ import "./faq-final.css";
 const LINK = "text-lime-text hover:underline";
 
 /* Answers that link out are split around the link, so the page and the JSON-LD are built from the same strings. */
-const A5_HEAD = "A share of every purchase fee buys $DCA on-chain. As the protocol is used, $DCA is bought back over time, and every buyback is a transaction you can find on ";
+const A5_HEAD = "A share of all fees buys $DCA on-chain. As the protocol is used, $DCA is bought back over time, and every buyback is a transaction you can find on ";
 const A5_LINK = "the explorer";
-const A5_TAIL = ". $DCA is a protocol utility token: it is not equity, not a dividend and not a claim on any stock, and it gives no right to protocol fees.";
+const A5_TAIL = "";
 
 const A7_HEAD =
   "You need a browser wallet, such as MetaMask or Rabby, with a little ETH on Robinhood Chain for gas, and USDG or ETH to fund your plan. Open the app and connect; if your wallet is on another network, the app asks it to switch. ";

@@ -1,52 +1,51 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { formatUnits } from "viem";
 import { StockTicker } from "@/components/app/StockTicker";
-import { useDirectory, useVaults, type VaultInfo } from "@/hooks/useProtocol";
-import { PRODUCTION_VAULT_KINDS, VAULT_META } from "@/lib/config";
-import { fmtUsd } from "@/lib/format";
-import { PROOF_MIN_NOTIONAL } from "./config";
-import { ClientCountdown, LiveRegion, RollingNumber, useInView, useMounted } from "./motion";
-import { useBuyableStocks, useContractsLive, useMinPerBuy, useSoonestBuy } from "./shared";
+import { Logo } from "@/components/Logo";
+import { useDcaToken, useDirectory, useVaults } from "@/hooks/useProtocol";
+import { USDG_DECIMALS, isZero } from "@/lib/config";
+import { SHOW_DCA_MARKET_CAP } from "./config";
+import { LiveRegion, RollingNumber, useInView, useMounted } from "./motion";
+import { TileMark, sumProduction, useBuyableStocks, useContractsLive, useProtocolTvl, type ProtocolTvl } from "./shared";
 import "./proof-trust-boost.css";
 
 /*
- * The proof strip under the hero: the Stock Token tape, then a few figures read straight from the vault contracts.
- * Before real volume it shows only what is always true (the next scheduled buy, how many stocks a plan can buy, the
- * minimum per buy); past PROOF_MIN_NOTIONAL of stock bought it leads with the volume instead. It never prints a zero:
- * a figure that loads as 0 (or not at all) drops out, and the row goes when fewer than two are left. Every value waits
- * for mount, so a restored query can never make the server and client renders disagree.
+ * The proof strip under the hero: the Stock Token tape, then four tiles read straight from the chain: the $DCA market
+ * cap (router price × total supply), the value locked in the vaults (split into USDG waiting to buy, USDG boosted and
+ * stock not yet claimed), the stock bought for plans all time, and how many stocks a plan can buy. Each tile shows
+ * from its first dollar, but it never prints a zero: a figure that loads as 0 (or not at all) drops out, and the row
+ * goes when fewer than two are left. Every value waits for mount, so a restored query can never
+ * make the server and client renders disagree.
  */
 
 /** A figure that has not answered this long after mount counts as missing, so a dead RPC never leaves a row of dashes. */
 const GIVE_UP_MS = 12_000;
 
-const PRODUCTION = new Set<string>(PRODUCTION_VAULT_KINDS);
+/** lg column count per number of tiles left (static class names, so Tailwind sees them). */
+const COLS: Record<number, string> = { 2: "lg:grid-cols-2", 3: "lg:grid-cols-3", 4: "lg:grid-cols-4" };
 
-/** md column count per number of cells left (static class names, so Tailwind sees them). */
-const COLS: Record<number, string> = { 2: "md:grid-cols-2", 3: "md:grid-cols-3", 4: "md:grid-cols-4" };
+/** Logos in the "Stocks available" stack before the "+N more". */
+const STACK = 5;
 
-/** A sum over the production vaults, only once every one of them has answered: a partial sum would undercount. */
-function sumProduction(infos: VaultInfo[], pick: (v: VaultInfo) => bigint | undefined): bigint | undefined {
-  const prod = infos.filter((v) => PRODUCTION.has(v.kind));
-  if (prod.length === 0) return undefined;
-  let total = 0n;
-  for (const v of prod) {
-    const x = pick(v);
-    if (x === undefined) return undefined;
-    total += x;
-  }
-  return total;
-}
+/** Three significant figures, compact: "$84.1K", "$1.24M", "$950"; `units` the same without the "$" ("1B"). */
+const compactUsd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumSignificantDigits: 3 });
+const compactUnits = new Intl.NumberFormat("en-US", { notation: "compact", maximumSignificantDigits: 3 });
+const usd = (v: bigint) => compactUsd.format(Number(formatUnits(v, USDG_DECIMALS)));
+const units = (v: bigint, decimals: number) => compactUnits.format(Number(formatUnits(v, decimals)));
 
-/** Whole dollars: "$84,061" (cents would only make two near-identical figures look busier). */
-const dollars = (v: bigint) => fmtUsd(v).replace(/\.\d\d$/, "");
+/** Still loading (the dash placeholder), a figure to show, or nothing (the tile drops out). */
+type Slot = "wait" | { value: ReactNode; foot?: ReactNode } | null;
+type Tile = {
+  key: string;
+  label: ReactNode;
+  slot: Slot;
+  /** Takes a whole row on phones (its foot needs the width). */
+  wide?: boolean;
+};
 
-/** Still loading (the dash placeholder), a figure to show, or nothing (the cell drops out). */
-type Slot = "wait" | { value: ReactNode; sub?: ReactNode } | null;
-type Cell = { key: string; label: string; slot: Slot; sub?: ReactNode };
-
-/** The dash placeholder, identical to ClientCountdown's, so nothing jumps when one hands over to the other. */
+/** The dash placeholder, identical to ClientCountdown's, so nothing jumps when a figure lands. */
 const Dash = () => <span className="num text-ink-3">—</span>;
 
 /**
@@ -60,16 +59,76 @@ function RollIn({ text }: { text: string }) {
   return <span ref={ref}>{inView ? <RollingNumber text={text} /> : <Dash />}</span>;
 }
 
-/** Proof of life under the fold: the tape, the "Live from the contracts" pill and the gated figures. */
+/** The TVL split as a bar and its legend (the legend carries the values, so the bar is decoration). Zero parts drop out. */
+function TvlBreakdown({ tvl }: { tvl: ProtocolTvl }) {
+  const [hot, setHot] = useState<string>();
+  const parts = [
+    { key: "idle", label: "Waiting to buy", value: tvl.idle },
+    { key: "boosted", label: "Boosted", value: tvl.boosted },
+    { key: "stock", label: "Stock in plans", value: tvl.stock },
+  ].filter((p) => p.value > 0n);
+  // Pointing at a segment or a legend row lights up the pair and dims the rest.
+  const hover = (key: string) => ({ onPointerEnter: () => setHot(key), onPointerLeave: () => setHot(undefined) });
+  const dim = (key: string) => (hot !== undefined && hot !== key ? "" : undefined);
+  return (
+    <div className="v3-tvl">
+      <div className="v3-tvl-bar" aria-hidden>
+        {parts.map((p) => (
+          <span
+            key={p.key}
+            className="v3-tvl-seg"
+            data-part={p.key}
+            data-dim={dim(p.key)}
+            style={{ flexGrow: Number((p.value * 10_000n) / tvl.total) }}
+            {...hover(p.key)}
+          />
+        ))}
+      </div>
+      <ul className="mt-3 space-y-1">
+        {parts.map((p) => (
+          <li key={p.key} className="v3-tvl-row" data-dim={dim(p.key)} {...hover(p.key)}>
+            <span className="v3-tvl-swatch" data-part={p.key} aria-hidden />
+            <span className="truncate">{p.label}</span>
+            <span className="num ml-auto pl-3 text-ink-2">{usd(p.value)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** The first few buyable stocks' logos, overlapped, then "+N more": links down to the stock grid. */
+function StockStack({ symbols, count }: { symbols: string[]; count: number }) {
+  const shown = symbols.slice(0, STACK);
+  return (
+    <a href="#stocks" className="group flex items-center gap-2.5 text-[12.5px] text-ink-3">
+      <span className="flex" aria-hidden>
+        {shown.map((s) => (
+          <span key={s} className="v3-stack-mark">
+            <TileMark symbol={s} size={22} />
+          </span>
+        ))}
+      </span>
+      <span className="sr-only">Including {shown.join(", ")}.</span>
+      {count > shown.length && (
+        <span aria-hidden className="whitespace-nowrap">
+          +{count - shown.length} more
+        </span>
+      )}
+      <span className="ml-auto whitespace-nowrap transition-colors group-hover:text-ink">See all ↓</span>
+    </a>
+  );
+}
+
+/** Proof of life under the fold: the tape, the "Live from the contracts" pill and the gated tiles. */
 export function Proof() {
   const mounted = useMounted();
-  const { vaults, configured } = useDirectory();
-  // The vault reads refresh on the app's 15 s poll (components/Providers.tsx), which also moves "Next scheduled buy" on
-  // once the keeper's buy lands.
+  const { dir, vaults, configured } = useDirectory();
+  // The vault reads refresh on the app's 15 s poll (components/Providers.tsx).
   const { infos, isLoading } = useVaults(vaults);
-  const soonest = useSoonestBuy();
-  const { count } = useBuyableStocks();
-  const minPerBuy = useMinPerBuy();
+  const tvl = useProtocolTvl();
+  const token = useDcaToken(SHOW_DCA_MARKET_CAP ? dir : undefined);
+  const { symbols, count } = useBuyableStocks();
   const verify = useContractsLive();
 
   const [gaveUp, setGaveUp] = useState(false);
@@ -78,54 +137,77 @@ export function Proof() {
     return () => clearTimeout(t);
   }, []);
 
-  // The vault reads have answered (or failed) once the multicall has run; until then their cells show the dash.
+  // Each tile shows the dash until its reads have answered (or GIVE_UP_MS passes), then a figure or nothing.
   const vaultsIn = !!vaults && !isLoading && infos.length > 0;
-  const waitVaults = !mounted || (!vaultsIn && !gaveUp);
-  const waitStocks = !mounted || (count === undefined && !gaveUp);
+  const wait = (answered: boolean) => !mounted || (!answered && !gaveUp);
+  const bought = mounted ? sumProduction(infos, (v) => v.totalNotionalUsdg) : undefined;
+  const noDca = !!dir && isZero(dir.dca);
+  const cap = mounted ? token.marketCap : undefined;
 
-  const notional = mounted ? sumProduction(infos, (v) => v.totalNotionalUsdg) : undefined;
-  // Idle USDG plus what boosted plans have lent out on Morpho (`boostAssets` is not in `totalUsdgIdle`).
-  const ready = mounted ? sumProduction(infos, (v) => (v.totalUsdgIdle === undefined ? undefined : v.totalUsdgIdle + (v.boostAssets ?? 0n))) : undefined;
-
-  const next: Cell = {
-    key: "next",
-    label: "Next scheduled buy",
-    slot: waitVaults ? "wait" : soonest ? { value: <ClientCountdown target={soonest.target} className="text-ink" />, sub: `${VAULT_META[soonest.kind].label} plans` } : null,
-  };
-  const stocks: Cell = {
-    key: "stocks",
-    label: "Stocks available",
-    slot: waitStocks ? "wait" : count ? { value: <RollIn text={String(count)} /> } : null,
-    sub: "More on the way",
-  };
-  // The gate: the volume cells lead once enough stock has been bought for them to mean something.
-  const cells: Cell[] =
-    notional !== undefined && notional >= PROOF_MIN_NOTIONAL
+  const tiles: Tile[] = [
+    ...(SHOW_DCA_MARKET_CAP
       ? [
-          { key: "bought", label: "Stock bought for plans", slot: { value: <RollIn text={dollars(notional)} /> } },
-          { key: "ready", label: "Deposited, ready to buy", slot: ready ? { value: <RollIn text={dollars(ready)} /> } : null },
-          next,
-          stocks,
-        ]
-      : [
-          next,
-          stocks,
           {
-            key: "minimum",
-            label: "Minimum buy",
-            slot: waitVaults ? "wait" : minPerBuy ? { value: <RollIn text={fmtUsd(minPerBuy).replace(/\.00$/, "")} /> } : null,
-            sub: "per buy · fund with USDG or ETH",
-          },
-        ];
-  const shown = cells.filter((c) => c.slot !== null);
+            key: "cap",
+            label: (
+              <>
+                {/* off on phones, where the half-width tile would wrap the label and drop its figure below its neighbour's */}
+                <span className="hidden sm:inline-flex">
+                  <Logo size={16} />
+                </span>
+                $DCA market cap
+              </>
+            ),
+            slot: noDca
+              ? null
+              : wait(cap !== undefined)
+                ? "wait"
+                : cap
+                  ? {
+                      value: <RollIn text={usd(cap)} />,
+                      foot: token.totalSupply !== undefined && (
+                        <p className="text-[12.5px] text-ink-3">
+                          {units(token.totalSupply, 18)} $DCA supply
+                        </p>
+                      ),
+                    }
+                  : null,
+          } satisfies Tile,
+        ]
+      : []),
+    {
+      key: "tvl",
+      label: "Total value locked",
+      wide: true,
+      slot: wait(tvl !== undefined) ? "wait" : tvl && tvl.total > 0n ? { value: <RollIn text={usd(tvl.total)} />, foot: <TvlBreakdown tvl={tvl} /> } : null,
+    },
+    {
+      key: "bought",
+      label: "Stock bought",
+      slot: wait(vaultsIn) ? "wait" : bought ? { value: <RollIn text={usd(bought)} />, foot: <p className="text-[12.5px] text-ink-3">For plans, all time</p> } : null,
+    },
+    {
+      key: "stocks",
+      label: "Stocks available",
+      wide: true,
+      slot: wait(count !== undefined) ? "wait" : count ? { value: <RollIn text={String(count)} />, foot: <StockStack symbols={symbols} count={count} /> } : null,
+    },
+  ];
+  const shown = tiles.filter((t) => t.slot !== null);
   const figures = configured && shown.length >= 2;
+
+  // Phones: two columns, a `wide` tile takes a whole row, and the narrow ones pair up (dense flow lets a narrow tile
+  // fill the gap beside the one before a wide tile); an odd one out takes its row too. sm to lg: two columns, an odd
+  // last tile spans both. lg: one row.
+  const narrow = shown.filter((t) => !t.wide);
+  const lone = narrow.length % 2 === 1 ? narrow[narrow.length - 1] : undefined;
 
   return (
     // No bottom border of its own: the section below (either Three steps) opens with a hairline, and two would read as one thick rule.
     <LiveRegion as="section" className="v3-proof bg-surface-0" aria-label="Live protocol data">
       <StockTicker count={24} speed={45} className="border-y border-line" />
       {figures && (
-        <div className="container-x pt-5 pb-6">
+        <div className="container-x pt-5 pb-8 md:pb-10">
           <div className="flex flex-wrap items-center gap-y-2">
             <span className="inline-flex h-7 items-center gap-2 rounded-full border border-line px-3 text-[12px] text-ink-2">
               <span className="v3-live-dot" aria-hidden />
@@ -137,22 +219,21 @@ export function Proof() {
               </a>
             )}
           </div>
-          <dl className={`mt-4 grid grid-cols-2 border-y border-line ${COLS[shown.length] ?? ""}`}>
-            {shown.map((c, i) => {
-              const slot = c.slot === "wait" || c.slot === null ? undefined : c.slot;
-              const sub = slot?.sub ?? c.sub;
-              // Two to a row on phones (an odd last cell takes the whole row), one row from md; hairlines between.
-              const right = i % 2 === 1;
-              const span = i === shown.length - 1 && shown.length % 2 === 1;
+          <dl className={`mt-4 grid grid-cols-2 gap-2.5 max-sm:grid-flow-row-dense sm:gap-3 ${COLS[shown.length] ?? ""}`}>
+            {shown.map((t, i) => {
+              const slot = t.slot === "wait" || t.slot === null ? undefined : t.slot;
+              const phoneRow = t.wide || t === lone;
+              const smRow = i === shown.length - 1 && shown.length % 2 === 1;
               return (
                 <div
-                  key={c.key}
-                  className={`min-w-0 border-line px-4 py-4 sm:px-6 sm:py-5 ${right ? "border-l" : i > 0 ? "md:border-l" : ""} ${i >= 2 ? "border-t md:border-t-0" : ""} ${span ? "col-span-2 md:col-span-1" : ""}`}
+                  key={t.key}
+                  className={`v3-stat ${phoneRow ? "col-span-2" : "col-span-1"} ${smRow ? "sm:col-span-2" : "sm:col-span-1"} lg:col-span-1`}
                 >
-                  <dt className="text-[12px] text-ink-3">{c.label}</dt>
-                  <dd className="num mt-1 text-xl font-semibold tracking-tight whitespace-nowrap text-ink md:text-2xl">{slot ? slot.value : <Dash />}</dd>
-                  {/* "Next scheduled buy" learns its sub-line with its value; hold the line so the row does not grow. */}
-                  {sub !== undefined ? <dd className="mt-0.5 text-[12px] text-ink-3">{sub}</dd> : c.key === "next" && <dd className="mt-0.5 text-[12px] text-ink-3">&nbsp;</dd>}
+                  <dt className="flex items-center gap-1.5 text-[12.5px] text-ink-2 sm:gap-2 sm:text-[13px]">{t.label}</dt>
+                  <dd className="mt-2.5 text-[28px] leading-none font-semibold tracking-tight whitespace-nowrap text-ink sm:text-[32px]">
+                    {slot ? slot.value : <Dash />}
+                  </dd>
+                  {slot?.foot && <dd className="mt-auto pt-5">{slot.foot}</dd>}
                 </div>
               );
             })}

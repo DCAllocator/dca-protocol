@@ -10,7 +10,7 @@ import type { FlowStep } from "@/components/app/TxFlowDialog";
 import { fmtUsd, fmtUnits, feeOf, short } from "@/lib/format";
 import { VAULT_META, ZERO, USDG_DECIMALS, buysPerMonthOf, type VaultKind } from "@/lib/config";
 import { coverageCopy, USDG_DUST } from "@/lib/planFunds";
-import { FREQUENCY_PARAM, parseFrequencyParam } from "@/lib/createLinks";
+import { AMOUNT_PARAM, FREQUENCY_PARAM, STOCK_PARAM, parseAmountParam, parseFrequencyParam } from "@/lib/createLinks";
 import { ESTIMATE_PROBE_USDG, stockFor } from "@/lib/planEstimate";
 import { safeParse, safeParseEth, trimEth } from "./fields";
 
@@ -38,7 +38,7 @@ export const ZAP_SLIPPAGE_BPS = 50n;
 export function useStockParam(dir: Directory | undefined, kind: VaultKind, setKind: (kind: VaultKind) => void, { keepKind = false }: { keepKind?: boolean } = {}) {
   const [wanted, setWanted] = useState<string | null>(null);
   const [settled, setSettled] = useState(false);
-  useEffect(() => setWanted(new URLSearchParams(window.location.search).get("stock")?.trim() || null), []);
+  useEffect(() => setWanted(new URLSearchParams(window.location.search).get(STOCK_PARAM)?.trim() || null), []);
   const { stocks: listed, fresh: listFresh } = useStocks(dir?.registry);
   const { kindsBuying, fresh: pairsFresh } = useKindsBuying();
   const hit = wanted ? findStock(listed, wanted) : undefined;
@@ -75,6 +75,20 @@ export function useFrequencyParam(setKind: (kind: VaultKind) => void): VaultKind
   return asked;
 }
 
+/**
+ * `?amount=50` (the landing's plan builder, see `createHref`): the amount per buy, in USDG, the form opens on. Applied
+ * once right after mount like `?frequency=`, and only when it parses (`parseAmountParam`); otherwise the form's own
+ * default stands. An amount under the vault's minimum is shown as typed, flagged by the form like any other.
+ */
+export function useAmountParam(setPerBuy: (amount: string) => void) {
+  useEffect(() => {
+    const a = parseAmountParam(new URLSearchParams(window.location.search).get(AMOUNT_PARAM));
+    if (a) setPerBuy(a);
+    // Once, on mount: a later render must not undo the user's own amount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+}
+
 /** Everything a create-plan layout needs: the hook's return value, passed to the blocks as `m`. */
 export type CreatePlanModel = ReturnType<typeof useCreatePlan>;
 
@@ -83,7 +97,7 @@ export type CreatePlanModel = ReturnType<typeof useCreatePlan>;
  * the layout. `/app/create` and `/app/create/2` both render from this one model, so the `createPlan`
  * calldata, the frozen `Order` and the dialog's steps are identical whichever order the blocks are shown in;
  * the variants differ only in block order and labels. `defaultKind` is the frequency the form opens on, unless the page
- * was opened with a `?frequency=` link (`useFrequencyParam`).
+ * was opened with a `?frequency=` link (`useFrequencyParam`); a `?stock=` or `?amount=` link seeds those fields too.
  */
 export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKind } = {}) {
   const { address } = useAccount();
@@ -106,6 +120,7 @@ export function useCreatePlan({ defaultKind = "daily" }: { defaultKind?: VaultKi
     [clearParam],
   );
   const [perBuy, setPerBuy] = useState("100");
+  useAmountParam(setPerBuy);
   const [pay, setPay] = useState<Pay>("USDG");
   const [upfront, setUpfront] = useState("");
   // Boost is opt-in: idle USDG lent on Morpho Blue between buys. Off by default.

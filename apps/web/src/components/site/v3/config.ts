@@ -16,12 +16,9 @@ export const LANDING_PATH = "/";
 /** Robinhood Chain mainnet (4663): the footer's chain line only shows there, never on a local stack. */
 export const IS_RH_MAINNET = activeChain.id === 4663;
 
-/** The proof strip switches from its launch cells to volume cells past this much stock bought (USDG, 6 dp). */
-export const PROOF_MIN_NOTIONAL = 25_000n * 10n ** 6n;
-
-/** Create plan reads `?amount=` (needs the small useAmountParam change in useCreatePlan.ts). Off: the builder's
- *  microcopy then promises only the stock and the buy interval. */
-export const AMOUNT_PARAM_SUPPORTED = false;
+/** The $DCA market cap in the proof strip (router price × total supply). Approved 2026-09-25; the only $DCA price
+ *  figure on the landing, so this is the switch if that stance changes. */
+export const SHOW_DCA_MARKET_CAP = true;
 
 /** Live CoinGecko price + 24h change on the stock tiles. Built, off until approved (price language). */
 export const SHOW_TILE_PRICES = false;

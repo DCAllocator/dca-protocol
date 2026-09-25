@@ -12,7 +12,7 @@ const ITEMS: { icon: IconName; text: string }[] = [
   { icon: "wallet", text: "Non-custodial: only your wallet can withdraw or claim" },
   { icon: "check", text: "Withdraw idle funds any time, even if the protocol is paused" },
   { icon: "external", text: "Every buy and buyback is on-chain" },
-  { icon: "info", text: "No external audit yet: only use funds you can afford to lose" },
+  // { icon: "info", text: "No external audit yet: only use funds you can afford to lose" },
 ];
 
 /** "Your plan stays yours.": four facts and the docs, as one compact strip above the FAQ. */

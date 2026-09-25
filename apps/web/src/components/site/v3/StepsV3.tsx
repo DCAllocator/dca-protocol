@@ -6,7 +6,7 @@ import { useDirectory, useVaults } from "@/hooks/useProtocol";
 import { Icon, StockAvatar } from "@/components/ui";
 import { PRODUCTION_VAULT_KINDS, VAULT_META, type ProductionVaultKind } from "@/lib/config";
 import { tickerName } from "@/lib/tickers";
-import { AMOUNT_PARAM_SUPPORTED, BUILDER_AMOUNTS, BUILDER_FALLBACK, INTERVAL_WORD } from "./config";
+import { BUILDER_AMOUNTS, BUILDER_FALLBACK, INTERVAL_WORD } from "./config";
 import { ClientCountdown, LiveRegion, Reveal, useInView, useReducedMotion } from "./motion";
 import { planHref, usePlanDraft } from "./PlanDraft";
 import { Threshold, useBuyableStocks } from "./shared";
@@ -27,19 +27,19 @@ const STEPS: { n: string; title: string; body: ReactNode }[] = [
   },
   {
     n: "02",
-    title: "Deposit once",
-    body: "Pay in USDG (a dollar stablecoin) or ETH, which converts to USDG on deposit. Withdraw idle funds any time.",
+    title: "Deposit",
+    body: "Pay in USDG or ETH. Topup and withdraw your funds at any time. No lockups.",
   },
   {
     n: "03",
-    title: "It buys on the clock",
+    title: "Sit back and relax",
     body: (
       <>
-        Plans on the same stock and buy interval go in as one trade, and your plan gets its share. Hold{" "}
+        Let your plan automate your buys. Hold{" "}
         <span className="whitespace-nowrap font-medium text-ink">
           <Threshold compact />
         </span>{" "}
-        and it&apos;s sent straight to your wallet; otherwise it waits in your plan until you claim it.
+        and stocks are automatically sent to your wallet; otherwise claim bought stocks at anytime.
       </>
     ),
   },
@@ -333,11 +333,9 @@ function PlanBuilder({ onPicking }: { onPicking: (v: boolean) => void }) {
 
           <div className="mt-6 flex flex-col-reverse gap-3 border-t border-line pt-5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-4">
             <p className="max-w-[34ch] text-pretty text-[12.5px] leading-snug text-ink-3">
-              {AMOUNT_PARAM_SUPPORTED && hasStock
+              {hasStock
                 ? "Opens the plan form with this filled in. You confirm everything in your wallet."
-                : hasStock
-                  ? "Opens the plan form on this stock and buy interval. You confirm everything in your wallet."
-                  : "Opens the plan form on this buy interval. You confirm everything in your wallet."}
+                : "Opens the plan form with this amount and buy interval filled in. You confirm everything in your wallet."}
             </p>
             <Link
               ref={ctaRef}

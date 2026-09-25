@@ -16,7 +16,7 @@ export const metadata: Metadata = {
   ...(SITE_URL ? { metadataBase: new URL(SITE_URL) } : {}),
   title: "DCA — Wall Street stocks. On a clock. On-chain.",
   description:
-    "Recurring on-chain buys of Robinhood Stock Tokens on Robinhood Chain. $DCA is the protocol's token, and a share of every purchase fee buys it on-chain.",
+    "Recurring on-chain buys of Robinhood Stock Tokens on Robinhood Chain. $DCA is the protocol's token, and a share of all fees buys it on-chain.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -11,7 +11,7 @@ import { PageHeader, Notice, Spinner, StockAvatar, Segmented, Countdown, Icon, H
 import { BoostCard } from "@/components/app/BoostCard";
 import { ConnectButton } from "@/components/ConnectButton";
 import { ChoiceAvatar, choiceLabel } from "@/components/app/create/fields";
-import { useFrequencyParam, useStockParam } from "@/components/app/create/useCreatePlan";
+import { useAmountParam, useFrequencyParam, useStockParam } from "@/components/app/create/useCreatePlan";
 import { coverageCopy } from "@/lib/planFunds";
 import { fmtUsd, fmtUnits, fmtBps, fmtPct, tsToShort, feeOf } from "@/lib/format";
 import { VAULT_KINDS, VAULT_META, ZERO, DOCS_PATH, USDG_DECIMALS, BOOST, buysPerMonthOf, type VaultKind } from "@/lib/config";
@@ -40,7 +40,7 @@ export default function CreatePlan() {
   const { stocks, ranked, top, dca, choices, preferred, ready: rankReady } = useRankedStocks(dir, vaults?.[kind]);
   const { infos, byKind, refetch: refetchVaults } = useVaults(vaults);
 
-  // The landing pages' `?frequency=` / `?stock=` links work here too; a frequency the link names is kept.
+  // The landing pages' `?frequency=` / `?stock=` / `?amount=` links work here too; a frequency the link names is kept.
   const askedKind = useFrequencyParam(setKind);
   const param = useStockParam(dir, kind, setKind, { keepKind: !!askedKind });
   const { clear: clearParam } = param;
@@ -54,6 +54,7 @@ export default function CreatePlan() {
     [clearParam],
   );
   const [perBuy, setPerBuy] = useState("100");
+  useAmountParam(setPerBuy);
   const [pay, setPay] = useState<Pay>("USDG");
   const [upfront, setUpfront] = useState("");
   // Boost is opt-in: idle USDG lent on Morpho Blue between buys. Off by default.

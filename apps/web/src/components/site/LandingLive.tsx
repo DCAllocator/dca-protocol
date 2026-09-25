@@ -6,12 +6,13 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useAccount } from "wagmi";
 import { useDirectory, useVaults, useStocks, useBoostApys, usePositions, useKindsBuying, boostAvailable, findStock } from "@/hooks/useProtocol";
 import { BoostShowcase } from "@/components/site/BoostShowcase";
+import { createHref } from "@/lib/createLinks";
 
 /** How long a click waits for the wallet / positions before giving up and going to Create plan. */
 const LAUNCH_WAIT_MS = 3_000;
 
 /** Create plan with `symbol` preselected (see `useStockParam`); the landing pages link it through `useStockHref`. */
-export const createPlanHref = (symbol: string) => `/app/create?stock=${encodeURIComponent(symbol)}`;
+export const createPlanHref = (symbol: string) => createHref({ stock: symbol });
 
 /**
  * Where a landing-page ticker links: Create plan on that stock (`createPlanHref`) when some production vault buys it

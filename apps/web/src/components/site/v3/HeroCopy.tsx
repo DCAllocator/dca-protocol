@@ -39,7 +39,7 @@ export function HeroCopy() {
         <p className="max-w-[30ch] text-[12px] leading-snug text-ink-3">From $10 a buy · pay in USDG or ETH</p>
       </div>
       {/* The third badge answers the headline: it is the stem of the page's one buyback sentence ($DCA section, FAQ). */}
-      <Badges items={["Non-custodial", "No lock-ups", "A share of every purchase fee buys $DCA"]} className="mt-7" />
+      <Badges items={["Non-custodial", "No lock-ups", "A share of  all fees buys $DCA"]} className="mt-7" />
     </>
   );
 }

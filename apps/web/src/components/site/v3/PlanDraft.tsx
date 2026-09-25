@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { findStock, useDirectory, useKindsBuying, useStocks } from "@/hooks/useProtocol";
 import { PRODUCTION_VAULT_KINDS, type ProductionVaultKind } from "@/lib/config";
+import { createHref } from "@/lib/createLinks";
 import { DEFAULT_DRAFT, INTERVAL_WORD } from "./config";
 
 /*
@@ -59,11 +60,10 @@ function writeStored(d: Omit<PlanDraft, "touched">) {
 
 /**
  * Create plan for a pick: `/app/create?stock=NVDA&frequency=weekly&amount=50`, without `stock=` when `withStock` is
- * false. The one link builder for the page (the draft's `href`, the plan builder's CTA). `amount` is ignored by Create
- * until AMOUNT_PARAM_SUPPORTED flips (config.ts); it is kept so the links are forward-compatible.
+ * false. Create opens on all three (the draft's `href`, the plan builder's CTA).
  */
 export const planHref = (d: { symbol: string; amount: number; kind: ProductionVaultKind }, withStock: boolean) =>
-  `/app/create?${withStock ? `stock=${encodeURIComponent(d.symbol)}&` : ""}frequency=${d.kind}&amount=${d.amount}`;
+  createHref({ stock: withStock ? d.symbol : undefined, kind: d.kind, amount: d.amount });
 
 const sentenceOf = (d: Omit<PlanDraft, "touched">) => `$${d.amount.toLocaleString("en-US")} of ${d.symbol} every ${INTERVAL_WORD[d.kind]}`;
 

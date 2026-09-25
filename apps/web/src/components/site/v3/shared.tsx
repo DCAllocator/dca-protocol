@@ -1,10 +1,21 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useBuyable, useDirectory, useKindsBuying, usePerkThresholds, useRankedStocks, useVaults } from "@/hooks/useProtocol";
+import {
+  useBuyable,
+  useDirectory,
+  useKindsBuying,
+  usePerkThresholds,
+  usePrices,
+  useRankedStocks,
+  useStockHoldings,
+  useStocks,
+  useVaults,
+  type VaultInfo,
+} from "@/hooks/useProtocol";
 import { useFeeReceiver } from "@/hooks/useFeeReceiver";
 import { PRODUCTION_VAULT_KINDS, VAULT_META, isZero, type ProductionVaultKind } from "@/lib/config";
-import { fmtUnits, fmtUnitsCompact } from "@/lib/format";
+import { fmtUnits, fmtUnitsCompact, valueOf } from "@/lib/format";
 import { tickerIconUrl } from "@/lib/tickers";
 import { useTheme } from "@/lib/theme";
 import { CaChip } from "./Chips";
@@ -13,8 +24,8 @@ import { CHART_URL, EXPLORER, SHOW_CHART_LINK, explorerAddress } from "./config"
 /*
  * Shared data hooks and tiny components for the landing, so every section reads the same numbers the same way. Everything
  * wraps the app's own hooks (hooks/useProtocol, hooks/useFeeReceiver) and existing components; nothing here reads a
- * buyback amount, a reserve or a $DCA price. Hooks answer `undefined` until the chain has, and sections hide a value
- * rather than print a zero.
+ * buyback amount, a reserve or a $DCA price (the proof strip reads the $DCA market cap itself, behind
+ * SHOW_DCA_MARKET_CAP). Hooks answer `undefined` until the chain has, and sections hide a value rather than print a zero.
  */
 
 /* ------------------------------------------------------------------ page */
@@ -72,37 +83,62 @@ export function useFeeBps(kind: ProductionVaultKind): { standard: number; holder
   return { standard, holder: Math.floor(standard / 2) };
 }
 
-/**
- * The next scheduled buy anywhere: the earliest `nextEpochStart` among production vaults that are known to be
- * unpaused, with its frequency. Undefined when the app is not configured or no vault has answered yet.
- */
-export function useSoonestBuy(): { kind: ProductionVaultKind; target: bigint } | undefined {
-  const { vaults, configured } = useDirectory();
-  const { byKind } = useVaults(vaults);
-  return useMemo(() => {
-    if (!configured) return undefined;
-    let soonest: { kind: ProductionVaultKind; target: bigint } | undefined;
-    for (const kind of PRODUCTION_VAULT_KINDS) {
-      const v = byKind[kind];
-      if (!v || v.paused !== false || v.nextEpochStart === undefined) continue;
-      if (!soonest || v.nextEpochStart < soonest.target) soonest = { kind, target: v.nextEpochStart };
-    }
-    return soonest;
-  }, [configured, byKind]);
+const PRODUCTION = new Set<string>(PRODUCTION_VAULT_KINDS);
+
+/** A sum over the production vaults, only once every one of them has answered: a partial sum would undercount. */
+export function sumProduction(infos: VaultInfo[], pick: (v: VaultInfo) => bigint | undefined): bigint | undefined {
+  const prod = infos.filter((v) => PRODUCTION.has(v.kind));
+  if (prod.length === 0) return undefined;
+  let total = 0n;
+  for (const v of prod) {
+    const x = pick(v);
+    if (x === undefined) return undefined;
+    total += x;
+  }
+  return total;
 }
 
-/** The smallest amount per buy any production vault accepts (USDG, 6 dp); undefined until a vault answers. */
-export function useMinPerBuy(): bigint | undefined {
-  const { vaults } = useDirectory();
-  const { byKind } = useVaults(vaults);
+/** Value locked in the production vaults, split the way the proof strip's bar shows it (USDG, 6 dp). */
+export type ProtocolTvl = {
+  /** Deposited USDG on the vaults, waiting for its buys. */
+  idle: bigint;
+  /** USDG boosted plans have lent out through the strategy, yield included (not part of `totalUsdgIdle`). */
+  boosted: bigint;
+  /** Bought stock (and $DCA) waiting to be claimed, at the router's price. */
+  stock: bigint;
+  total: bigint;
+};
+
+/**
+ * Total value locked in the production vaults (the local test vault never counts): idle USDG, what boosted plans have
+ * lent out, and bought stock not yet claimed. Only the tokens a vault actually holds are priced (one router quote each),
+ * so the landing quotes a handful of tokens rather than the whole registry. Undefined until every part has answered,
+ * and while any held token has no price: a total without it would undercount.
+ */
+export function useProtocolTvl(): ProtocolTvl | undefined {
+  const { dir, vaults } = useDirectory();
+  const { infos } = useVaults(vaults);
+  const { stocks } = useStocks(dir?.registry);
+  const holdings = useStockHoldings(vaults, stocks.length > 0 ? stocks : undefined, PRODUCTION_VAULT_KINDS);
+  const held = useMemo(
+    () => (holdings.ready ? stocks.filter((s) => (holdings.perStock[s.address.toLowerCase()] ?? 0n) > 0n) : undefined),
+    [holdings.ready, holdings.perStock, stocks],
+  );
+  const tokens = useMemo(() => held?.map((s) => ({ address: s.address, decimals: s.decimals })), [held]);
+  const { prices } = usePrices(dir?.router, dir?.usdg, tokens);
   return useMemo(() => {
-    let min: bigint | undefined;
-    for (const kind of PRODUCTION_VAULT_KINDS) {
-      const m = byKind[kind]?.minAmountPerEpoch;
-      if (m !== undefined && (min === undefined || m < min)) min = m;
+    const idle = sumProduction(infos, (v) => v.totalUsdgIdle);
+    const boosted = sumProduction(infos, (v) => v.boostAssets);
+    if (idle === undefined || boosted === undefined || !held) return undefined;
+    let stock = 0n;
+    for (const s of held) {
+      const key = s.address.toLowerCase();
+      const v = valueOf(holdings.perStock[key], prices[key], s.decimals);
+      if (v === undefined) return undefined;
+      stock += v;
     }
-    return min;
-  }, [byKind]);
+    return { idle, boosted, stock, total: idle + boosted + stock };
+  }, [infos, held, holdings.perStock, prices]);
 }
 
 /* ------------------------------------------------------------------ stocks */
