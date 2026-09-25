@@ -1,0 +1,14 @@
+{
+  "version": 1.1,
+  "atDirectives": [
+    { "name": "@theme", "description": "Tailwind v4: design tokens (--color-*, --radius-*, --font-*, ...) that also generate utilities.", "references": [{ "name": "Tailwind docs", "url": "https://tailwindcss.com/docs/functions-and-directives#theme-directive" }] },
+    { "name": "@utility", "description": "Tailwind v4: a custom utility that works with variants (hover:, md:, ...).", "references": [{ "name": "Tailwind docs", "url": "https://tailwindcss.com/docs/functions-and-directives#utility-directive" }] },
+    { "name": "@apply", "description": "Tailwind: inline existing utility classes into a rule.", "references": [{ "name": "Tailwind docs", "url": "https://tailwindcss.com/docs/functions-and-directives#apply-directive" }] },
+    { "name": "@variant", "description": "Tailwind v4: apply a variant to styles in CSS.", "references": [{ "name": "Tailwind docs", "url": "https://tailwindcss.com/docs/functions-and-directives#variant-directive" }] },
+    { "name": "@custom-variant", "description": "Tailwind v4: define a custom variant.", "references": [{ "name": "Tailwind docs", "url": "https://tailwindcss.com/docs/functions-and-directives#custom-variant-directive" }] },
+    { "name": "@source", "description": "Tailwind v4: add or exclude sources scanned for class names.", "references": [{ "name": "Tailwind docs", "url": "https://tailwindcss.com/docs/functions-and-directives#source-directive" }] },
+    { "name": "@reference", "description": "Tailwind v4: import a stylesheet for reference (theme, utilities) without emitting it.", "references": [{ "name": "Tailwind docs", "url": "https://tailwindcss.com/docs/functions-and-directives#reference-directive" }] },
+    { "name": "@plugin", "description": "Tailwind v4: load a legacy JavaScript plugin.", "references": [{ "name": "Tailwind docs", "url": "https://tailwindcss.com/docs/functions-and-directives#plugin-directive" }] },
+    { "name": "@config", "description": "Tailwind v4: load a legacy JavaScript config file.", "references": [{ "name": "Tailwind docs", "url": "https://tailwindcss.com/docs/functions-and-directives#config-directive" }] }
+  ]
+}

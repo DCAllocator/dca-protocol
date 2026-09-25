@@ -24,8 +24,8 @@ import {
  * buy]". Under that, what the buys get at today's price and the monthly pace, then the boost switch and one big
  * button, with the $DCA holder-perk banner under the card. "To buy" is /app/create/2's stock row (the picker dialog,
  * plus "Add to MetaMask" once a wallet is connected). The form logic lives in `useCreatePlan` (including the
- * landing pages' `?stock=` / `?frequency=` links); /app/create/2 renders the same model in sentence order, and the
- * numbered-steps layout lives on at /app/create/legacy. All send the same transaction.
+ * landing's `?stock=` / `?frequency=` / `?amount=` links); /app/create/2 renders the same model in sentence order,
+ * and both send the same transaction.
  */
 export default function CreatePlanCard() {
   const m = useCreatePlan({ defaultKind: "daily" });

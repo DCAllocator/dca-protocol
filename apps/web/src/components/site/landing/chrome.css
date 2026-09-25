@@ -1,0 +1,35 @@
+/* Landing chrome (nav, footer, sticky bar): the few rules the shared landing.css does not cover. Everything is prefixed
+   lp-chrome- and reuses landing.css keyframes where one exists. */
+
+/* mobile menu scrim: fades in each time the sheet opens (it toggles `hidden`, so a keyframe rather than a transition) */
+@keyframes lp-chrome-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.lp-chrome-scrim {
+  animation: lp-chrome-fade 150ms ease-out both;
+}
+
+/* footer: the Core contracts column flashes once when a link lands on #contracts (lp-flash lives in landing.css) */
+.lp-chrome-contracts:target {
+  animation: lp-flash 900ms ease-out;
+}
+
+/* phones: while the sticky CTA bar is up it carries Buy $DCA, so the nav's copy steps out of sight (visibility keeps
+   the bar's layout fixed and takes the link out of the tab order and the accessibility tree) */
+@media (max-width: 767px) {
+  html[data-sticky-cta] .lp-nav-buy {
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-chrome-scrim,
+  .lp-chrome-contracts:target {
+    animation: none;
+  }
+}

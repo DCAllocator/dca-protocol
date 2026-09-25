@@ -1,7 +1,7 @@
 import { activeChain } from "./chain";
 
 /**
- * Community links shown as icons on the landing pages and in the app sidebar. They are public and the same in every
+ * Community links shown as icons on the landing and in the app sidebar. They are public and the same in every
  * deployment, so they live here rather than in env vars: set `href` when an account exists. On the local test chain
  * (31337: `pnpm dev`, `pnpm share`, both forks) a link without `href` falls back to the platform's home page, so every
  * icon can be seen and clicked before the account exists; on Robinhood Chain it is not shown, and with none set there

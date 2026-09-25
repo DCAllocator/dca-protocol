@@ -19,7 +19,7 @@ const INK_3 = "#7b7975";
 const LIME = "#ccff00";
 
 /**
- * The site's 48px hairline grid (.v3-grid), faded out from the top-right corner: public/og-grid.svg, since satori has no
+ * The site's 48px hairline grid (.lp-grid), faded out from the top-right corner: public/og-grid.svg, since satori has no
  * CSS mask. A static file rather than an inline string: the production minifier mangled the inline SVG's markup.
  */
 const GRID_W = 768;

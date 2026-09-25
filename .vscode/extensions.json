@@ -1,0 +1,4 @@
+{
+  // Class-name completion, hover previews and class linting for Tailwind in apps/web.
+  "recommendations": ["bradlc.vscode-tailwindcss"]
+}

@@ -154,7 +154,7 @@ export function useBuyable({ enabled = true }: { enabled?: boolean } = {}) {
 
 /**
  * The production frequencies whose vault buys `stock` (see `useBuyable`), fastest first; undefined until the directory
- * and the keeper's pairs are in. Without NEXT_PUBLIC_KEEPER every frequency counts. The landing pages' stock links and
+ * and the keeper's pairs are in. Without NEXT_PUBLIC_KEEPER every frequency counts. The landing's stock links and
  * Create plan's `?stock=` go by it; the local test vault never counts. `fresh` as in `useBuyable`.
  */
 export function useKindsBuying() {
@@ -822,7 +822,7 @@ export function usePrices(router?: Address, usdg?: Address, tokens?: { address: 
   return { prices: q.data ?? ({} as PriceMap), isLoading: q.isLoading, ready: q.data !== undefined };
 }
 
-/** Number of largest stocks shown as pills: the stock picker dialog's, and /app/create/legacy's "Popular" row. */
+/** Number of largest stocks shown as pills: the stock picker dialog's. */
 export const TOP_STOCKS = 5;
 
 /**

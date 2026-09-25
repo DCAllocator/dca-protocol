@@ -1,0 +1,120 @@
+/* Hero replica (PlansReplica). Section-owned additions to landing.css, prefixed lp-hero-.
+
+   The swap fade replays on every cycle without re-mounting the table (which would blank the live countdowns for a
+   frame): cycles alternate between .lp-fade-swap (landing.css) and this twin, and a new animation-name restarts it. */
+@keyframes lp-hero-swap {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+.lp-hero-swap {
+  animation: lp-hero-swap 300ms ease-in-out;
+}
+
+/* On the phone cards the label sits right above the value, so the ghost drifts out sideways instead of rising into it. */
+@keyframes lp-hero-ghost-side {
+  0% {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+}
+.lp-ghost-rise.lp-hero-ghost-side {
+  animation-name: lp-hero-ghost-side;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-hero-swap {
+    animation: none !important;
+  }
+}
+
+/* The replica's table: My plans' .tbl at hero size (unlayered like .tbl itself, one class more specific) */
+.lp-hero-tbl.tbl {
+  font-size: 12.5px;
+}
+.lp-hero-tbl.tbl th {
+  height: 34px;
+  padding-inline: 10px;
+  font-size: 10.5px;
+}
+.lp-hero-tbl.tbl td {
+  padding-inline: 10px;
+}
+.lp-hero-tbl.tbl :is(th, td):first-child {
+  padding-left: 12px;
+}
+
+/* Beside the hero copy (lg and up) the panel is 490 to 560px wide: a tighter table so all five columns fit. */
+@container (max-width: 41.99rem) {
+  .lp-hero-tbl.tbl {
+    font-size: 12px;
+  }
+  .lp-hero-tbl.tbl th {
+    padding-inline: 7px;
+    font-size: 10px;
+    letter-spacing: 0.03em;
+  }
+  .lp-hero-tbl.tbl td {
+    padding-inline: 7px;
+  }
+  .lp-hero-tbl.tbl :is(th, td):first-child {
+    padding-left: 12px;
+  }
+  .lp-hero-tbl.tbl :is(th, td):nth-child(5) {
+    padding-right: 12px;
+  }
+}
+
+/* Narrowest (lg from 1024 to ~1100px): smaller type; the per-buy cadence line (the plan line already says it), the
+   boost line's bolt (the badge and the row edge already mark it) and the Plans tile's "3 active" step aside. */
+@container (max-width: 32rem) {
+  .lp-hero-tbl.tbl {
+    font-size: 11.5px;
+  }
+  .lp-hero-tbl.tbl td {
+    padding-inline: 6px;
+  }
+  .lp-hero-tbl.tbl :is(th, td):first-child {
+    padding-left: 10px;
+  }
+  .lp-hero-tbl.tbl :is(th, td):nth-child(5) {
+    padding-right: 10px;
+  }
+  .lp-hero-tbl .lp-hero-cadence,
+  .lp-hero-tbl .lp-hero-earned > svg,
+  .lp-hero-active {
+    display: none;
+  }
+  .lp-hero-tbl .lp-hero-earned {
+    font-size: 11px;
+  }
+  /* four tiles in a row (phones show two, at full size) */
+  @media (min-width: 640px) {
+    .lp-hero-stat-label {
+      font-size: 10px;
+      letter-spacing: 0.03em;
+    }
+    .lp-hero-stat-value {
+      font-size: 15px;
+    }
+  }
+  /* if a font still runs wide, the boost line and the headers wrap before anything is clipped */
+  .lp-hero-tbl.tbl th,
+  .lp-hero-tbl .lp-hero-earned {
+    white-space: normal;
+    line-height: 1.2;
+  }
+}

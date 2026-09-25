@@ -1,5 +1,5 @@
 import { formatUnits, parseUnits } from "viem";
-import { USDG_DECIMALS, VAULT_KINDS, VAULT_META, type VaultKind } from "@/lib/config";
+import { USDG_DECIMALS, VAULT_KINDS, type VaultKind } from "@/lib/config";
 
 /*
  * Deep links into Create plan: `?stock=` (a ticker or address), `?frequency=` and `?amount=` (USDG per buy), all built
@@ -26,18 +26,6 @@ export function createHref({ stock, kind, amount }: { stock?: string; kind?: Vau
   const s = q.toString();
   return s ? `/app/create?${s}` : "/app/create";
 }
-
-/** Create plan opened on `kind`, e.g. "/app/create?frequency=weekly" (the landing pages' vault rows and plan cards). */
-export const frequencyHref = (kind: VaultKind) => createHref({ kind });
-
-/**
- * "Start a weekly plan" / "Start an hourly plan": what a `frequencyHref` link says — the visible text of /legacy's plan
- * cards, the accessible name of the landings' "Start" buttons (which keeps the visible word "Start" in it).
- */
-export const startPlanLabel = (kind: VaultKind) => {
-  const label = VAULT_META[kind].label.toLowerCase();
-  return `Start ${/^[aeiou]|^hour/.test(label) ? "an" : "a"} ${label} plan`;
-};
 
 /**
  * A `?frequency=` value as a frequency this app shows, else undefined: an unknown value, and the dev-only `test` kind

@@ -1,19 +1,19 @@
 import type { Metadata } from "next";
-import { PlanDraftProvider } from "@/components/site/v3/PlanDraft";
-import { MotionBoot } from "@/components/site/v3/motion";
-import { SplashSkip } from "@/components/site/v3/shared";
-import { NavV3 } from "@/components/site/v3/NavV3";
-import { HeroV3 } from "@/components/site/v3/HeroV3";
-import { Proof } from "@/components/site/v3/Proof";
-import { StepsV3 } from "@/components/site/v3/StepsV3";
-import { StocksV3 } from "@/components/site/v3/StocksV3";
-import { DcaSection } from "@/components/site/v3/DcaSection";
-import { BoostBand } from "@/components/site/v3/BoostBand";
-import { Trust } from "@/components/site/v3/Trust";
-import { FaqV3 } from "@/components/site/v3/FaqV3";
-import { FinalCta } from "@/components/site/v3/FinalCta";
-import { FooterV3 } from "@/components/site/v3/FooterV3";
-import { StickyCta } from "@/components/site/v3/StickyCta";
+import { PlanDraftProvider } from "@/components/site/landing/PlanDraft";
+import { MotionBoot } from "@/components/site/landing/motion";
+import { SplashSkip } from "@/components/site/landing/shared";
+import { Nav } from "@/components/site/landing/Nav";
+import { Hero } from "@/components/site/landing/Hero";
+import { Proof } from "@/components/site/landing/Proof";
+import { Steps } from "@/components/site/landing/Steps";
+import { Stocks } from "@/components/site/landing/Stocks";
+import { DcaSection } from "@/components/site/landing/DcaSection";
+import { BoostBand } from "@/components/site/landing/BoostBand";
+import { Trust } from "@/components/site/landing/Trust";
+import { Faq } from "@/components/site/landing/Faq";
+import { FinalCta } from "@/components/site/landing/FinalCta";
+import { Footer } from "@/components/site/landing/Footer";
+import { StickyCta } from "@/components/site/landing/StickyCta";
 
 const title = "The token that DCAs itself | DCA";
 const description =
@@ -27,30 +27,30 @@ export const metadata: Metadata = {
 };
 
 /**
- * The landing (v3): short and product-first. The hero shows a working copy of My plans, the plan builder in the steps
+ * The landing: short and product-first. The hero shows a working copy of My plans, the plan builder in the steps
  * personalises the stock tiles, the closing band and the sticky mobile bar, and the $DCA section comes after the
- * stocks. Sections live in components/site/v3; the earlier product-first page is kept at /legacy.
+ * stocks. Sections live in components/site/landing.
  */
 export default function Landing() {
   return (
     <PlanDraftProvider>
       <MotionBoot />
       <SplashSkip />
-      <NavV3 />
-      <main id="top" data-v3-page="" className="bg-surface-0">
-        <HeroV3 />
+      <Nav />
+      <main id="top" data-lp-page="" className="bg-surface-0">
+        <Hero />
         <Proof />
         <div id="how">
-          <StepsV3 />
+          <Steps />
         </div>
-        <StocksV3 />
+        <Stocks />
         <DcaSection />
         <BoostBand />
         <Trust />
-        <FaqV3 />
+        <Faq />
         <FinalCta />
       </main>
-      <FooterV3 />
+      <Footer />
       <StickyCta />
     </PlanDraftProvider>
   );

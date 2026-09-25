@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Modal } from "@/components/ui";
 import { SocialIcon } from "@/components/SocialLinks";
-import { CHART_URL, PONS_URL } from "@/components/site/v3/config";
+import { CHART_URL, PONS_URL } from "@/components/site/landing/config";
 import { BUY_DCA_URL } from "@/lib/config";
 import { PRELAUNCH, PRELAUNCH_NOTICE_PARAM } from "@/lib/prelaunch";
 import { socialUrl } from "@/lib/socials";

@@ -6,7 +6,7 @@ import { BUY_DCA_URL } from "@/lib/config";
 export const BUY_DCA_EXTERNAL = /^https?:\/\//.test(BUY_DCA_URL);
 
 /**
- * "Buy $DCA" as the landing pages render it: always a client-side link to /app/buy, which swaps in-app when the router
+ * "Buy $DCA" as the landing renders it: always a client-side link to /app/buy, which swaps in-app when the router
  * can, hands off to BUY_DCA_URL (Pons) when it cannot, and otherwise says there is no route yet and points to Start a
  * plan. No hooks, so it renders from server components (the landing page) too; inside the app `BuyDcaButton`
  * (components/app/create/CreateTabs.tsx) is used instead, which is disabled while there is nothing to buy.

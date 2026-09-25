@@ -1,0 +1,103 @@
+/* The proof strip (Proof.tsx): only what landing.css does not already cover. Unlayered, like landing.css, so these beat the
+   utilities they adjust. The strip's loops (tape, tape dot, pill dot) rest off-screen through landing.css's [data-live] gates. */
+
+/* on white the lime dot all but disappears: an olive hairline keeps its edge (outline, so the pulse's box-shadow is untouched) */
+:root[data-theme="light"] .lp-proof .lp-live-dot {
+  outline: 1px solid rgb(95 125 0 / 0.5);
+  outline-offset: -1px;
+}
+
+/* ---------- tiles ---------- */
+
+/* the TVL bar's ordinal ramp, validated (dataviz validate_palette --ordinal) on each theme's tile surface: money waiting
+   (neutral), boosted (half lime), bought (full lime). Light steps darken toward the stock end instead. */
+.lp-proof {
+  --tvl-idle: #6e6b65;
+  --tvl-boosted: #86a800;
+  --tvl-stock: #ccff00;
+}
+:root[data-theme="light"] .lp-proof {
+  --tvl-idle: #aeaba4;
+  --tvl-boosted: #7f9f00;
+  --tvl-stock: #4d6600;
+}
+
+.lp-stat {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  border: 1px solid var(--color-line);
+  border-radius: 16px;
+  background: var(--color-surface-1);
+  padding: 16px;
+}
+@media (min-width: 640px) {
+  .lp-stat {
+    padding: 20px;
+  }
+}
+
+/* the TVL split: 8px bar, 2px gaps between parts, 4px rounded outer ends */
+.lp-tvl-bar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+}
+.lp-tvl-seg {
+  min-width: 4px;
+  border-radius: 1px;
+  transition: opacity 160ms ease;
+}
+.lp-tvl-seg:first-child {
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
+}
+.lp-tvl-seg:last-child {
+  border-top-right-radius: 4px;
+  border-bottom-right-radius: 4px;
+}
+.lp-tvl-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--color-ink-3);
+  transition: opacity 160ms ease;
+}
+.lp-tvl-swatch {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+:is(.lp-tvl-seg, .lp-tvl-swatch)[data-part="idle"] {
+  background: var(--tvl-idle);
+}
+:is(.lp-tvl-seg, .lp-tvl-swatch)[data-part="boosted"] {
+  background: var(--tvl-boosted);
+}
+:is(.lp-tvl-seg, .lp-tvl-swatch)[data-part="stock"] {
+  background: var(--tvl-stock);
+}
+:is(.lp-tvl-seg, .lp-tvl-row)[data-dim] {
+  opacity: 0.35;
+}
+
+/* "Stocks available": logos on discs, overlapped, each ringed in the tile's surface so the overlap reads */
+.lp-stack-mark {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--color-surface-3);
+  box-shadow: 0 0 0 2px var(--color-surface-1);
+}
+.lp-stack-mark + .lp-stack-mark {
+  margin-left: -7px;
+}
+.lp-stack-mark > * {
+  border-radius: 999px;
+}

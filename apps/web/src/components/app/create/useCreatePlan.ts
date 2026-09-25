@@ -24,7 +24,7 @@ export const ETH_GAS_RESERVE = parseEther("0.01");
 export const ZAP_SLIPPAGE_BPS = 50n;
 
 /**
- * `?stock=<ticker or address>` (the landing pages' stock links): the stock the form opens on, kept until the user picks
+ * `?stock=<ticker or address>` (the landing's stock links, see `createHref`): the stock the form opens on, kept until the user picks
  * one themselves (`clear`, which the form's pickers call). It is looked up by ticker or address in the current registry
  * list on every render, so a list restored from the last visit and then replaced by the refetch still resolves. Once
  * the fresh list and the keeper's pairs are in, it is decided once: a frequency that does not buy it switches to the
@@ -55,7 +55,7 @@ export function useStockParam(dir: Directory | undefined, kind: VaultKind, setKi
 }
 
 /**
- * `?frequency=hourly|daily|weekly|monthly` (the landing pages' vault rows and plan cards, see `frequencyHref`): the
+ * `?frequency=hourly|daily|weekly|monthly` (the landing's plan builder and stock tiles, see `createHref`): the
  * frequency the form opens on, applied once right after mount — read from `window.location` like `?stock=`, and in the
  * same commit as `useStockParam`'s read, so both are known before the stock link is decided. An unknown value, or the
  * dev-only `test` kind while its vault is not shown, is ignored and `defaultKind` stands (`parseFrequencyParam`).
