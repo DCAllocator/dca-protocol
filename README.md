@@ -283,7 +283,7 @@ pnpm workspace: `apps/*` are the workspace packages; `contracts/` is a plain Fou
 
 ## Build, test, deploy
 
-Requires Foundry (nightly ≥ 1.6 used here; `via_ir = true`, solc 0.8.28) and Node 22 / pnpm.
+Requires Foundry (CI pins v1.8.3; `via_ir = true`, solc 0.8.28) and Node 22 / pnpm.
 
 ```bash
 cd contracts
@@ -291,10 +291,12 @@ forge build --sizes            # vaults ~24.2 KB runtime; EIP-170 margin Hourly 
                                #   (BoostLib, VaultAdminLib, PriceGuardLib and PlanExitLib are linked libraries for that reason —
                                #   put every PlanVault addition in a library; ContractSizes.t.sol enforces the limit:
                                #   forge test --match-contract ContractSizes -vv logs the margins)
-forge test                     # 480 tests: unit, fuzz, invariant, audit regression (fork suite self-skips without RH_RPC)
+forge test                     # 503 tests: unit, fuzz, invariant, audit regression (fork suite self-skips without RH_RPC)
 forge test --match-path "test/audit/*" -vv   # regression suite for the v0.1 audit findings (real router + CPMM pool)
 forge coverage --ir-minimum --no-match-coverage "(script|test)/"
 ```
+
+**CI:** `.github/workflows/contracts.yml` runs on every pull request and on `main`: `forge fmt --check`, `forge build --sizes` (fails on an oversized contract), `pnpm abi:check` (the apps' ABIs still match the build) and `forge test` under `FOUNDRY_PROFILE=ci` (4× fuzz runs, 16× invariant calls). Its `contracts` job is the required check for merging into `main`, which only takes pull requests. Run `forge fmt` before pushing.
 
 Test-writing note: with `via_ir`, `block.timestamp` read after `vm.warp` in the same call frame may return the pre-warp value (TIMESTAMP is treated as call-invariant and hoisted); compute origins from explicit timestamps or vault views. `BaseTest`'s `T0` is Friday 2027-01-15 14:00:00 UTC.
 

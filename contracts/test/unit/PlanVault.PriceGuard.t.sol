@@ -110,7 +110,9 @@ contract PlanVaultPriceGuardTest is BaseTest {
         _nextEpoch(daily);
         router.setRate(address(usdg), address(nvda), 1e18, 800e6); // pool pushed +60%
         vm.prank(keeper);
-        vm.expectRevert(abi.encodeWithSelector(IPlanVault.PriceDeviates.selector, address(nvda), _minOutAtRate(800e6), FLOOR));
+        vm.expectRevert(
+            abi.encodeWithSelector(IPlanVault.PriceDeviates.selector, address(nvda), _minOutAtRate(800e6), FLOOR)
+        );
         daily.advanceEpoch(address(nvda), 0, "");
         assertEq(daily.getPlan(id).usdgIdle, 1_000e6, "nothing charged");
         assertEq(daily.nextPlanIndex(address(nvda), daily.currentEpochId()), 0, "page not consumed");
@@ -220,7 +222,9 @@ contract PlanVaultPriceGuardTest is BaseTest {
         feed18.set(500e18);
         router.setRate(address(usdg), address(nvda), 1e18, 800e6);
         vm.prank(keeper);
-        vm.expectRevert(abi.encodeWithSelector(IPlanVault.PriceDeviates.selector, address(nvda), _minOutAtRate(800e6), FLOOR));
+        vm.expectRevert(
+            abi.encodeWithSelector(IPlanVault.PriceDeviates.selector, address(nvda), _minOutAtRate(800e6), FLOOR)
+        );
         daily.advanceEpoch(address(nvda), 0, "");
     }
 

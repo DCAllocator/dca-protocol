@@ -118,9 +118,10 @@ library PriceGuardLib {
         if (feed == address(0) || feed == UNGUARDED) return (0, false);
         _checkSequencer(g);
         (, int256 answer,, uint256 updatedAt,) = AggregatorV3Interface(feed).latestRoundData();
-        // forge-lint: disable-next-line(block-timestamp)
-        if (answer <= 0 || updatedAt == 0 || updatedAt > block.timestamp || block.timestamp - updatedAt > f.maxStaleness)
-        {
+        if (
+            // forge-lint: disable-next-line(block-timestamp)
+            answer <= 0 || updatedAt == 0 || updatedAt > block.timestamp || block.timestamp - updatedAt > f.maxStaleness
+        ) {
             revert IPlanVault.PriceFeedStale(stock);
         }
         // expected = amountIn / 10^usdgDec (USD) × 10^feedDec / answer (tokens) × 10^stockDec (raw units)

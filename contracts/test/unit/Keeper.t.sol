@@ -172,7 +172,9 @@ contract KeeperTest is BaseTest {
         _nextEpoch(daily);
         vm.prank(bot);
         vm.expectEmit(true, true, false, true);
-        emit EpochKeeper.JobFailed(address(daily), address(nvda), abi.encodeWithSelector(IPlanVault.QuoteTooSmall.selector));
+        emit EpochKeeper.JobFailed(
+            address(daily), address(nvda), abi.encodeWithSelector(IPlanVault.QuoteTooSmall.selector)
+        );
         assertEq(k.runDue(), 0);
         assertEq(daily.getPlan(id).usdgIdle, 1_000e6, "nobody charged");
         assertEq(daily.lastExecutedEpoch(address(nvda)), 0, "still due");

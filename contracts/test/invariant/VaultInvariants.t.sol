@@ -39,7 +39,9 @@ contract VaultInvariantsTest is BaseTest {
         // every full drain of the pool can strand at most 1 wei of strategy shares (floor on the way out)
         if (poolShares == 0) {
             assertLe(
-                strategy.convertToAssets(strategy.balanceOf(address(daily))), handler.calls(), "empty pool leaves only dust"
+                strategy.convertToAssets(strategy.balanceOf(address(daily))),
+                handler.calls(),
+                "empty pool leaves only dust"
             );
         }
     }

@@ -162,12 +162,15 @@ contract DeployFork is Script {
         // Three deployer plans (the first boosted, lent on the real Morpho market) so the scheduler has work from the
         // first boundary: NVDA / SPCX / TSLA when listed, else the first liquid stocks.
         address[] memory stocks = _withoutDca(approved, dca);
-        address[3] memory seeded =
-            [_find(registry, stocks, "NVDA", 0), _find(registry, stocks, "SPCX", 1), _find(registry, stocks, "TSLA", 2)];
+        address[3] memory seeded = [
+            _find(registry, stocks, "NVDA", 0), _find(registry, stocks, "SPCX", 1), _find(registry, stocks, "TSLA", 2)
+        ];
         uint96[3] memory perEpoch = [uint96(100e6), uint96(50e6), uint96(25e6)];
         IERC20(usdg).approve(address(testVault), 150_000e6);
         for (uint256 i; i < 3; ++i) {
-            if (seeded[i] != address(0)) testVault.createPlan(seeded[i], perEpoch[i], address(0), 50_000e6, 0, 0, i == 0);
+            if (seeded[i] != address(0)) {
+                testVault.createPlan(seeded[i], perEpoch[i], address(0), 50_000e6, 0, 0, i == 0);
+            }
         }
 
         // test1 clears both $DCA perk thresholds; test2 / test3 hold none, so their stock accrues and Claim is testable.

@@ -74,7 +74,12 @@ contract RouteBench is Script {
         uint256[] memory sizes = _sizes();
         console2.log("");
         console2.log("=== RouteBench: %s pools, ETH $%s, gas %s wei ===", pools.length, ethPriceUsd, gasPriceWei);
-        console2.log("impact cap %s bps; L1 fee per tx %s cents; extra swap gas %s", router.maxPriceImpactBps(), l1FeeCents, swapGas);
+        console2.log(
+            "impact cap %s bps; L1 fee per tx %s cents; extra swap gas %s",
+            router.maxPriceImpactBps(),
+            l1FeeCents,
+            swapGas
+        );
         _impactTable(sizes);
         _splitTable(sizes);
     }
@@ -109,7 +114,9 @@ contract RouteBench is Script {
                     string.concat(vm.toString(impact), " bps", impact > router.maxPriceImpactBps() ? " (over cap)" : "")
                 );
             }
-            try router.quoteWithImpact(usdg, stock, amountIn) returns (uint256 out, Route[] memory path, uint256 impact) {
+            try router.quoteWithImpact(usdg, stock, amountIn) returns (
+                uint256 out, Route[] memory path, uint256 impact
+            ) {
                 console2.log("  router picks %s: out %s, impact %s bps", _labelOf(path[0]), _fmt(out, stockDec), impact);
             } catch {
                 console2.log("  router: NoRoute (every pool over the cap or unable to fill) -> use a smaller page");
@@ -123,7 +130,9 @@ contract RouteBench is Script {
 
     function _splitTable(uint256[] memory sizes) internal {
         console2.log("");
-        console2.log("--- 2. best single pool vs best split, every leg inside the impact cap (net of extra swap gas) ---");
+        console2.log(
+            "--- 2. best single pool vs best split, every leg inside the impact cap (net of extra swap gas) ---"
+        );
         uint256 stockUnit = 10 ** stockDec;
         for (uint256 i; i < sizes.length; ++i) {
             uint256 amountIn = sizes[i] * 10 ** usdgDec;
@@ -162,7 +171,8 @@ contract RouteBench is Script {
         uint256 gainStock = out > single ? out - single : 0;
         uint256 usdgPerStock = Math.mulDiv(amountIn, stockUnit, out); // USDG units per stock unit
         uint256 gainUsdg = Math.mulDiv(gainStock, usdgPerStock, stockUnit);
-        uint256 extraGasUsdCents = (extraSwaps * swapGas * gasPriceWei * ethPriceUsd * 100) / 1e18 + extraSwaps * l1FeeCents;
+        uint256 extraGasUsdCents =
+            (extraSwaps * swapGas * gasPriceWei * ethPriceUsd * 100) / 1e18 + extraSwaps * l1FeeCents;
         uint256 gainCents = (gainUsdg * 100) / 10 ** usdgDec;
         console2.log(
             "  %s (%s): out %s",
@@ -261,7 +271,11 @@ contract RouteBench is Script {
             factory.forceRegister(usdg, stock, uint24(fees[i]), address(pool));
             u.mint(address(pool), tvl[i] * 1e6);
             s.mint(address(pool), (tvl[i] * 1e18) / price);
-            _addPool(address(pool), uint24(fees[i]), string.concat("$", vm.toString(tvl[i]), " @", vm.toString(fees[i] / 100), "bps"));
+            _addPool(
+                address(pool),
+                uint24(fees[i]),
+                string.concat("$", vm.toString(tvl[i]), " @", vm.toString(fees[i] / 100), "bps")
+            );
         }
     }
 

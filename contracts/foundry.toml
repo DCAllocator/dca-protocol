@@ -23,6 +23,7 @@ fail_on_revert = false
 [profile.ci]
 fuzz = { runs = 2048 }
 invariant = { runs = 256, depth = 64 }
+lint = { lint_on_build = false } # keeps the CI log to build + test output; run `forge lint` locally
 
 [rpc_endpoints]
 robinhood = "${RH_RPC}"

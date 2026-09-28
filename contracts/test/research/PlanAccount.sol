@@ -156,7 +156,9 @@ contract PlanAccountFactory is Ownable {
     error StockNotPurchasable(address stock);
     error BelowMinimum(uint256 value, uint256 min);
 
-    event PlanCreated(address indexed plan, address indexed owner, address indexed stock, uint96 amountPerBuy, uint32 interval);
+    event PlanCreated(
+        address indexed plan, address indexed owner, address indexed stock, uint96 amountPerBuy, uint32 interval
+    );
     event FireFailed(address indexed plan, bytes reason);
 
     constructor(address usdg_, address dca_, address registry_, address router_, address feeRecipient_, address owner_)
@@ -187,7 +189,8 @@ contract PlanAccountFactory is Ownable {
         if (recipient == address(0)) recipient = msg.sender;
         plan = Clones.clone(implementation);
         // forge-lint: disable-next-line(unsafe-typecast)
-        PlanAccount(plan).initialize(msg.sender, recipient, stock, amountPerBuy, interval, uint64(block.timestamp) + interval);
+        PlanAccount(plan)
+            .initialize(msg.sender, recipient, stock, amountPerBuy, interval, uint64(block.timestamp) + interval);
         isPlan[plan] = true;
         if (usdgAmount > 0) usdg.safeTransferFrom(msg.sender, plan, usdgAmount);
         emit PlanCreated(plan, msg.sender, stock, amountPerBuy, interval);
@@ -230,7 +233,8 @@ contract PlanAccountFactory is Ownable {
 
     /// @notice Chainlink reference output less `maxDeviationBps`: the lean path's minOut.
     function referenceFloor(address stock, uint256 amountIn) external view returns (uint256) {
-        (uint256 expected, bool hasFeed) = PriceGuardLib.referenceOut(priceGuard, priceFeed, stock, amountIn, usdgDecimals);
+        (uint256 expected, bool hasFeed) =
+            PriceGuardLib.referenceOut(priceGuard, priceFeed, stock, amountIn, usdgDecimals);
         if (!hasFeed) revert StockNotPurchasable(stock);
         return (expected * (FeeMath.BPS - priceGuard.maxDeviationBps)) / FeeMath.BPS;
     }

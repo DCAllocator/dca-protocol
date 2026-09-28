@@ -47,9 +47,7 @@ contract ListDca is Script {
         // Checks first, so a stack this cannot fix aborts before anything is broadcast.
         IStockRegistry.StockInfo memory info = registry.info(dca);
         require(!info.feeOnTransfer, "DCA is flagged fee-on-transfer in the registry; vaults refuse it");
-        require(
-            router.approvedHops(usdg, dca).length > 0, "no approved USDG->DCA pool on the router: redeploy"
-        );
+        require(router.approvedHops(usdg, dca).length > 0, "no approved USDG->DCA pool on the router: redeploy");
 
         vm.startBroadcast();
         address sender = msg.sender;

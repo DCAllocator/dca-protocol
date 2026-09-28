@@ -71,7 +71,9 @@ contract GasSim is Script {
         uint256 perPlan = (g150 - g1) / 149;
         uint256 perPage = g1 - perPlan + TX_BASE_GAS;
         console2.log("");
-        console2.log("--- model (steady state): %s gas per page (fixed, incl. tx base) + %s gas per plan ---", perPage, perPlan);
+        console2.log(
+            "--- model (steady state): %s gas per page (fixed, incl. tx base) + %s gas per plan ---", perPage, perPlan
+        );
         console2.log("    (a plan's FIRST fill costs ~40k gas more, once)");
 
         // Measured epochs.
@@ -112,11 +114,21 @@ contract GasSim is Script {
                 "%s plans: %s tx, %s",
                 big[i],
                 nPages,
-                string.concat(vm.toString(gas), " gas, $", _usd(gas, nPages), " per stock-epoch; fleet of ", vm.toString(stocksInFleet), " stocks: $", _usd(gas * stocksInFleet, nPages * stocksInFleet))
+                string.concat(
+                    vm.toString(gas),
+                    " gas, $",
+                    _usd(gas, nPages),
+                    " per stock-epoch; fleet of ",
+                    vm.toString(stocksInFleet),
+                    " stocks: $",
+                    _usd(gas * stocksInFleet, nPages * stocksInFleet)
+                )
             );
         }
         console2.log("");
-        console2.log("(Daily vault: multiply by 365/yr; the 75 bps purchase fee on the same plans is the revenue side.)");
+        console2.log(
+            "(Daily vault: multiply by 365/yr; the 75 bps purchase fee on the same plans is the revenue side.)"
+        );
     }
 
     // ------------------------------------------------------------------

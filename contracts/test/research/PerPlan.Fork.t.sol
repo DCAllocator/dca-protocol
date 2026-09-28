@@ -402,7 +402,17 @@ contract PerPlanForkExecutionTest is ResearchForkBase {
         factory.setMaxDeviationBps(band);
         console2.log("Chainlink band (bps):", band);
         uint256[11] memory sizes = [
-            uint256(10e6), 100e6, 1_000e6, 10_000e6, 25_000e6, 30_000e6, 35_000e6, 40_000e6, 50_000e6, 100_000e6, 500_000e6
+            uint256(10e6),
+            100e6,
+            1_000e6,
+            10_000e6,
+            25_000e6,
+            30_000e6,
+            35_000e6,
+            40_000e6,
+            50_000e6,
+            100_000e6,
+            500_000e6
         ];
 
         for (uint256 i; i < sizes.length; ++i) {
@@ -449,9 +459,13 @@ contract PerPlanForkExecutionTest is ResearchForkBase {
             int256 gasUsd6 = int256((attackerGas * gasPrice * ethUsd) / 1e12); // USD, 6 decimals
             console2.log(
                 string.concat(
-                    string.concat("CSV,sandwich,victimUsd=", vm.toString(v / 1e6), ",maxPushUsd=", vm.toString(lo / 1e6)),
+                    string.concat(
+                        "CSV,sandwich,victimUsd=", vm.toString(v / 1e6), ",maxPushUsd=", vm.toString(lo / 1e6)
+                    ),
                     string.concat(",bestPushUsd=", vm.toString(bestA / 1e6), ",grossProfitUsd6=", vm.toString(best)),
-                    string.concat(",netProfitUsd6=", vm.toString(best - gasUsd6), ",attackerGas=", vm.toString(attackerGas)),
+                    string.concat(
+                        ",netProfitUsd6=", vm.toString(best - gasUsd6), ",attackerGas=", vm.toString(attackerGas)
+                    ),
                     string.concat(",victimLossBps=", _fmtBps(_bps(bestVictimOut, clean)))
                 )
             );

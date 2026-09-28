@@ -1,0 +1,67 @@
+name: Contracts
+
+# Formats, builds and tests the Foundry project in contracts/, and checks the apps' ABIs against the build. Runs on
+# every pull request and on main; the `contracts` job is the required check for merging into main. The fork suites
+# skip themselves without RH_RPC, so no secrets are needed.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Also started by snapshot-market-caps.yml: pushes and PRs made with GITHUB_TOKEN trigger no workflows.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FOUNDRY_VERSION: v1.8.3
+  FOUNDRY_PROFILE: ci
+
+jobs:
+  contracts:
+    name: contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Exact-match only: a hit means the same sources and toolchain, so it skips a ~5 min via_ir compile on PRs
+      # that do not touch contracts; any contract change builds from scratch.
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            contracts/cache
+            contracts/out
+          key: forge-${{ env.FOUNDRY_VERSION }}-${{ hashFiles('contracts/foundry.toml', 'contracts/foundry.lock', 'contracts/remappings.txt', 'contracts/src/**', 'contracts/test/**', 'contracts/script/**') }}
+
+      - name: Check formatting
+        run: forge fmt --check
+
+      - name: Build (fails on a contract over the EIP-170 size limit)
+        run: forge build --sizes
+
+      - name: Check the apps' ABIs match the build
+        working-directory: .
+        run: node scripts/abi-check.mjs
+
+      - name: Test
+        run: forge test -vvv

@@ -277,18 +277,27 @@ contract Audit4_ClosePlan_Reentrancy is BaseTest {
     ///      as `DUP1 PUSH4 <selector> EQ PUSH2 <tag> JUMPI`, so the distinct 4-byte immediates that are pushed
     ///      and immediately compared with EQ are exactly the dispatched selectors. (Error selectors and the ones
     ///      built for outgoing calls are pushed then shifted / stored, never EQ-compared; a binary-search pivot
-    ///      is compared with GT / LT and is itself one of the dispatched selectors, so it adds nothing.)
+    ///      is compared with GT / LT and is itself one of the dispatched selectors, so it adds nothing.) The scan
+    ///      walks opcodes, stepping over every PUSH immediate, and stops at the CBOR metadata: a linked library's
+    ///      runtime opens with `ADDRESS PUSH20 <its own address> EQ` (call protection), so a byte-wise scan finds a
+    ///      fifth "selector" whenever that address ends in 0x63 + 4 bytes — about one deploy address in 256.
     function _dispatchedSelectors(bytes memory code) internal pure returns (bytes4[] memory sels) {
         bytes4[] memory found = new bytes4[](64);
         uint256 n;
-        for (uint256 i; i + 6 <= code.length; ++i) {
-            if (code[i] != 0x63 || code[i + 5] != 0x14) continue; // PUSH4 <sel> EQ
-            bytes4 sel = bytes4(bytes.concat(code[i + 1], code[i + 2], code[i + 3], code[i + 4]));
-            bool dup;
-            for (uint256 j; j < n; ++j) {
-                if (found[j] == sel) dup = true;
+        // solc appends CBOR metadata whose byte length is the final two bytes; it is data, not code
+        uint256 end = code.length - 2 - ((uint256(uint8(code[code.length - 2])) << 8) | uint8(code[code.length - 1]));
+        for (uint256 i; i < end; ++i) {
+            uint8 op = uint8(code[i]);
+            if (op == 0x63 && i + 5 < end && code[i + 5] == 0x14) {
+                // PUSH4 <sel> EQ
+                bytes4 sel = bytes4(bytes.concat(code[i + 1], code[i + 2], code[i + 3], code[i + 4]));
+                bool dup;
+                for (uint256 j; j < n; ++j) {
+                    if (found[j] == sel) dup = true;
+                }
+                if (!dup) found[n++] = sel;
             }
-            if (!dup) found[n++] = sel;
+            if (op >= 0x60 && op <= 0x7f) i += op - 0x5f; // PUSH1..PUSH32: step over the immediate
         }
         sels = new bytes4[](n);
         for (uint256 j; j < n; ++j) {
