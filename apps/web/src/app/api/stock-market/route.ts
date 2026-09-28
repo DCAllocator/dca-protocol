@@ -2,10 +2,9 @@ import { NextResponse } from "next/server";
 
 /**
  * GET /api/stock-market — live price, 24 h change and market cap of every Robinhood Chain Stock Token, keyed by
- * ticker. Feeds the stock ticker tape and the create page's stock picker.
+ * ticker. Feeds the stock ticker tape, the create page's stock picker and every market-cap ranking (`useRankedStocks`).
  *
- * Source: CoinGecko's "Robinhood Chain Stocks Ecosystem" category (the same list scripts/snapshot-market-caps.mjs
- * snapshots for the ranking), one call for all ~190 tokens. Market cap there is circulating (on-chain) supply ×
+ * Source: CoinGecko's "Robinhood Chain Stocks Ecosystem" category, one call for all ~190 tokens. Market cap there is circulating (on-chain) supply ×
  * price aggregated across venues. Proxied rather than called from the browser so every visitor shares one cached
  * upstream request a minute instead of each spending CoinGecko's per-IP rate limit, and so the 170 KB upstream
  * payload is cut to the three numbers the app uses. `COINGECKO_API_KEY` (a free "demo" key) is optional and only

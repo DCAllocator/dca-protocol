@@ -8,7 +8,6 @@ on:
   pull_request:
   push:
     branches: [main]
-  # Also started by snapshot-market-caps.yml: pushes and PRs made with GITHUB_TOKEN trigger no workflows.
   workflow_dispatch: {}
 
 permissions:

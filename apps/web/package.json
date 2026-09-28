@@ -12,8 +12,7 @@
     "typecheck": "tsc --noEmit",
     "abi": "node scripts/export-abi.mjs",
     "env:local": "node scripts/env-from-deployment.mjs 31337",
-    "apy:check": "node scripts/check-boost-apy.mjs",
-    "snapshot:market-caps": "node scripts/snapshot-market-caps.mjs"
+    "apy:check": "node scripts/check-boost-apy.mjs"
   },
   "dependencies": {
     "@morpho-org/blue-sdk": "^6.11.0",

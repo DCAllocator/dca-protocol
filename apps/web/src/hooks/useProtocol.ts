@@ -10,10 +10,7 @@ import type { PublicClient } from "viem";
 import { ADDRESSES, isZero, TEST_VAULT, VAULT_KINDS, PRODUCTION_VAULT_KINDS, SECONDS_PER_YEAR, DCA_PERK_DEFAULTS, USDG_DECIMALS, type VaultKind, type ProductionVaultKind } from "@/lib/config";
 import { valueOf } from "@/lib/format";
 import { usePersistedQuery } from "@/lib/persistedQuery";
-import marketCapSnapshot from "@/data/market-caps.json";
-
-/** Periodic CoinGecko snapshot of each Stock Token's market cap (symbol → USD), see scripts/snapshot-market-caps.mjs. */
-const STOCK_MARKET_CAPS: Record<string, number> = marketCapSnapshot.marketCaps;
+import { useStockMarket } from "@/hooks/useStockMarket";
 
 /** VaultDirectory.Entry, field for field (vaults first, fastest first: the on-chain `vaults()` order). */
 export type Directory = {
@@ -826,14 +823,14 @@ export function usePrices(router?: Address, usdg?: Address, tokens?: { address: 
 export const TOP_STOCKS = 5;
 
 /**
- * The registry's stocks ranked by market cap, from the periodic CoinGecko snapshot (each Stock Token is
- * listed on CoinGecko under the "Robinhood Chain Stocks Ecosystem" category, market cap = circulating
- * supply × price aggregated across venues). That snapshot is a static import — no network call on page
- * load — refreshed by `pnpm snapshot:market-caps` (also run on a schedule, see
- * .github/workflows/snapshot-market-caps.yml). Stocks missing from the snapshot (newly approved, or not
- * yet listed on CoinGecko) keep their place at the bottom in symbol order. `ready` flips once the
- * registry has answered: until then `top` is empty rather than an alphabetical guess, so the "Popular"
- * row never shows the wrong five and then flips.
+ * The registry's stocks ranked by live market cap, from `/api/stock-market` (`useStockMarket`: CoinGecko's "Robinhood
+ * Chain Stocks Ecosystem" category, market cap = circulating supply × price aggregated across venues; the route caches
+ * CoinGecko for a minute and the hook refetches every minute). Only the order is kept (`rankKey`), so a refresh that
+ * moves prices but not the order changes nothing downstream — an unpicked create form's `preferred` stock never churns.
+ * Stocks CoinGecko does not list (newly approved, or not yet listed) keep their place at the bottom in symbol order.
+ * `ready` flips once the registry and the market data have answered (or the market data has failed): until then `top`
+ * is empty rather than an alphabetical guess, so the "Popular" row never shows the wrong five and then flips. With
+ * CoinGecko down the ranking is alphabetical, `top` is empty and `preferred` falls back to the first stock.
  *
  * No prices here on purpose: quoting every registry stock through the router cost one `eth_call` per
  * stock per minute on every page that ranks stocks, and the picker does not need a price to choose a
@@ -852,22 +849,34 @@ export const TOP_STOCKS = 5;
 export function useRankedStocks(dir?: Directory, buyableOn?: Address) {
   const { stocks: listed, byAddress, isLoading: stocksLoading } = useStocks(dir?.registry);
   const { isBuyable, ready: buyableReady } = useBuyable({ enabled: !!buyableOn });
+  const { quotes, ready: marketReady, failed: marketFailed } = useStockMarket();
+  // Tickers with a market cap, largest first, as one string: the ranking below reruns only when this order moves.
+  const rankKey = useMemo(
+    () =>
+      Object.entries(quotes)
+        .filter(([, q]) => (q.marketCap ?? 0) > 0)
+        .sort(([, a], [, b]) => (b.marketCap ?? 0) - (a.marketCap ?? 0))
+        .map(([symbol]) => symbol)
+        .join(","),
+    [quotes],
+  );
   return useMemo(() => {
-    const marketCapOf = (s: Stock) => (isDcaToken(dir, s.address) ? undefined : STOCK_MARKET_CAPS[s.symbol.toUpperCase()]);
+    const rank = new Map(rankKey ? rankKey.split(",").map((symbol, i) => [symbol, i]) : []);
+    const rankOf = (s: Stock) => (isDcaToken(dir, s.address) ? undefined : rank.get(s.symbol.toUpperCase()));
     const stocks = buyableOn ? listed.filter((s) => isBuyable(buyableOn, s.address)) : listed;
     const dca = stocks.find((s) => isDcaToken(dir, s.address));
     const ranked = stocks
       .filter((s) => s !== dca)
       .sort((a, b) => {
-        const diff = (marketCapOf(b) ?? 0) - (marketCapOf(a) ?? 0);
+        const diff = (rankOf(a) ?? rank.size) - (rankOf(b) ?? rank.size);
         return diff !== 0 ? diff : a.symbol.localeCompare(b.symbol);
       });
     const choices = dca ? [dca, ...ranked] : ranked;
-    const ready = listed.length > 0 && !stocksLoading && (!buyableOn || buyableReady);
-    const top = ready ? ranked.filter((s) => (marketCapOf(s) ?? 0) > 0).slice(0, TOP_STOCKS) : [];
-    const preferred = ready ? (dca ?? top[0]) : undefined;
-    return { stocks, byAddress, ranked, top, dca, choices, preferred, marketCapOf, ready };
-  }, [dir, listed, byAddress, stocksLoading, buyableOn, isBuyable, buyableReady]);
+    const ready = listed.length > 0 && !stocksLoading && (!buyableOn || buyableReady) && (marketReady || marketFailed);
+    const top = ready ? ranked.filter((s) => rankOf(s) !== undefined).slice(0, TOP_STOCKS) : [];
+    const preferred = ready ? (dca ?? top[0] ?? ranked[0]) : undefined;
+    return { stocks, byAddress, ranked, top, dca, choices, preferred, ready };
+  }, [dir, listed, byAddress, stocksLoading, buyableOn, isBuyable, buyableReady, rankKey, marketReady, marketFailed]);
 }
 
 /**
